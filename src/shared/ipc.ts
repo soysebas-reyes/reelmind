@@ -59,4 +59,22 @@ export interface ExportResult {
   durationSeconds?: number
 }
 
+/** AI completion proxy. The renderer builds Anthropic-shaped `messages`/`tools` and the main
+ *  process attaches the key and calls the API. Typed loosely here so neither shared nor renderer
+ *  depends on the Anthropic SDK types. */
+export interface AiCompleteRequest {
+  system: string
+  messages: unknown[]
+  tools: unknown[]
+  model?: string
+  maxTokens?: number
+}
+
+export interface AiCompleteResponse {
+  ok: boolean
+  error?: string
+  stopReason?: string | null
+  content?: unknown[]
+}
+
 export const PROJECT_SCHEMA_VERSION = 1

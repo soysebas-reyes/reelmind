@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
+  AiCompleteRequest,
+  AiCompleteResponse,
   ExportRequest,
   ExportResult,
   FfmpegStatus,
@@ -33,7 +35,12 @@ const editorBridge = {
 
   pickExportPath: (defaultName: string): Promise<string | null> =>
     ipcRenderer.invoke('project:pickExportPath', defaultName),
-  exportTimeline: (req: ExportRequest): Promise<ExportResult> => ipcRenderer.invoke('project:export', req)
+  exportTimeline: (req: ExportRequest): Promise<ExportResult> => ipcRenderer.invoke('project:export', req),
+
+  aiHasKey: (): Promise<boolean> => ipcRenderer.invoke('ai:hasKey'),
+  aiSetKey: (key: string): Promise<void> => ipcRenderer.invoke('ai:setKey', key),
+  aiClearKey: (): Promise<void> => ipcRenderer.invoke('ai:clearKey'),
+  aiComplete: (req: AiCompleteRequest): Promise<AiCompleteResponse> => ipcRenderer.invoke('ai:complete', req)
 }
 
 export type EditorBridge = typeof editorBridge

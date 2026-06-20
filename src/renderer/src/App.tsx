@@ -4,6 +4,7 @@ import { type ClipType, type MediaManifestEntry } from '@core'
 import { getController, useEditorStore } from './store'
 import Timeline from './timeline/Timeline'
 import Preview from './preview/Preview'
+import ChatPanel from './ai/ChatPanel'
 
 const RESOLUTIONS: { label: string; w: number; h: number }[] = [
   { label: '1920×1080 (16:9)', w: 1920, h: 1080 },
@@ -194,6 +195,7 @@ export default function App() {
           </section>
 
           <Preview />
+          <ChatPanel />
         </div>
 
         <Timeline />

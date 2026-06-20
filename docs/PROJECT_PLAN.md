@@ -59,22 +59,23 @@ rebuild the platform layers on cross-platform tech (Electron, FFmpeg, ONNX, whis
 | **P2** | Editor: timeline editing (drag/trim/split/ripple/snap, undo/redo) | ✅ done |
 | **P3** | Editor: real-time multi-track preview | ✅ done (still-frame composite; video-decode playback pending) |
 | **P4** | Editor: FFmpeg export | ✅ done (real render, integration-tested) |
-| **P5** | AI: agent tool contract (Zod) + executor | ✅ done — in-app chat transport (BYOK) pending |
+| **P5** | AI: agent tool contract (Zod) + in-app chat (BYOK) | ✅ done |
 | **P6** | AI: embedded MCP server (Claude Code / Cursor / Claude Desktop) | ⬜ next — needs `@modelcontextprotocol/sdk` + main↔renderer proxy |
 | P7 | Generation: Higgs Field (multi-provider adapter) | ⬜ — needs provider SDK + BYOK key + network |
 | P8 | Generation: fal.ai/Replicate + Windows installer | ⬜ — needs SDKs + electron-builder |
 
-**Verification bar (all green as of P5):** `npm run typecheck`, `npm run build`, `npm test` (166 tests,
-incl. 29 EditorController command/undo, 6 compositor, 11 export-graph, 11 AI-tool tests, and 2 ffmpeg
-integration suites — export render + media pipeline — that self-skip if ffmpeg is absent). The app also
-boot-smoke-tested via `npm run dev`.
+**Verification bar (all green as of P5):** `npm run typecheck`, `npm run build`, `npm test` (172 tests,
+incl. 29 EditorController command/undo, 6 compositor, 11 export-graph, 11 AI-tool, 6 agent-loop tests, and
+2 ffmpeg integration suites — export render + media pipeline — that self-skip if ffmpeg is absent). The app
+also boot-smoke-tested via `npm run dev` (including the AI panel + Anthropic SDK in main).
 
-> **Scope note (this session executed P2→P5):** the editor is functionally complete — import, multi-track
-> timeline editing, live preview, and real FFmpeg export — plus the transport-agnostic AI command contract.
-> The remaining phases (P6 MCP server, P7/P8 generation + installer) are gated on external resources
-> (SDK deps, BYOK API keys, network, electron-builder) and can't be runtime-verified headlessly, so they're
-> deliberately left for sessions where those are available. The architecture is ready for them: the
-> EditorController + Zod tool contract are exactly what the MCP server and in-app agent will call.
+> **Scope note (this session executed P2→P5 incl. the in-app AI chat):** the editor is functionally complete —
+> import, multi-track timeline editing, live preview, real FFmpeg export — and the **AI editor chat is wired**
+> (BYOK Anthropic key, encrypted via safeStorage in main; the agent drives the exact same EditorController
+> commands the UI does). Remaining: P6 (MCP server — needs `@modelcontextprotocol/sdk` + the main↔renderer
+> proxy) and P7/P8. **P7 is descoped to import-based**: scenes are generated externally (e.g. Higgsfield) and
+> imported as media assets, which the existing P1 pipeline already handles — no provider SDK/key needed.
+> P8 (Windows installer) still needs electron-builder + signing/auto-update decisions.
 
 ## 5. What exists today (file map)
 
@@ -107,7 +108,8 @@ src/
   shared/ipc.ts                 # wire types shared by main/preload/renderer
   main/
     index.ts                    # app lifecycle + window (sandbox, contextIsolation)
-    ipc.ts                      # all ipcMain handlers (incl. project:export, pickExportPath)
+    ipc.ts                      # all ipcMain handlers (project:export, ai:complete, …)
+    ai/{secrets,anthropic}.ts   # BYOK key (safeStorage/DPAPI) + Anthropic Messages proxy (P5)
     ffmpeg/ {binary,probe,thumbnail,index}.ts   # ffprobe/ffmpeg integration
     ffmpeg/exporter.ts          # runs buildExportGraph + spawns ffmpeg (P4)
     ffmpeg/exporter.test.ts     # renders a 3-track project end-to-end (self-skips if no ffmpeg)
@@ -122,6 +124,7 @@ src/
     src/timeline/geometry.ts    # px↔frame layout math (ruler/tracks/clips)
     src/timeline/Timeline.tsx   # Canvas timeline: drag-from-bin, move+snap, trim, split, ripple
     src/preview/Preview.tsx     # composited preview canvas + transport (play/seek)
+    src/ai/{agent.ts,ChatPanel.tsx}  # in-app agent loop (executeTool) + BYOK chat UI (P5)
 reference/palmier-pro/          # upstream clone — GITIGNORED, porting reference only
 docs/PROJECT_PLAN.md            # this file
 ```
@@ -188,10 +191,13 @@ timeline to a `user` run. Interactive canvas gestures are build- and type-verifi
   and runs it; **the integration test renders a real 3-track project (video + image PIP + audio) to a playable
   mp4** and probes it. Wired to an **Export** button. *Remaining:* rotation/flip, text rendering, per-track
   blend modes, progress reporting.
-- **P5 — AI command contract.** `core/ai/tools.ts` is one Zod-validated tool set + `executeTool(controller, …)`
-  that dispatches to EditorController commands as `agent`-tagged undo steps; `toJsonSchemaTools()` emits the
-  transport-ready (Anthropic/MCP) JSON-Schema tool list — 11 tests. *Remaining:* the in-app chat transport
-  (`@anthropic-ai/sdk`, BYOK key) that turns model tool-calls into `executeTool` calls.
+- **P5 — AI command contract + in-app chat.** `core/ai/tools.ts` is one Zod-validated tool set +
+  `executeTool(controller, …)` that dispatches to EditorController commands as `agent`-tagged undo steps;
+  `toJsonSchemaTools()` emits the transport-ready (Anthropic/MCP) JSON-Schema tool list — 11 tests. The
+  **in-app chat is wired** (BYOK): the key is stored encrypted in main (`main/ai/secrets.ts`, safeStorage);
+  `main/ai/anthropic.ts` is a thin authenticated proxy; `renderer/src/ai/agent.ts` runs the tool loop
+  (`runAgent`, model call injected → 6 tests) against the live controller; `ChatPanel.tsx` is the UI. The key
+  never reaches the renderer. *Remaining:* token streaming (currently one response per turn).
 
 ## 9. Next: Phase 6 — embedded MCP server (detailed)
 

@@ -2,7 +2,9 @@
 // Registers all ipcMain handlers backing the preload `editorBridge`.
 
 import { BrowserWindow, dialog, ipcMain } from 'electron'
-import type { ExportRequest, ProjectData, ThumbnailRequest } from '../shared/ipc'
+import type { AiCompleteRequest, ExportRequest, ProjectData, ThumbnailRequest } from '../shared/ipc'
+import { complete } from './ai/anthropic'
+import { clearApiKey, hasApiKey, setApiKey } from './ai/secrets'
 import { checkFfmpeg, generateThumbnail } from './ffmpeg'
 import { exportTimeline } from './ffmpeg/exporter'
 import { importMedia } from './media/importer'
@@ -99,6 +101,11 @@ export function registerIpc(): void {
   })
 
   ipcMain.handle('project:export', (_e, req: ExportRequest) => exportTimeline(req))
+
+  ipcMain.handle('ai:hasKey', () => hasApiKey())
+  ipcMain.handle('ai:setKey', (_e, key: string) => setApiKey(key))
+  ipcMain.handle('ai:clearKey', () => clearApiKey())
+  ipcMain.handle('ai:complete', (_e, req: AiCompleteRequest) => complete(req))
 }
 
 function dialogOpts() {

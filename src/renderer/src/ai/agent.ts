@@ -1,0 +1,116 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// The in-app agent loop. It runs in the renderer (where the EditorController lives), turning model
+// tool-calls into `executeTool` calls against the live timeline, and delegates only the
+// authenticated model call to the main process (which holds the key). `callModel` is injected so the
+// loop is unit-testable without the network.
+
+import { type EditorController, executeTool, toJsonSchemaTools } from '@core'
+
+export interface TextBlock {
+  type: 'text'
+  text: string
+}
+export interface ToolUseBlock {
+  type: 'tool_use'
+  id: string
+  name: string
+  input: unknown
+}
+export type ContentBlock = TextBlock | ToolUseBlock | { type: string; [k: string]: unknown }
+
+export interface MessageParam {
+  role: 'user' | 'assistant'
+  content: unknown
+}
+
+export interface AnthropicTool {
+  name: string
+  description: string
+  input_schema: Record<string, unknown>
+}
+
+export interface ModelResponse {
+  ok: boolean
+  error?: string
+  stopReason?: string | null
+  content?: ContentBlock[]
+}
+
+export type ModelCaller = (req: {
+  system: string
+  messages: MessageParam[]
+  tools: AnthropicTool[]
+}) => Promise<ModelResponse>
+
+export type AgentEvent =
+  | { type: 'text'; text: string }
+  | { type: 'tool'; name: string; ok: boolean; error?: string }
+
+export const SYSTEM_PROMPT = [
+  'You are the AI editor built into ReelMind, a video editor. You edit the user’s timeline by calling tools.',
+  'Time is integer frames at the project fps — convert seconds to frames using the fps from get_timeline.',
+  'ALWAYS call get_timeline first to learn the current tracks, clip ids, fps, and resolution before editing.',
+  'Clips reference media by `mediaRef` (an asset id from the media bin). You cannot import media; if none exists, ask the user to import it.',
+  'Make minimal, precise edits. When done, briefly tell the user what you changed.',
+  'If a tool returns an error, read it and adjust — do not repeat the same failing call.'
+].join('\n')
+
+/** The tool list in Anthropic `tools` format (drops the JSON-Schema `$schema` field). */
+export function anthropicTools(): AnthropicTool[] {
+  return toJsonSchemaTools().map((t) => {
+    const schema = { ...t.inputSchema }
+    delete (schema as Record<string, unknown>).$schema
+    return { name: t.name, description: t.description, input_schema: schema as Record<string, unknown> }
+  })
+}
+
+export interface AgentRunResult {
+  messages: MessageParam[]
+  text: string
+}
+
+const MAX_STEPS = 12
+
+/** Run the tool loop until the model stops requesting tools (or the step cap is hit). Mutates and
+ *  returns the running `messages` transcript so the caller can continue the conversation. */
+export async function runAgent(
+  controller: EditorController,
+  messages: MessageParam[],
+  callModel: ModelCaller,
+  onEvent?: (e: AgentEvent) => void
+): Promise<AgentRunResult> {
+  const tools = anthropicTools()
+  let finalText = ''
+
+  for (let step = 0; step < MAX_STEPS; step++) {
+    const res = await callModel({ system: SYSTEM_PROMPT, messages, tools })
+    if (!res.ok) throw new Error(res.error || 'Model call failed')
+    const content = res.content ?? []
+    messages.push({ role: 'assistant', content })
+
+    for (const block of content) {
+      if (block.type === 'text') {
+        const text = (block as TextBlock).text
+        finalText += text
+        onEvent?.({ type: 'text', text })
+      }
+    }
+
+    const toolUses = content.filter((b): b is ToolUseBlock => b.type === 'tool_use')
+    if (toolUses.length === 0) break
+
+    const results = toolUses.map((tu) => {
+      const r = executeTool(controller, tu.name, tu.input)
+      onEvent?.({ type: 'tool', name: tu.name, ok: r.ok, error: r.error })
+      return {
+        type: 'tool_result' as const,
+        tool_use_id: tu.id,
+        content: JSON.stringify(r.ok ? (r.result ?? { ok: true }) : { error: r.error }),
+        is_error: !r.ok
+      }
+    })
+    messages.push({ role: 'user', content: results })
+  }
+
+  return { messages, text: finalText }
+}
