@@ -1,4 +1,4 @@
-# Windows AI-Native Video Editor
+# ReelMind
 
 **An open-source, AI-native video editor for Windows — you and your agent
 generate and edit video together, right on the timeline.**

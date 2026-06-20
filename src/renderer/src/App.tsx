@@ -31,7 +31,7 @@ export default function App() {
   return (
     <div className="shell">
       <header className="hero">
-        <h1>Windows AI&#8209;Native Video Editor</h1>
+        <h1>ReelMind</h1>
         <p className="tagline">
           You and your agent generate and edit video together, on the timeline — for Windows.
         </p>

@@ -11,7 +11,7 @@ function createWindow(): void {
     minHeight: 600,
     show: false,
     backgroundColor: '#15151a',
-    title: 'Windows AI Video Editor',
+    title: 'ReelMind',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: true,
