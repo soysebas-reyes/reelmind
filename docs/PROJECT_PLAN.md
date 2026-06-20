@@ -62,7 +62,7 @@ rebuild the platform layers on cross-platform tech (Electron, FFmpeg, ONNX, whis
 | **P5** | AI: agent tool contract (Zod) + in-app chat (BYOK) | ✅ done |
 | **P6** | AI: embedded MCP server (Claude Code / Cursor / Claude Desktop) | ✅ done (HTTP on localhost; integration-tested) |
 | **P7** | Generation | ✅ via import — generate externally (Higgsfield) → import as media; provider SDK deferred |
-| **P8** | Windows installer (electron-builder) | ⬜ next — needs build/signing/auto-update decisions |
+| **P8** | Windows installer (electron-builder) | ✅ done — NSIS + bundled ffmpeg + GitHub auto-update; run `npm run dist` on a build machine |
 
 **Verification bar (all green as of P6):** `npm run typecheck`, `npm run build`, `npm test` (173 tests,
 incl. 29 EditorController command/undo, 6 compositor, 11 export-graph, 11 AI-tool, 6 agent-loop, and a real
@@ -131,6 +131,9 @@ src/
     src/preview/Preview.tsx     # composited preview canvas + transport (play/seek)
     src/ai/{agent.ts,ChatPanel.tsx}  # in-app agent loop (executeTool) + BYOK chat UI (P5)
     src/ai/mcpBridge.ts         # answers main's MCP tool-execute requests via executeTool (P6)
+scripts/fetch-ffmpeg.mjs        # downloads GPL win64 ffmpeg → resources/ffmpeg (build-time)
+electron-builder.yml            # NSIS packaging: bundles ffmpeg + GitHub auto-update (P8)
+resources/ffmpeg/               # bundled ffmpeg/ffprobe — GITIGNORED, fetched at build time
 reference/palmier-pro/          # upstream clone — GITIGNORED, porting reference only
 docs/PROJECT_PLAN.md            # this file
 ```
@@ -144,9 +147,10 @@ docs/PROJECT_PLAN.md            # this file
 ```powershell
 npm install
 npm run dev        # launches the ReelMind window with hot reload
-npm test           # 166 tests (2 ffmpeg integration suites self-skip without ffmpeg)
+npm test           # 173 tests (3 ffmpeg/MCP integration suites self-skip without their deps)
 npm run typecheck
 npm run build      # production build into out/
+npm run dist       # build a Windows installer (fetch ffmpeg → build → electron-builder) [build machine]
 # To export: add clips to the timeline, then Export in the top bar (renders via FFmpeg).
 ```
 Requirements: Node 20+ and **FFmpeg on PATH** (from P1 onward). Override binaries with env vars
@@ -227,19 +231,28 @@ External agents drive ReelMind through the **same** P5 tool contract, over Strea
 { "mcpServers": { "reelmind": { "url": "http://127.0.0.1:4399/mcp" } } }
 ```
 
-## 10. Next: Phase 8 — Windows installer (detailed)
+## 10. Phase 8 ✅ done — Windows installer
 
-**Goal:** a distributable Windows build.
+`electron-builder.yml` (NSIS, x64) packages the electron-vite output. Decisions applied: **bundle FFmpeg**,
+**unsigned for now**, **GitHub Releases auto-update**.
 
-**Steps & decisions needed**
-1. Add `electron-builder`; target **NSIS** (x64). App id, product name, icons/branding.
-2. **FFmpeg:** bundle a Windows build (GPL — fine for this project) and point `REELMIND_FFMPEG/FFPROBE` at it,
-   or keep "ffmpeg on PATH". Decide.
-3. **Code signing:** ship with a Windows cert (avoids SmartScreen) or release unsigned. Decide.
-4. **Auto-update:** GitHub Releases feed (electron-updater) or none. Decide.
+- **Bundled FFmpeg:** `npm run fetch:ffmpeg` (`scripts/fetch-ffmpeg.mjs`) downloads a GPL win64 build into
+  `resources/ffmpeg/` (gitignored); electron-builder ships it via `extraResources`; main points
+  `REELMIND_FFMPEG/FFPROBE` at it when packaged (env still overrides).
+- **Auto-update:** `electron-updater` checks GitHub Releases (`soysebas-reyes/reelmind`) on packaged startup.
+- **Build:** `npm run dist` (= fetch ffmpeg → electron-vite build → electron-builder) produces
+  `release/ReelMind-<version>-setup.exe`. `npm run pack` makes an unpacked `--dir` build for quick testing.
 
-> Generation providers (the original P7/P8 SDK work — Higgs Field / fal.ai / Replicate) are **deferred**: the
-> current workflow generates externally and imports the result as media, which already works end-to-end.
+> Runs on a build machine (electron-builder fetches electron + NSIS binaries; the ffmpeg script needs network),
+> so the installer isn't produced in the headless verify env — the config, scripts, and runtime wiring are
+> verified to the typecheck/build level (`electron-builder --version` and the fetch script's syntax check pass).
+
+**Production follow-ups (optional):** add `build/icon.ico` (256×256) and uncomment `win.icon`; to sign, set
+`win.certificateFile` + `certificatePassword` (or `CSC_LINK`/`CSC_KEY_PASSWORD`); cut the first GitHub Release
+so auto-update has a feed.
+
+> Generation providers (the original Higgs Field / fal.ai / Replicate SDK work) are **deferred**: the current
+> workflow generates externally and imports the result as media, which already works end-to-end.
 
 ## 11. Reference docs
 - Full original architecture/plan (private, owner's machine): `~/.claude/plans/cosmic-mapping-swan.md`

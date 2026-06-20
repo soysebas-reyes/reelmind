@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Windows packaging (NSIS). FFmpeg is bundled from resources/ffmpeg (populated by
+# `npm run fetch:ffmpeg`); auto-update publishes to GitHub Releases. Unsigned for now —
+# add `win.certificateFile`/`certificatePassword` (or use CSC_LINK env) to sign.
+appId: com.soysebas.reelmind
+productName: ReelMind
+copyright: GPL-3.0-or-later — independent derivative of palmier-io/palmier-pro
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - out/**/*
+  - package.json
+
+# Bundled FFmpeg/ffprobe land in <resources>/ffmpeg next to the asar; main points
+# REELMIND_FFMPEG/FFPROBE at them when packaged.
+extraResources:
+  - from: resources/ffmpeg
+    to: ffmpeg
+    filter:
+      - '**/*'
+
+win:
+  target:
+    - nsis
+  artifactName: ${productName}-${version}-setup.${ext}
+  # icon: build/icon.ico   # add a 256x256 .ico, then uncomment
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+
+publish:
+  provider: github
+  owner: soysebas-reyes
+  repo: reelmind

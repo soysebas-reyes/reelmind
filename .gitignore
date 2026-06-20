@@ -4,8 +4,12 @@ node_modules/
 # Build output
 out/
 dist/
+release/
 .vite/
 *.tsbuildinfo
+
+# Bundled FFmpeg binaries (fetched at build time via `npm run fetch:ffmpeg`, redistributed under GPL)
+resources/ffmpeg/
 
 # Upstream clone kept only as a local porting reference — never published
 reference/
