@@ -263,6 +263,40 @@ export function rawVolumeAt(c: Clip, frame: number): number {
   return c.volume * kfGain
 }
 
+/** Clamp a clip's fade ramps so neither exceeds the (current) duration. Mutates in place. */
+export function clampFadesToDuration(c: Clip): void {
+  const d = Math.max(0, c.durationFrames)
+  if (c.fadeInFrames > d) c.fadeInFrames = d
+  if (c.fadeOutFrames > d) c.fadeOutFrames = d
+  if (c.fadeInFrames < 0) c.fadeInFrames = 0
+  if (c.fadeOutFrames < 0) c.fadeOutFrames = 0
+}
+
+function clampTrack<V>(track: KeyframeTrack<V> | undefined, duration: number): KeyframeTrack<V> | undefined {
+  if (!track) return undefined
+  const kept = track.keyframes.filter((k) => k.frame <= duration)
+  return kept.length > 0 ? { keyframes: kept } : undefined
+}
+
+/** Drop keyframes that fall past the (current) duration on every animatable track. Mutates in place. */
+export function clampKeyframesToDuration(c: Clip): void {
+  const d = Math.max(0, c.durationFrames)
+  c.opacityTrack = clampTrack(c.opacityTrack, d)
+  c.positionTrack = clampTrack(c.positionTrack, d)
+  c.scaleTrack = clampTrack(c.scaleTrack, d)
+  c.rotationTrack = clampTrack(c.rotationTrack, d)
+  c.cropTrack = clampTrack(c.cropTrack, d)
+  c.volumeTrack = clampTrack(c.volumeTrack, d)
+}
+
+/** Set a clip's timeline duration (never below zero) and re-clamp its fades.
+ *  Upstream's `Clip.setDuration`. Keyframes are left intact (sampling clamps out-of-range
+ *  reads); drop them explicitly with `clampKeyframesToDuration` where needed. Mutates in place. */
+export function setClipDuration(c: Clip, duration: number): void {
+  c.durationFrames = Math.max(0, duration)
+  clampFadesToDuration(c)
+}
+
 /** Source-seconds → project-timeline-frame through this clip's placement, trim, and speed. */
 export function timelineFrameForSourceSeconds(c: Clip, sourceSeconds: number, fps: number): number | null {
   const sourceFrame = sourceSeconds * fps

@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
+  ExportRequest,
+  ExportResult,
   FfmpegStatus,
   ImportedAsset,
   ProjectData,
@@ -27,7 +29,11 @@ const editorBridge = {
     ipcRenderer.invoke('project:pickSavePath', defaultName),
   pickOpenProjectDir: (): Promise<string | null> => ipcRenderer.invoke('project:pickOpenDir'),
   saveProject: (dir: string, data: ProjectData): Promise<SaveResult> => ipcRenderer.invoke('project:save', dir, data),
-  loadProject: (dir: string): Promise<ProjectData> => ipcRenderer.invoke('project:load', dir)
+  loadProject: (dir: string): Promise<ProjectData> => ipcRenderer.invoke('project:load', dir),
+
+  pickExportPath: (defaultName: string): Promise<string | null> =>
+    ipcRenderer.invoke('project:pickExportPath', defaultName),
+  exportTimeline: (req: ExportRequest): Promise<ExportResult> => ipcRenderer.invoke('project:export', req)
 }
 
 export type EditorBridge = typeof editorBridge

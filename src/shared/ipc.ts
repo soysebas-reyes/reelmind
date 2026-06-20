@@ -45,4 +45,18 @@ export interface SaveResult {
   error?: string
 }
 
+export interface ExportRequest {
+  timeline: Timeline
+  manifest: MediaManifest
+  projectDir: string | null
+  outputPath: string
+}
+
+export interface ExportResult {
+  ok: boolean
+  outputPath?: string
+  error?: string
+  durationSeconds?: number
+}
+
 export const PROJECT_SCHEMA_VERSION = 1

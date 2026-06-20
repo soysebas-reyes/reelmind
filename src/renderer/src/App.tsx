@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { useEffect } from 'react'
 import { type ClipType, type MediaManifestEntry } from '@core'
-import { useEditorStore } from './store'
+import { getController, useEditorStore } from './store'
+import Timeline from './timeline/Timeline'
+import Preview from './preview/Preview'
 
 const RESOLUTIONS: { label: string; w: number; h: number }[] = [
   { label: '1920×1080 (16:9)', w: 1920, h: 1080 },
@@ -30,10 +32,18 @@ function formatDuration(seconds: number): string {
 
 function AssetCard({ entry, thumbnail }: { entry: MediaManifestEntry; thumbnail: string | null }) {
   return (
-    <div className="asset" title={entry.name}>
+    <div
+      className="asset"
+      title={`${entry.name} — drag onto the timeline`}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData('application/x-reelmind-asset', entry.id)
+        e.dataTransfer.effectAllowed = 'copy'
+      }}
+    >
       <div className="asset-thumb">
         {thumbnail ? (
-          <img src={thumbnail} alt={entry.name} />
+          <img src={thumbnail} alt={entry.name} draggable={false} />
         ) : (
           <span className="asset-thumb-glyph">{TYPE_GLYPH[entry.type]}</span>
         )}
@@ -65,11 +75,16 @@ export default function App() {
     busy,
     dirty,
     lastError,
+    canUndo,
+    canRedo,
+    undoLabel,
+    redoLabel,
     init,
     newProject,
     importFiles,
     saveProject,
     openProject,
+    exportProject,
     setResolution,
     setFps
   } = useEditorStore()
@@ -133,38 +148,56 @@ export default function App() {
         </div>
 
         <div className="actions">
+          <button onClick={() => getController().undo()} disabled={!canUndo} title={undoLabel ? `Undo ${undoLabel}` : 'Undo'}>
+            ↶ Undo
+          </button>
+          <button onClick={() => getController().redo()} disabled={!canRedo} title={redoLabel ? `Redo ${redoLabel}` : 'Redo'}>
+            ↷ Redo
+          </button>
+          <span className="tl-sep" />
           <button onClick={newProject}>New</button>
           <button onClick={() => void openProject()}>Open</button>
           <button className="primary" onClick={() => void saveProject()} disabled={!dirty && !!projectDir}>
             Save
           </button>
+          <button onClick={() => void exportProject()} disabled={!!busy || timeline.tracks.length === 0}>
+            Export
+          </button>
         </div>
       </header>
 
-      <main className="bin">
-        <div className="bin-head">
-          <h2>Media bin</h2>
-          <button className="primary" onClick={() => void importFiles()} disabled={!!busy}>
-            + Import media
-          </button>
+      <div className="workspace">
+        <div className="stage">
+          <section className="bin">
+            <div className="bin-head">
+              <h2>Media bin</h2>
+              <button className="primary" onClick={() => void importFiles()} disabled={!!busy}>
+                + Import
+              </button>
+            </div>
+
+            {manifest.entries.length === 0 ? (
+              <div className="empty">
+                <p className="empty-title">No media yet</p>
+                <p className="empty-sub">Import video, audio, or images, then drag them onto the timeline.</p>
+                <button className="primary" onClick={() => void importFiles()}>
+                  + Import media
+                </button>
+              </div>
+            ) : (
+              <div className="grid">
+                {manifest.entries.map((entry) => (
+                  <AssetCard key={entry.id} entry={entry} thumbnail={thumbnails[entry.id] ?? null} />
+                ))}
+              </div>
+            )}
+          </section>
+
+          <Preview />
         </div>
 
-        {manifest.entries.length === 0 ? (
-          <div className="empty">
-            <p className="empty-title">No media yet</p>
-            <p className="empty-sub">Import video, audio, or images to build your library.</p>
-            <button className="primary" onClick={() => void importFiles()}>
-              + Import media
-            </button>
-          </div>
-        ) : (
-          <div className="grid">
-            {manifest.entries.map((entry) => (
-              <AssetCard key={entry.id} entry={entry} thumbnail={thumbnails[entry.id] ?? null} />
-            ))}
-          </div>
-        )}
-      </main>
+        <Timeline />
+      </div>
 
       <footer className="statusbar">
         <span className={`pill ${ffmpegOk ? 'ok' : 'warn'}`}>

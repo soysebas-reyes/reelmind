@@ -56,16 +56,25 @@ rebuild the platform layers on cross-platform tech (Electron, FFmpeg, ONNX, whis
 |------|-------|-------|
 | **P0** | Repo + scaffold | ✅ done |
 | **P1** | Editor: media import + bin + project format | ✅ done |
-| **P2** | Editor: timeline editing (drag/trim/split/ripple/snap, undo/redo) | ⬜ next |
-| P3 | Editor: real-time multi-track preview | ⬜ |
-| P4 | Editor: FFmpeg export | ⬜ |
-| P5 | AI: agent tool contract + in-app chat (BYOK) | ⬜ |
-| P6 | AI: embedded MCP server (Claude Code / Cursor / Claude Desktop) | ⬜ |
-| P7 | Generation: Higgs Field (multi-provider adapter) | ⬜ |
-| P8 | Generation: fal.ai/Replicate + Windows installer | ⬜ |
+| **P2** | Editor: timeline editing (drag/trim/split/ripple/snap, undo/redo) | ✅ done |
+| **P3** | Editor: real-time multi-track preview | ✅ done (still-frame composite; video-decode playback pending) |
+| **P4** | Editor: FFmpeg export | ✅ done (real render, integration-tested) |
+| **P5** | AI: agent tool contract (Zod) + executor | ✅ done — in-app chat transport (BYOK) pending |
+| **P6** | AI: embedded MCP server (Claude Code / Cursor / Claude Desktop) | ⬜ next — needs `@modelcontextprotocol/sdk` + main↔renderer proxy |
+| P7 | Generation: Higgs Field (multi-provider adapter) | ⬜ — needs provider SDK + BYOK key + network |
+| P8 | Generation: fal.ai/Replicate + Windows installer | ⬜ — needs SDKs + electron-builder |
 
-**Verification bar (all green as of P1):** `npm run typecheck`, `npm run build`, `npm test` (107 tests,
-incl. 5 ffmpeg integration tests that self-skip if ffmpeg is absent).
+**Verification bar (all green as of P5):** `npm run typecheck`, `npm run build`, `npm test` (166 tests,
+incl. 29 EditorController command/undo, 6 compositor, 11 export-graph, 11 AI-tool tests, and 2 ffmpeg
+integration suites — export render + media pipeline — that self-skip if ffmpeg is absent). The app also
+boot-smoke-tested via `npm run dev`.
+
+> **Scope note (this session executed P2→P5):** the editor is functionally complete — import, multi-track
+> timeline editing, live preview, and real FFmpeg export — plus the transport-agnostic AI command contract.
+> The remaining phases (P6 MCP server, P7/P8 generation + installer) are gated on external resources
+> (SDK deps, BYOK API keys, network, electron-builder) and can't be runtime-verified headlessly, so they're
+> deliberately left for sessions where those are available. The architecture is ready for them: the
+> EditorController + Zod tool contract are exactly what the MCP server and in-app agent will call.
 
 ## 5. What exists today (file map)
 
@@ -85,20 +94,34 @@ src/
       overwriteEngine.ts        # computeOverwrite → remove/trimEnd/trimStart/split
       snapEngine.ts             # collectTargets + findSnap (sticky, playhead, probes)
       *.test.ts                 # engine golden tests (incl. adversarial)
+    controller/
+      EditorController.ts       # THE command API: add/move/trim/split/ripple/tracks/props;
+                                #   Immer-patch undo/redo (1 command = 1 step); user/agent tags
+      EditorController.test.ts  # 29 tests: engine parity, undo/redo round-trips, agent parity
+    preview/compositor.ts       # composeFrame(timeline,frame) → ordered visual+audio layers (P3)
+    export/exportGraph.ts       # buildExportGraph: timeline → one FFmpeg filter_complex (P4)
+    ai/tools.ts                 # Zod tool contract + executeTool over EditorController (P5);
+                                #   toJsonSchemaTools() for Anthropic/MCP transports
     testing/fixtures.ts         # fxClip / fxTrack / fxTimeline
     index.ts                    # barrel (import via "@core")
   shared/ipc.ts                 # wire types shared by main/preload/renderer
   main/
     index.ts                    # app lifecycle + window (sandbox, contextIsolation)
-    ipc.ts                      # all ipcMain handlers
+    ipc.ts                      # all ipcMain handlers (incl. project:export, pickExportPath)
     ffmpeg/ {binary,probe,thumbnail,index}.ts   # ffprobe/ffmpeg integration
+    ffmpeg/exporter.ts          # runs buildExportGraph + spawns ffmpeg (P4)
+    ffmpeg/exporter.test.ts     # renders a 3-track project end-to-end (self-skips if no ffmpeg)
     media/importer.ts           # classify → probe → thumbnail → manifest entry
     media/mediaPipeline.test.ts # ffmpeg integration test (self-skips if no ffmpeg)
     project/projectStore.ts     # .vproj save/load (atomic writes)
-  preload/index.ts(.d.ts)       # editorBridge (typed, sandboxed)
+  preload/index.ts(.d.ts)       # editorBridge (typed, sandboxed) — adds export methods
   renderer/
     index.html                  # CSP-locked shell
-    src/{main.tsx,App.tsx,App.css,store.ts}     # Zustand store + media-bin UI
+    src/{main.tsx,App.tsx,App.css}              # shell, bin + preview + timeline layout, topbar
+    src/store.ts                # Zustand store mirrors the EditorController; project IO + export
+    src/timeline/geometry.ts    # px↔frame layout math (ruler/tracks/clips)
+    src/timeline/Timeline.tsx   # Canvas timeline: drag-from-bin, move+snap, trim, split, ripple
+    src/preview/Preview.tsx     # composited preview canvas + transport (play/seek)
 reference/palmier-pro/          # upstream clone — GITIGNORED, porting reference only
 docs/PROJECT_PLAN.md            # this file
 ```
@@ -112,43 +135,83 @@ docs/PROJECT_PLAN.md            # this file
 ```powershell
 npm install
 npm run dev        # launches the ReelMind window with hot reload
-npm test           # 107 tests
+npm test           # 166 tests (2 ffmpeg integration suites self-skip without ffmpeg)
 npm run typecheck
 npm run build      # production build into out/
+# To export: add clips to the timeline, then Export in the top bar (renders via FFmpeg).
 ```
 Requirements: Node 20+ and **FFmpeg on PATH** (from P1 onward). Override binaries with env vars
 `REELMIND_FFMPEG` / `REELMIND_FFPROBE` if needed.
 
-## 7. Next: Phase 2 — timeline editing (detailed)
+## 7. Phase 2 — timeline editing ✅ done
 
-**Goal:** a canvas timeline where you build a multi-track sequence and edit it; every mutation goes
-through a single `EditorController` so the AI agent (P5/P6) can later drive the same commands.
+Built the editing core + a canvas timeline; every mutation goes through one `EditorController` so the
+AI agent (P5/P6) can later drive the same commands.
+
+- **`src/core/controller/EditorController.ts`** — the command API over the timeline with an Immer-patch
+  undo/redo stack. **One command = one undo step**; compound ops (overwrite = clear+insert, ripple-delete
+  = remove+shift, split-inside-clear) collapse into a single step via `transact`. Transactions are tagged
+  `user` vs `agent` (`runAs('agent', …)`). Commands: `addClip`/`overwriteClip`/`rippleInsertClip`,
+  `clearRegion`, `moveClip(s)`, `trimClip`/`trimClipStart/End`, `trim*ToPlayhead`, `splitClip`/
+  `splitAtPlayhead`, `removeClip(s)`, `rippleDelete` (refuses if a sync-locked follower can't absorb),
+  `setClipSpeed` (contiguous-chain ripple), `setClipProperties`, `addTrack`/`removeTrack`/
+  `setTrackMuted/Hidden/SyncLocked`, `seek`, selection, `undo`/`redo`, `load`. Wires the ported
+  `rippleEngine`/`overwriteEngine`/`snapEngine` (`snapMoveFrame` for the drag UI).
+- **`src/renderer/src/timeline/Timeline.tsx`** — a single Canvas-2D surface (not DOM-per-clip; 60fps):
+  ruler, playhead, tracks with mute/hide/lock chips, clip rects (thumbnail / waveform sketch),
+  drag-from-bin (HTML5 DnD → `addClip`), drag-to-move with sticky snapping + indicator, edge trim
+  handles, split at playhead, ripple-delete, selection, wheel pan / ctrl-zoom.
+- **Undo/redo** in the top bar + keyboard (Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z or Ctrl+Y, Del, S, ←/→).
+- **Store** (`store.ts`) now mirrors the controller snapshot for React; the controller is the single
+  source of truth for timeline + history. Save reads `controller.getTimeline()`; open calls `controller.load()`.
+
+**Acceptance — met (see `EditorController.test.ts`):** a 3-track sequence with move/trim/split/ripple-delete
+matches the ported engines; snapping engages with sticky hold; undo/redo reverses any edit exactly and a
+JSON round-trip through `load()` restores it; an `agent`-tagged run of the same commands yields an identical
+timeline to a `user` run. Interactive canvas gestures are build- and type-verified; drive them with `npm run dev`.
+
+> **Decision:** used a raw Canvas-2D timeline instead of react-konva / pixi.js (the original suggestion) to
+> avoid a new dependency and keep full control of hit-testing — a single canvas already clears the
+> "not DOM-per-clip / 60fps" bar.
+
+## 8. Phases 3–5 ✅ done (this session)
+
+- **P3 — preview.** `core/preview/compositor.ts` `composeFrame(timeline, frame)` resolves the ordered
+  visual layers (transform/opacity/crop/source-time, top track = foreground, skips hidden) and audio gains
+  (skips muted) — pure, 6 tests. `renderer/src/preview/Preview.tsx` composites those layers onto a letterboxed
+  canvas with a play/seek transport bound to `controller.seek`. *Remaining:* visual sources currently use the
+  per-asset poster/thumbnail; frame-accurate video-decode playback needs pooled `<video>` fed by a
+  main-process media protocol (renderer can't open arbitrary `file://` under the sandbox/CSP).
+- **P4 — export.** `core/export/exportGraph.ts` `buildExportGraph(timeline, resolve, out)` turns a project into
+  one FFmpeg `filter_complex` (scale/position/crop/opacity/fades/timing via overlay enable windows, z-order =
+  track order; audio atempo/volume/delay/amix) — 11 unit tests. `main/ffmpeg/exporter.ts` resolves media paths
+  and runs it; **the integration test renders a real 3-track project (video + image PIP + audio) to a playable
+  mp4** and probes it. Wired to an **Export** button. *Remaining:* rotation/flip, text rendering, per-track
+  blend modes, progress reporting.
+- **P5 — AI command contract.** `core/ai/tools.ts` is one Zod-validated tool set + `executeTool(controller, …)`
+  that dispatches to EditorController commands as `agent`-tagged undo steps; `toJsonSchemaTools()` emits the
+  transport-ready (Anthropic/MCP) JSON-Schema tool list — 11 tests. *Remaining:* the in-app chat transport
+  (`@anthropic-ai/sdk`, BYOK key) that turns model tool-calls into `executeTool` calls.
+
+## 9. Next: Phase 6 — embedded MCP server (detailed)
+
+**Goal:** expose the editor to external agents (Claude Code / Cursor / Claude Desktop) over MCP, reusing the
+P5 contract verbatim.
 
 **Steps**
-1. **`src/core/controller/EditorController.ts`** — the command API over the timeline + an Immer-patch
-   undo/redo stack (one command = one undo step; tag transactions `user` vs `agent`). Core commands:
-   `addClip`, `moveClip` (with snap), `trimClipStart/End`, `splitClip`, `removeClip`, `rippleDelete`,
-   `overwriteClip`, `addTrack/removeTrack/setTrackMuted/Hidden`, `setClipProperties`, `seek`, query
-   getters. Wire the **already-ported** `rippleEngine`/`overwriteEngine`/`snapEngine` here.
-2. **Renderer timeline UI** on Canvas (recommend `react-konva` or `pixi.js`; DOM-per-clip won't hit
-   60fps): ruler, playhead, tracks, clip rectangles (filmstrip/waveform), drag-from-bin, drag/move,
-   trim handles, split at playhead, ripple-delete, snapping with indicator.
-3. **Undo/redo** UI + keyboard (Ctrl+Z / Ctrl+Shift+Z).
-4. **Tests:** unit-test `EditorController` command results against the engines; a few golden
-   sequences (build 3 tracks, move/trim/split/ripple, undo all → original).
+1. Add `@modelcontextprotocol/sdk`. In **main**, stand up an MCP server whose `tools/list` is `toJsonSchemaTools()`
+   and whose `tools/call` forwards to `executeTool`.
+2. **State bridge:** the live timeline lives in the renderer's `EditorController`. Either (a) proxy each
+   `tools/call` to the renderer over IPC and run it there, or (b) move the authoritative controller into main
+   and have the renderer mirror it. (a) is less invasive; (b) is cleaner long-term — decide before coding.
+3. Transport: stdio for Claude Desktop/Cursor; document the config snippet. Guard for headless/no-window runs.
 
-**Upstream files to port from (`reference/palmier-pro/Sources/PalmierPro/`)**
-- `Editor/ViewModel/EditorViewModel*.swift` → the role of `EditorController` (ClipMutations, Ripple,
-  Tracks, TimelineRange, Clipboard, Linking)
-- `Timeline/TimelineView.swift`, `TimelineInputController.swift`, `ClipRenderer.swift`,
-  `TimelineGeometry.swift`, `DragState.swift`, `SnapIndicatorOverlay.swift` → the canvas UI + input
-- `Timeline/TimelineGeometry.swift` for px↔frame conversions (`Defaults.pixelsPerFrame = 4`)
+**Then P7/P8 (gated on external resources):** P7 — a `GenerationProvider` interface + `JobManager` + static
+`models.json`, **Higgs Field first** (`@higgsfield/client`, BYOK), then fal.ai/Replicate; generated clips flow
+back through `addClip`. P8 — Windows packaging via electron-builder (NSIS), bundled ffmpeg, auto-update. These
+need SDK deps, BYOK API keys, network, and a build/signing pipeline — not runnable in a headless verify session.
 
-**Acceptance:** build a 3+ track sequence; move/trim/split/ripple-delete match the ported engines;
-snapping engages with sticky hold; undo/redo reverses any edit exactly; reload restores. An agent
-calling the same `EditorController` commands produces identical results.
-
-## 8. Reference docs
+## 10. Reference docs
 - Full original architecture/plan (private, owner's machine): `~/.claude/plans/cosmic-mapping-swan.md`
 - Upstream agent tool contract (for P5/P6): `reference/.../Agent/Tools/ToolDefinitions.swift` (~30 tools)
 - Higgs Field SDK (for P7): `@higgsfield/client` — confirm endpoint ids/params before coding.

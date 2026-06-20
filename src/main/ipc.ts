@@ -2,8 +2,9 @@
 // Registers all ipcMain handlers backing the preload `editorBridge`.
 
 import { BrowserWindow, dialog, ipcMain } from 'electron'
-import type { ProjectData, ThumbnailRequest } from '../shared/ipc'
+import type { ExportRequest, ProjectData, ThumbnailRequest } from '../shared/ipc'
 import { checkFfmpeg, generateThumbnail } from './ffmpeg'
+import { exportTimeline } from './ffmpeg/exporter'
 import { importMedia } from './media/importer'
 import { loadProject, saveProject } from './project/projectStore'
 
@@ -86,6 +87,18 @@ export function registerIpc(): void {
   })
 
   ipcMain.handle('project:load', (_e, dir: string) => loadProject(dir))
+
+  ipcMain.handle('project:pickExportPath', async (_e, defaultName: string) => {
+    const win = focused()
+    const opts = {
+      defaultPath: `${defaultName || 'Untitled'}.mp4`,
+      filters: [{ name: 'MP4 Video', extensions: ['mp4'] }]
+    }
+    const res = await (win ? dialog.showSaveDialog(win, opts) : dialog.showSaveDialog(opts))
+    return res.canceled || !res.filePath ? null : res.filePath
+  })
+
+  ipcMain.handle('project:export', (_e, req: ExportRequest) => exportTimeline(req))
 }
 
 function dialogOpts() {
