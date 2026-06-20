@@ -57,17 +57,18 @@ rebuild the platform layers on cross-platform tech (Electron, FFmpeg, ONNX, whis
 | **P0** | Repo + scaffold | ✅ done |
 | **P1** | Editor: media import + bin + project format | ✅ done |
 | **P2** | Editor: timeline editing (drag/trim/split/ripple/snap, undo/redo) | ✅ done |
-| **P3** | Editor: real-time multi-track preview | ✅ done (still-frame composite; video-decode playback pending) |
+| **P3** | Editor: real-time multi-track preview | ✅ done (composite + real video playback) |
 | **P4** | Editor: FFmpeg export | ✅ done (real render, integration-tested) |
 | **P5** | AI: agent tool contract (Zod) + in-app chat (BYOK) | ✅ done |
-| **P6** | AI: embedded MCP server (Claude Code / Cursor / Claude Desktop) | ⬜ next — needs `@modelcontextprotocol/sdk` + main↔renderer proxy |
-| P7 | Generation: Higgs Field (multi-provider adapter) | ⬜ — needs provider SDK + BYOK key + network |
-| P8 | Generation: fal.ai/Replicate + Windows installer | ⬜ — needs SDKs + electron-builder |
+| **P6** | AI: embedded MCP server (Claude Code / Cursor / Claude Desktop) | ✅ done (HTTP on localhost; integration-tested) |
+| **P7** | Generation | ✅ via import — generate externally (Higgsfield) → import as media; provider SDK deferred |
+| **P8** | Windows installer (electron-builder) | ⬜ next — needs build/signing/auto-update decisions |
 
-**Verification bar (all green as of P5):** `npm run typecheck`, `npm run build`, `npm test` (172 tests,
-incl. 29 EditorController command/undo, 6 compositor, 11 export-graph, 11 AI-tool, 6 agent-loop tests, and
-2 ffmpeg integration suites — export render + media pipeline — that self-skip if ffmpeg is absent). The app
-also boot-smoke-tested via `npm run dev` (including the AI panel + Anthropic SDK in main).
+**Verification bar (all green as of P6):** `npm run typecheck`, `npm run build`, `npm test` (173 tests,
+incl. 29 EditorController command/undo, 6 compositor, 11 export-graph, 11 AI-tool, 6 agent-loop, and a real
+MCP client↔server HTTP integration test, plus 2 ffmpeg integration suites — export render + media pipeline —
+that self-skip if ffmpeg is absent). The app boot-smoke-tests via `npm run dev`: the AI panel + Anthropic SDK
+load in main, the media protocol serves video, and the MCP server logs `listening at http://127.0.0.1:4399/mcp`.
 
 > **Scope note (this session executed P2→P5 incl. the in-app AI chat):** the editor is functionally complete —
 > import, multi-track timeline editing, live preview, real FFmpeg export — and the **AI editor chat is wired**
@@ -110,10 +111,14 @@ src/
     index.ts                    # app lifecycle + window (sandbox, contextIsolation)
     ipc.ts                      # all ipcMain handlers (project:export, ai:complete, …)
     ai/{secrets,anthropic}.ts   # BYOK key (safeStorage/DPAPI) + Anthropic Messages proxy (P5)
+    mcp/server.ts               # embedded Streamable-HTTP MCP server on localhost (P6)
+    mcp/bridge.ts               # forwards MCP tools/call to the renderer controller over IPC
+    mcp/server.test.ts          # real MCP client↔server HTTP integration test
     ffmpeg/ {binary,probe,thumbnail,index}.ts   # ffprobe/ffmpeg integration
     ffmpeg/exporter.ts          # runs buildExportGraph + spawns ffmpeg (P4)
     ffmpeg/exporter.test.ts     # renders a 3-track project end-to-end (self-skips if no ffmpeg)
     media/importer.ts           # classify → probe → thumbnail → manifest entry
+    media/mediaProtocol.ts      # reelmind-media:// — streams local files to the renderer (P3 video)
     media/mediaPipeline.test.ts # ffmpeg integration test (self-skips if no ffmpeg)
     project/projectStore.ts     # .vproj save/load (atomic writes)
   preload/index.ts(.d.ts)       # editorBridge (typed, sandboxed) — adds export methods
@@ -125,6 +130,7 @@ src/
     src/timeline/Timeline.tsx   # Canvas timeline: drag-from-bin, move+snap, trim, split, ripple
     src/preview/Preview.tsx     # composited preview canvas + transport (play/seek)
     src/ai/{agent.ts,ChatPanel.tsx}  # in-app agent loop (executeTool) + BYOK chat UI (P5)
+    src/ai/mcpBridge.ts         # answers main's MCP tool-execute requests via executeTool (P6)
 reference/palmier-pro/          # upstream clone — GITIGNORED, porting reference only
 docs/PROJECT_PLAN.md            # this file
 ```
@@ -199,25 +205,43 @@ timeline to a `user` run. Interactive canvas gestures are build- and type-verifi
   (`runAgent`, model call injected → 6 tests) against the live controller; `ChatPanel.tsx` is the UI. The key
   never reaches the renderer. *Remaining:* token streaming (currently one response per turn).
 
-## 9. Next: Phase 6 — embedded MCP server (detailed)
+## 9. Phase 6 ✅ done — embedded MCP server
 
-**Goal:** expose the editor to external agents (Claude Code / Cursor / Claude Desktop) over MCP, reusing the
-P5 contract verbatim.
+External agents drive ReelMind through the **same** P5 tool contract, over Streamable HTTP on localhost.
 
-**Steps**
-1. Add `@modelcontextprotocol/sdk`. In **main**, stand up an MCP server whose `tools/list` is `toJsonSchemaTools()`
-   and whose `tools/call` forwards to `executeTool`.
-2. **State bridge:** the live timeline lives in the renderer's `EditorController`. Either (a) proxy each
-   `tools/call` to the renderer over IPC and run it there, or (b) move the authoritative controller into main
-   and have the renderer mirror it. (a) is less invasive; (b) is cleaner long-term — decide before coding.
-3. Transport: stdio for Claude Desktop/Cursor; document the config snippet. Guard for headless/no-window runs.
+- `main/mcp/server.ts` — `createMcpHttpServer({ port, execute })` registers every tool from `editorTools`
+  (advertised via their Zod input schemas) on an MCP `McpServer`, served by `StreamableHTTPServerTransport` on
+  `127.0.0.1` (default port 4399; `REELMIND_MCP_PORT` overrides, `REELMIND_NO_MCP` disables). DNS-rebinding
+  protection on by default. `execute` is injected → node-testable.
+- `main/mcp/bridge.ts` — `executeToolInRenderer` forwards each `tools/call` to the focused window; the renderer
+  (`src/ai/mcpBridge.ts`) runs `executeTool` against the live controller and replies (option **(a)**, per the owner).
+- `@modelcontextprotocol/sdk` is ESM-only but ships a CJS build via its `require` export condition, so the CJS
+  main bundle requires it directly — no bundling/dynamic-import workaround needed.
 
-**Then P7/P8 (gated on external resources):** P7 — a `GenerationProvider` interface + `JobManager` + static
-`models.json`, **Higgs Field first** (`@higgsfield/client`, BYOK), then fal.ai/Replicate; generated clips flow
-back through `addClip`. P8 — Windows packaging via electron-builder (NSIS), bundled ffmpeg, auto-update. These
-need SDK deps, BYOK API keys, network, and a build/signing pipeline — not runnable in a headless verify session.
+**Verified:** a real MCP client connects over HTTP and lists + calls tools against a controller
+(`server.test.ts`); the server boots in the real app (`listening at …:4399/mcp`).
 
-## 10. Reference docs
+**Client config (example — while ReelMind is running):**
+
+```json
+{ "mcpServers": { "reelmind": { "url": "http://127.0.0.1:4399/mcp" } } }
+```
+
+## 10. Next: Phase 8 — Windows installer (detailed)
+
+**Goal:** a distributable Windows build.
+
+**Steps & decisions needed**
+1. Add `electron-builder`; target **NSIS** (x64). App id, product name, icons/branding.
+2. **FFmpeg:** bundle a Windows build (GPL — fine for this project) and point `REELMIND_FFMPEG/FFPROBE` at it,
+   or keep "ffmpeg on PATH". Decide.
+3. **Code signing:** ship with a Windows cert (avoids SmartScreen) or release unsigned. Decide.
+4. **Auto-update:** GitHub Releases feed (electron-updater) or none. Decide.
+
+> Generation providers (the original P7/P8 SDK work — Higgs Field / fal.ai / Replicate) are **deferred**: the
+> current workflow generates externally and imports the result as media, which already works end-to-end.
+
+## 11. Reference docs
 - Full original architecture/plan (private, owner's machine): `~/.claude/plans/cosmic-mapping-swan.md`
 - Upstream agent tool contract (for P5/P6): `reference/.../Agent/Tools/ToolDefinitions.swift` (~30 tools)
 - Higgs Field SDK (for P7): `@higgsfield/client` — confirm endpoint ids/params before coding.

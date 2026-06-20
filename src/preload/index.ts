@@ -40,7 +40,14 @@ const editorBridge = {
   aiHasKey: (): Promise<boolean> => ipcRenderer.invoke('ai:hasKey'),
   aiSetKey: (key: string): Promise<void> => ipcRenderer.invoke('ai:setKey', key),
   aiClearKey: (): Promise<void> => ipcRenderer.invoke('ai:clearKey'),
-  aiComplete: (req: AiCompleteRequest): Promise<AiCompleteResponse> => ipcRenderer.invoke('ai:complete', req)
+  aiComplete: (req: AiCompleteRequest): Promise<AiCompleteResponse> => ipcRenderer.invoke('ai:complete', req),
+
+  // MCP tool execution requested by the main-process server, run against the renderer controller.
+  onMcpExecute: (cb: (payload: { requestId: string; name: string; input: unknown }) => void): void => {
+    ipcRenderer.on('mcp:execute', (_e, payload) => cb(payload))
+  },
+  sendMcpResult: (requestId: string, result: unknown): void =>
+    ipcRenderer.send('mcp:execute:result', { requestId, result })
 }
 
 export type EditorBridge = typeof editorBridge

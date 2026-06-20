@@ -2,8 +2,11 @@ import { app, BrowserWindow } from 'electron'
 import { join } from 'node:path'
 import { registerIpc } from './ipc'
 import { handleMediaProtocol, registerMediaScheme } from './media/mediaProtocol'
+import { executeToolInRenderer } from './mcp/bridge'
+import { createMcpHttpServer } from './mcp/server'
 
 const isDev = !app.isPackaged
+const MCP_PORT = Number(process.env.REELMIND_MCP_PORT) || 4399
 
 // Must run before app 'ready'.
 registerMediaScheme()
@@ -38,6 +41,14 @@ app.whenReady().then(() => {
   handleMediaProtocol()
   registerIpc()
   createWindow()
+
+  // Embedded MCP server (localhost) so external agents drive the same editor commands.
+  if (!process.env.REELMIND_NO_MCP) {
+    createMcpHttpServer({ port: MCP_PORT, execute: executeToolInRenderer })
+      .then((h) => console.log(`[reelmind] MCP server listening at ${h.url}`))
+      .catch((e) => console.error('[reelmind] MCP server failed to start:', e))
+  }
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
