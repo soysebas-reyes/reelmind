@@ -1,8 +1,12 @@
 import { app, BrowserWindow } from 'electron'
 import { join } from 'node:path'
 import { registerIpc } from './ipc'
+import { handleMediaProtocol, registerMediaScheme } from './media/mediaProtocol'
 
 const isDev = !app.isPackaged
+
+// Must run before app 'ready'.
+registerMediaScheme()
 
 function createWindow(): void {
   const win = new BrowserWindow({
@@ -31,6 +35,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  handleMediaProtocol()
   registerIpc()
   createWindow()
   app.on('activate', () => {

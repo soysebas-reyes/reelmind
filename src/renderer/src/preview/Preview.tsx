@@ -5,8 +5,17 @@
 // video decode (pooled <video> via a main-process media protocol) is the remaining P3 runtime piece.
 
 import { useEffect, useRef, useState } from 'react'
-import { composeFrame } from '@core'
+import { composeFrame, expectedPath } from '@core'
 import { getController, timelineTotalFrames, useEditorStore } from '../store'
+
+/** Renderer-usable URL for a video asset, served by the main-process media protocol. */
+function videoMediaUrl(mediaRef: string): string | null {
+  const { manifest, projectDir } = useEditorStore.getState()
+  const entry = manifest.entries.find((e) => e.id === mediaRef)
+  if (!entry || entry.type !== 'video') return null
+  const path = expectedPath(manifest, mediaRef, projectDir)
+  return path ? `reelmind-media://local/${encodeURIComponent(path)}` : null
+}
 
 function timecode(frame: number, fps: number): string {
   const f = Math.max(0, Math.round(frame))
@@ -25,6 +34,7 @@ export default function Preview(): React.JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const imageCacheRef = useRef<Map<string, HTMLImageElement>>(new Map())
+  const videoPoolRef = useRef<Map<string, HTMLVideoElement>>(new Map())
   const drawRef = useRef<() => void>(() => {})
   const [size, setSize] = useState({ width: 0, height: 0 })
   const [playing, setPlaying] = useState(false)
@@ -44,6 +54,45 @@ export default function Preview(): React.JSX.Element {
       cache.set(assetId, img)
     }
     return img.complete && img.naturalWidth > 0 ? img : null
+  }
+
+  /** A pooled, decode-ready <video> for a video asset (off-DOM), or null if not a video / no path. */
+  function videoFor(mediaRef: string): HTMLVideoElement | null {
+    const url = videoMediaUrl(mediaRef)
+    if (!url) return null
+    const pool = videoPoolRef.current
+    let v = pool.get(mediaRef)
+    if (!v) {
+      v = document.createElement('video')
+      v.src = url
+      v.muted = true
+      v.preload = 'auto'
+      v.playsInline = true
+      v.addEventListener('loadeddata', () => drawRef.current())
+      v.addEventListener('seeked', () => drawRef.current())
+      pool.set(mediaRef, v)
+    }
+    return v
+  }
+
+  /** Draw the real source (video frame if ready, else poster/thumbnail) with crop. */
+  function drawSource(ctx: CanvasRenderingContext2D, mediaType: string, mediaRef: string, crop: { left: number; top: number; right: number; bottom: number }, dx: number, dy: number, dw: number, dh: number): boolean {
+    const sw = (iw: number) => Math.max(1, iw * (1 - crop.left - crop.right))
+    const sh = (ih: number) => Math.max(1, ih * (1 - crop.top - crop.bottom))
+    if (mediaType === 'video') {
+      const v = videoFor(mediaRef)
+      if (v && v.readyState >= 2 && v.videoWidth > 0) {
+        ctx.drawImage(v, crop.left * v.videoWidth, crop.top * v.videoHeight, sw(v.videoWidth), sh(v.videoHeight), dx, dy, dw, dh)
+        return true
+      }
+    }
+    const img = imageFor(mediaRef)
+    if (img) {
+      ctx.imageSmoothingQuality = 'high'
+      ctx.drawImage(img, crop.left * img.naturalWidth, crop.top * img.naturalHeight, sw(img.naturalWidth), sh(img.naturalHeight), dx, dy, dw, dh)
+      return true
+    }
+    return false
   }
 
   function draw(): void {
@@ -103,22 +152,9 @@ export default function Preview(): React.JSX.Element {
         ctx.textAlign = 'center'
         ctx.textBaseline = 'middle'
         ctx.fillText(layer.textContent || 'Text', fx + cx * sx, fy + cy * sy, dw)
-      } else {
-        const img = imageFor(layer.mediaRef)
-        if (img) {
-          const iw = img.naturalWidth
-          const ih = img.naturalHeight
-          const crop = layer.crop
-          const srcX = crop.left * iw
-          const srcY = crop.top * ih
-          const srcW = Math.max(1, iw * (1 - crop.left - crop.right))
-          const srcH = Math.max(1, ih * (1 - crop.top - crop.bottom))
-          ctx.imageSmoothingQuality = 'high'
-          ctx.drawImage(img, srcX, srcY, srcW, srcH, dx, dy, dw, dh)
-        } else {
-          ctx.fillStyle = '#23232e'
-          ctx.fillRect(dx, dy, dw, dh)
-        }
+      } else if (!drawSource(ctx, layer.mediaType, layer.mediaRef, layer.crop, dx, dy, dw, dh)) {
+        ctx.fillStyle = '#23232e'
+        ctx.fillRect(dx, dy, dw, dh)
       }
       ctx.restore()
     }
@@ -150,6 +186,47 @@ export default function Preview(): React.JSX.Element {
     draw()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [size, timeline, currentFrame, thumbnails])
+
+  // Keep pooled videos aligned with the playhead: when paused, seek to the exact source time
+  // (the 'seeked' event redraws the real frame); when playing, let them play (best-effort sync).
+  useEffect(() => {
+    const composed = composeFrame(timeline, currentFrame)
+    const visibleVideos = new Set<string>()
+    for (const layer of composed.visual) {
+      if (layer.mediaType !== 'video') continue
+      visibleVideos.add(layer.mediaRef)
+      const v = videoFor(layer.mediaRef)
+      if (!v) continue
+      const target = Math.max(0, layer.sourceSeconds)
+      if (playing) {
+        if (v.paused) {
+          if (Number.isFinite(v.duration)) v.currentTime = Math.min(target, v.duration)
+          void v.play().catch(() => {})
+        }
+      } else {
+        if (!v.paused) v.pause()
+        if (v.readyState >= 1 && Math.abs(v.currentTime - target) > 0.04) v.currentTime = target
+      }
+    }
+    // Pause any pooled video that isn't on screen this frame.
+    for (const [ref, v] of videoPoolRef.current) {
+      if (!visibleVideos.has(ref) && !v.paused) v.pause()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentFrame, playing, timeline])
+
+  // Release pooled videos on unmount.
+  useEffect(() => {
+    const pool = videoPoolRef.current
+    return () => {
+      for (const v of pool.values()) {
+        v.pause()
+        v.removeAttribute('src')
+        v.load()
+      }
+      pool.clear()
+    }
+  }, [])
 
   // Playback clock — advance the controller playhead at the project fps.
   useEffect(() => {
