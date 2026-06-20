@@ -1,5 +1,6 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow } from 'electron'
 import { join } from 'node:path'
+import { registerIpc } from './ipc'
 
 const isDev = !app.isPackaged
 
@@ -29,17 +30,8 @@ function createWindow(): void {
   }
 }
 
-// Minimal IPC to verify the main <-> preload <-> renderer bridge works.
-ipcMain.handle('app:ping', () => ({
-  ok: true,
-  versions: {
-    electron: process.versions.electron,
-    chrome: process.versions.chrome,
-    node: process.versions.node
-  }
-}))
-
 app.whenReady().then(() => {
+  registerIpc()
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

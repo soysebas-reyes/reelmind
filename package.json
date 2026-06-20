@@ -19,7 +19,6 @@
   },
   "dependencies": {
     "immer": "^11.1.8",
-    "nanoid": "^5.1.14",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "zod": "^4.4.3",

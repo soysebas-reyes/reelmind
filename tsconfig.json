@@ -17,6 +17,7 @@
     "types": ["node"],
     "paths": {
       "@renderer/*": ["./src/renderer/src/*"],
+      "@core": ["./src/core/index.ts"],
       "@core/*": ["./src/core/*"]
     }
   },
