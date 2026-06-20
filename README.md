@@ -3,9 +3,10 @@
 **An open-source, AI-native video editor for Windows — you and your agent
 generate and edit video together, right on the timeline.**
 
-> ⚠️ **Status: early development (Phase 0 — scaffold).** The desktop shell builds
-> and runs; the editor, AI agent, and generation features are being built phase
-> by phase (see the roadmap). Not yet usable for real editing.
+> ⚠️ **Status: early development.** Phases 0–1 done: the desktop app runs, imports
+> media (video/audio/images) into a project, and saves/opens `.vproj` projects.
+> Timeline editing, preview, export, the AI agent, and generation are coming phase
+> by phase. **Full plan & state:** [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md).
 
 ---
 
