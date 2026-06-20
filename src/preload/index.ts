@@ -24,6 +24,7 @@ const editorBridge = {
 
   pickMediaFiles: (): Promise<string[]> => ipcRenderer.invoke('media:pick'),
   importMedia: (paths: string[]): Promise<ImportedAsset[]> => ipcRenderer.invoke('media:import', paths),
+  importSources: (sources: string[]): Promise<ImportedAsset[]> => ipcRenderer.invoke('media:importSources', sources),
   loadThumbnails: (items: ThumbnailRequest[]): Promise<ThumbnailResult[]> =>
     ipcRenderer.invoke('media:thumbnails', items),
 

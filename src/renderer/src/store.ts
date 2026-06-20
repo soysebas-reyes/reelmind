@@ -20,7 +20,7 @@ import {
 } from '@core'
 import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
-import { PROJECT_SCHEMA_VERSION, type FfmpegStatus } from '../../shared/ipc'
+import { PROJECT_SCHEMA_VERSION, type FfmpegStatus, type ImportedAsset } from '../../shared/ipc'
 
 const controller = new EditorController()
 
@@ -77,6 +77,7 @@ export interface EditorState {
   init: () => Promise<void>
   newProject: () => void
   importFiles: () => Promise<void>
+  importFromSources: (sources: string[]) => Promise<ImportedAsset[]>
   saveProject: () => Promise<void>
   openProject: () => Promise<void>
   exportProject: () => Promise<void>
@@ -149,6 +150,19 @@ export const useEditorStore = create<EditorState>()(
           s.busy = null
         })
       }
+    },
+
+    // Import from explicit paths/URLs (used by the AI tools / MCP, e.g. a generated clip).
+    importFromSources: async (sources) => {
+      const imported = await window.editorBridge.importSources(sources)
+      set((s) => {
+        for (const { entry, thumbnail } of imported) {
+          s.manifest.entries.push(entry)
+          s.thumbnails[entry.id] = thumbnail
+        }
+        if (imported.length > 0) s.dirty = true
+      })
+      return imported
     },
 
     saveProject: async () => {

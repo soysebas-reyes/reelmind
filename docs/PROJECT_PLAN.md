@@ -254,7 +254,25 @@ so auto-update has a feed.
 > Generation providers (the original Higgs Field / fal.ai / Replicate SDK work) are **deferred**: the current
 > workflow generates externally and imports the result as media, which already works end-to-end.
 
-## 11. Reference docs
+## 11. Higgsfield MCP interop
+
+Higgsfield ships an official OAuth MCP server (`https://mcp.higgsfield.ai/mcp`) that bills your existing
+**plan credits** (no API key) — so it works on a subscription without separate API funds.
+
+- **Model A (done):** add both MCP servers to your Claude client (Higgsfield + ReelMind at :4399). The agent
+  generates in Higgsfield and places the result in ReelMind; prompt approval is the client's built-in tool
+  permission prompt. The connective piece — **`import_media`** — is built: a host-executed tool (declared in
+  the @core contract, run by the renderer via `runEditorTool`) that imports local paths or http(s) URLs into
+  the bin and returns assetId(s) for `add_clip`. Exposed on both the MCP server and the in-app agent.
+- **Model B (proposed):** ReelMind's own AI panel orchestrates — proposes a generation plan (prompt + model +
+  duration + target track), shows it in an **approval queue** (edit / approve / reject) BEFORE sending, then
+  calls Higgsfield (as an MCP client, OAuth in-app) and auto-imports + places approved results. This is where
+  the prompt-approval gate truly lives. Requires adding an MCP client + OAuth flow in ReelMind.
+
+> "Remove silences" / "arrange" are ReelMind edits (FFmpeg), not generation. "Upscale my own footage to HD"
+> is **not** a confirmed Higgsfield capability — verify before relying on it.
+
+## 12. Reference docs
 - Full original architecture/plan (private, owner's machine): `~/.claude/plans/cosmic-mapping-swan.md`
 - Upstream agent tool contract (for P5/P6): `reference/.../Agent/Tools/ToolDefinitions.swift` (~30 tools)
 - Higgs Field SDK (for P7): `@higgsfield/client` — confirm endpoint ids/params before coding.

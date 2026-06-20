@@ -8,6 +8,7 @@ import { clearApiKey, hasApiKey, setApiKey } from './ai/secrets'
 import { checkFfmpeg, generateThumbnail } from './ffmpeg'
 import { exportTimeline } from './ffmpeg/exporter'
 import { importMedia } from './media/importer'
+import { importMediaFromSources } from './media/importSources'
 import { loadProject, saveProject } from './project/projectStore'
 
 const MEDIA_EXTENSIONS = [
@@ -53,6 +54,8 @@ export function registerIpc(): void {
   })
 
   ipcMain.handle('media:import', (_e, paths: string[]) => importMedia(paths))
+
+  ipcMain.handle('media:importSources', (_e, sources: string[]) => importMediaFromSources(sources))
 
   ipcMain.handle('media:thumbnails', async (_e, items: ThumbnailRequest[]) => {
     const results = []

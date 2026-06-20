@@ -85,6 +85,14 @@ describe('executeTool — validation & dispatch', () => {
     for (const t of editorTools) expect(t.description.length).toBeGreaterThan(10)
   })
 
+  it('advertises import_media but the core executor refuses it (host-only)', () => {
+    const c = new EditorController()
+    expect(editorTools.some((t) => t.name === 'import_media')).toBe(true)
+    const r = executeTool(c, 'import_media', { sources: ['https://example.com/clip.mp4'] })
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/host/i)
+  })
+
   it('exposes transport-ready JSON-Schema tools', () => {
     const tools = toJsonSchemaTools()
     expect(tools.length).toBe(editorTools.length)

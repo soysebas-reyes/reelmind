@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { getController } from '../store'
 import { type ContentBlock, type MessageParam, type ModelCaller, runAgent } from './agent'
+import { runEditorTool } from './runTool'
 
 let nextId = 0
 const uid = (): string => `m${nextId++}`
@@ -69,11 +70,17 @@ export default function ChatPanel(): React.JSX.Element {
     convoRef.current.push({ role: 'user', content: text })
 
     try {
-      const result = await runAgent(getController(), convoRef.current, callModel, (e) => {
-        if (e.type === 'tool') {
-          setItems((prev) => prev.map((it) => (it.id === asstId ? { ...it, tools: [...it.tools, { name: e.name, ok: e.ok }] } : it)))
-        }
-      })
+      const result = await runAgent(
+        getController(),
+        convoRef.current,
+        callModel,
+        (e) => {
+          if (e.type === 'tool') {
+            setItems((prev) => prev.map((it) => (it.id === asstId ? { ...it, tools: [...it.tools, { name: e.name, ok: e.ok }] } : it)))
+          }
+        },
+        runEditorTool
+      )
       setItems((prev) => prev.map((it) => (it.id === asstId ? { ...it, text: result.text || '(done)' } : it)))
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)

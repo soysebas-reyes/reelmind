@@ -2,12 +2,10 @@
 // Answers MCP tool-execution requests forwarded from the main-process MCP server by running them
 // through the same executeTool path as the in-app agent — against the live EditorController.
 
-import { executeTool } from '@core'
-import { getController } from '../store'
+import { runEditorTool } from './runTool'
 
 export function installMcpBridge(): void {
   window.editorBridge.onMcpExecute(({ requestId, name, input }) => {
-    const result = executeTool(getController(), name, input)
-    window.editorBridge.sendMcpResult(requestId, result)
+    void runEditorTool(name, input).then((result) => window.editorBridge.sendMcpResult(requestId, result))
   })
 }
