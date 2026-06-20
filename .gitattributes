@@ -1,0 +1,17 @@
+# Normalize line endings: store as LF in the repo, check out native on Windows.
+* text=auto eol=lf
+
+# Binary assets (no line-ending conversion / diffing)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.icns binary
+*.ico binary
+*.ttf binary
+*.otf binary
+*.mp4 binary
+*.mov binary
+*.mp3 binary
+*.wav binary
+*.onnx binary
+*.mlpackage binary

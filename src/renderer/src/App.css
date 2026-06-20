@@ -1,0 +1,159 @@
+:root {
+  --bg: #15151a;
+  --panel: #1e1e26;
+  --panel-2: #262631;
+  --text: #e7e7ee;
+  --muted: #9a9ab0;
+  --accent: #7c5cff;
+  --ok: #3ad29f;
+  --err: #ff6b6b;
+  --line: #2f2f3b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.shell {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 48px 28px 64px;
+}
+
+.hero h1 {
+  font-size: 30px;
+  margin: 0 0 8px;
+  letter-spacing: -0.02em;
+}
+
+.tagline {
+  font-size: 16px;
+  color: var(--text);
+  margin: 0 0 6px;
+}
+
+.attribution {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0 0 28px;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 20px 22px;
+  margin-bottom: 18px;
+}
+
+.card h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin: 0 0 14px;
+}
+
+.kv {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.kv li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.kv span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+code {
+  font-family: 'Cascadia Code', 'Consolas', monospace;
+  font-size: 13px;
+  background: var(--panel-2);
+  padding: 3px 8px;
+  border-radius: 6px;
+}
+
+code.ok {
+  color: var(--ok);
+}
+code.err {
+  color: var(--err);
+}
+code.muted {
+  color: var(--muted);
+}
+
+.roadmap {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.roadmap li {
+  display: grid;
+  grid-template-columns: 44px 1fr 14px;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 10px;
+  border-radius: 8px;
+}
+
+.roadmap li .ph {
+  font-family: 'Cascadia Code', 'Consolas', monospace;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.roadmap li .lbl {
+  font-size: 14px;
+}
+
+.roadmap li .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--line);
+  justify-self: end;
+}
+
+.roadmap li.done .dot {
+  background: var(--ok);
+}
+.roadmap li.active {
+  background: var(--panel-2);
+}
+.roadmap li.active .dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 4px rgba(124, 92, 255, 0.18);
+}
+.roadmap li.active .lbl {
+  font-weight: 600;
+}
+.roadmap li.todo .lbl {
+  color: var(--muted);
+}

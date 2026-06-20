@@ -1,0 +1,39 @@
+{
+  "name": "windows-ai-video-editor",
+  "version": "0.0.1",
+  "description": "An open-source, AI-native video editor for Windows. Independent derivative of palmier-io/palmier-pro (macOS).",
+  "license": "GPL-3.0-or-later",
+  "main": "./out/main/index.js",
+  "author": "soysebas-reyes",
+  "homepage": "https://github.com/soysebas-reyes/windows-ai-video-editor",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "start": "electron-vite preview",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
+    "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "immer": "^11.1.8",
+    "nanoid": "^5.1.14",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "zod": "^4.4.3",
+    "zustand": "^5.0.14"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "^42.4.1",
+    "electron-vite": "^5.0.0",
+    "typescript": "^6.0.3",
+    "vite": "^7.3.5",
+    "vitest": "^3.2.6"
+  }
+}

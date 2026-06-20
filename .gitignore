@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build output
+out/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Upstream clone kept only as a local porting reference — never published
+reference/
+
+# Secrets & local env (API keys are stored via Windows safeStorage/DPAPI, never committed)
+.env
+.env.*
+!.env.example
+secrets.bin
+*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Project media/cache produced at runtime
+*.vproj/cache/

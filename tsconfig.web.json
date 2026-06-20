@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["src/renderer/src/**/*", "src/core/**/*", "src/preload/index.d.ts"]
+}
