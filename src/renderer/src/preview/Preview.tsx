@@ -5,14 +5,14 @@
 // video decode (pooled <video> via a main-process media protocol) is the remaining P3 runtime piece.
 
 import { useEffect, useRef, useState } from 'react'
-import { composeFrame, expectedPath } from '@core'
+import { composeFrame, expectedPath, volumeAt } from '@core'
 import { getController, timelineTotalFrames, useEditorStore } from '../store'
 
-/** Renderer-usable URL for a video asset, served by the main-process media protocol. */
-function videoMediaUrl(mediaRef: string): string | null {
+/** Renderer-usable URL for any media asset (video/audio), served by the main-process media protocol. */
+function assetMediaUrl(mediaRef: string): string | null {
   const { manifest, projectDir } = useEditorStore.getState()
   const entry = manifest.entries.find((e) => e.id === mediaRef)
-  if (!entry || entry.type !== 'video') return null
+  if (!entry) return null
   const path = expectedPath(manifest, mediaRef, projectDir)
   return path ? `reelmind-media://local/${encodeURIComponent(path)}` : null
 }
@@ -35,6 +35,7 @@ export default function Preview(): React.JSX.Element {
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const imageCacheRef = useRef<Map<string, HTMLImageElement>>(new Map())
   const videoPoolRef = useRef<Map<string, HTMLVideoElement>>(new Map())
+  const audioPoolRef = useRef<Map<string, HTMLAudioElement>>(new Map())
   const drawRef = useRef<() => void>(() => {})
   const [size, setSize] = useState({ width: 0, height: 0 })
   const [playing, setPlaying] = useState(false)
@@ -56,16 +57,17 @@ export default function Preview(): React.JSX.Element {
     return img.complete && img.naturalWidth > 0 ? img : null
   }
 
-  /** A pooled, decode-ready <video> for a video asset (off-DOM), or null if not a video / no path. */
+  /** A pooled, decode-ready <video> for a video asset (off-DOM), or null if not a video / no path.
+   *  Created unmuted; per-frame gain/mute is applied in the playback-sync effect below. */
   function videoFor(mediaRef: string): HTMLVideoElement | null {
-    const url = videoMediaUrl(mediaRef)
+    const url = assetMediaUrl(mediaRef)
     if (!url) return null
     const pool = videoPoolRef.current
     let v = pool.get(mediaRef)
     if (!v) {
       v = document.createElement('video')
       v.src = url
-      v.muted = true
+      v.muted = false
       v.preload = 'auto'
       v.playsInline = true
       v.addEventListener('loadeddata', () => drawRef.current())
@@ -73,6 +75,21 @@ export default function Preview(): React.JSX.Element {
       pool.set(mediaRef, v)
     }
     return v
+  }
+
+  /** A pooled <audio> element for a pure-audio asset, fed by the same media protocol. */
+  function audioFor(mediaRef: string): HTMLAudioElement | null {
+    const url = assetMediaUrl(mediaRef)
+    if (!url) return null
+    const pool = audioPoolRef.current
+    let a = pool.get(mediaRef)
+    if (!a) {
+      a = new Audio()
+      a.src = url
+      a.preload = 'auto'
+      pool.set(mediaRef, a)
+    }
+    return a
   }
 
   /** Draw the real source (video frame if ready, else poster/thumbnail) with crop. */
@@ -187,8 +204,10 @@ export default function Preview(): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [size, timeline, currentFrame, thumbnails])
 
-  // Keep pooled videos aligned with the playhead: when paused, seek to the exact source time
-  // (the 'seeked' event redraws the real frame); when playing, let them play (best-effort sync).
+  // Keep pooled media aligned with the playhead: when paused, seek to the exact source time
+  // (the 'seeked' event redraws the real frame); when playing, let it play (best-effort sync).
+  // Audio: drive the embedded track of visible video clips and every pure-audio layer, applying
+  // per-clip gain (volume × fades) and track mute. The FFmpeg export stays the exact reference.
   useEffect(() => {
     const composed = composeFrame(timeline, currentFrame)
     const visibleVideos = new Set<string>()
@@ -197,6 +216,10 @@ export default function Preview(): React.JSX.Element {
       visibleVideos.add(layer.mediaRef)
       const v = videoFor(layer.mediaRef)
       if (!v) continue
+      const track = timeline.tracks[layer.trackIndex]
+      const clip = track?.clips.find((c) => c.id === layer.clipId)
+      v.muted = track?.muted ?? false
+      v.volume = clip ? Math.max(0, Math.min(1, volumeAt(clip, currentFrame))) : 1
       const target = Math.max(0, layer.sourceSeconds)
       if (playing) {
         if (v.paused) {
@@ -212,19 +235,49 @@ export default function Preview(): React.JSX.Element {
     for (const [ref, v] of videoPoolRef.current) {
       if (!visibleVideos.has(ref) && !v.paused) v.pause()
     }
+
+    // Pure-audio layers (music / voiceover). composeFrame already skips muted audio tracks and
+    // bakes volume + fades into `gain`.
+    const audibleAudio = new Set<string>()
+    for (const a of composed.audio) {
+      audibleAudio.add(a.mediaRef)
+      const el = audioFor(a.mediaRef)
+      if (!el) continue
+      el.volume = Math.max(0, Math.min(1, a.gain))
+      const target = Math.max(0, a.sourceSeconds)
+      if (playing) {
+        if (el.paused) {
+          if (Number.isFinite(el.duration)) el.currentTime = Math.min(target, el.duration)
+          void el.play().catch(() => {})
+        }
+      } else {
+        if (!el.paused) el.pause()
+        if (el.readyState >= 1 && Math.abs(el.currentTime - target) > 0.04) el.currentTime = target
+      }
+    }
+    for (const [ref, el] of audioPoolRef.current) {
+      if (!audibleAudio.has(ref) && !el.paused) el.pause()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFrame, playing, timeline])
 
-  // Release pooled videos on unmount.
+  // Release pooled media on unmount.
   useEffect(() => {
-    const pool = videoPoolRef.current
+    const vpool = videoPoolRef.current
+    const apool = audioPoolRef.current
     return () => {
-      for (const v of pool.values()) {
+      for (const v of vpool.values()) {
         v.pause()
         v.removeAttribute('src')
         v.load()
       }
-      pool.clear()
+      vpool.clear()
+      for (const a of apool.values()) {
+        a.pause()
+        a.removeAttribute('src')
+        a.load()
+      }
+      apool.clear()
     }
   }, [])
 
