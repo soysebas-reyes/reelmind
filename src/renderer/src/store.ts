@@ -13,6 +13,7 @@ import {
   type MediaManifest,
   type MediaManifestEntry,
   type Timeline,
+  type ToolCallResult,
   expectedPath,
   makeManifest,
   makeTimeline,
@@ -81,6 +82,8 @@ export interface EditorState {
   saveProject: () => Promise<void>
   openProject: () => Promise<void>
   exportProject: () => Promise<void>
+  /** Render to a given path without a dialog — used by the AI `export` tool (and MCP). */
+  exportToPath: (outputPath: string) => Promise<ToolCallResult>
   setResolution: (width: number, height: number) => void
   setFps: (fps: number) => void
 }
@@ -251,6 +254,26 @@ export const useEditorStore = create<EditorState>()(
         s.busy = null
         if (!res.ok) s.lastError = res.error ?? 'Export failed'
       })
+    },
+
+    exportToPath: async (outputPath) => {
+      set((s) => {
+        s.busy = 'Exporting…'
+        s.lastError = null
+      })
+      const res = await window.editorBridge.exportTimeline({
+        timeline: controller.getTimeline(),
+        manifest: get().manifest,
+        projectDir: get().projectDir,
+        outputPath
+      })
+      set((s) => {
+        s.busy = null
+        if (!res.ok) s.lastError = res.error ?? 'Export failed'
+      })
+      return res.ok
+        ? { ok: true, result: { outputPath: res.outputPath ?? outputPath, durationSeconds: res.durationSeconds } }
+        : { ok: false, error: res.error ?? 'Export failed' }
     },
 
     setResolution: (width, height) => controller.setResolution(width, height),

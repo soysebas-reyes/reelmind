@@ -221,12 +221,46 @@ export const editorTools: ToolDef[] = [
       throw new Error('import_media is executed by the host app, not the core executor')
     }
   ),
+  tool(
+    'import_folder',
+    'Import every supported media file in a local folder into the bin (non-recursive), so the clips can be placed with add_clip. Returns the new asset id(s) — use `assetId` as `mediaRef` in add_clip. NOTE: executed by the host app (filesystem + media bin), not the timeline core.',
+    z.object({ folderPath: z.string().min(1) }),
+    () => {
+      throw new Error('import_folder is executed by the host app, not the core executor')
+    }
+  ),
+  tool(
+    'export',
+    'Render the current timeline to a video file at `outputPath` (an absolute path, e.g. D:\\\\out\\\\video.mp4). Set the project resolution first with set_resolution if a specific size is wanted. Returns the output path and duration. NOTE: executed by the host app (FFmpeg), not the timeline core.',
+    z.object({ outputPath: z.string().min(1) }),
+    () => {
+      throw new Error('export is executed by the host app, not the core executor')
+    }
+  ),
+  tool(
+    'remove_silences',
+    'Detect and cut silent gaps from the clips on the track of the selected clip (or the clip given by `clipId`). Uses FFmpeg silence detection, then ripple-deletes the silent spans as a single undo step. Optional: noiseDb (silence threshold, default -30), minDurationSec (shortest silence to cut, default 0.5), paddingSec (audio kept around speech, default 0.1). NOTE: executed by the host app (FFmpeg + filesystem), not the timeline core.',
+    z.object({
+      clipId: z.string().optional(),
+      noiseDb: z.number().optional(),
+      minDurationSec: z.number().positive().optional(),
+      paddingSec: z.number().min(0).optional()
+    }),
+    () => {
+      throw new Error('remove_silences is executed by the host app, not the core executor')
+    }
+  ),
   tool('undo', 'Undo the last edit.', z.object({}).strict(), (c) => ({ done: c.undo() })),
   tool('redo', 'Redo the last undone edit.', z.object({}).strict(), (c) => ({ done: c.redo() }))
 ]
 
 /** Tools that the core executor cannot run — the host (renderer) must intercept these. */
-export const HOST_EXECUTED_TOOLS: ReadonlySet<string> = new Set(['import_media'])
+export const HOST_EXECUTED_TOOLS: ReadonlySet<string> = new Set([
+  'import_media',
+  'import_folder',
+  'export',
+  'remove_silences'
+])
 
 export const editorToolsByName: Map<string, ToolDef> = new Map(editorTools.map((t) => [t.name, t]))
 

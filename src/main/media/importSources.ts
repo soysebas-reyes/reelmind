@@ -7,6 +7,7 @@ import { app } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { extname, join } from 'node:path'
+import { clipTypeForExtension } from '../../core'
 import type { ImportedAsset } from '../../shared/ipc'
 import { importMedia } from './importer'
 
@@ -35,11 +36,25 @@ async function downloadToFile(url: string): Promise<string> {
   return file
 }
 
-/** Resolve every source to a local path (downloading URLs), then import them all. */
+/** Expand one source to local file paths: download an http(s) URL, list a directory's supported
+ *  media files (non-recursive, sorted), or pass a file path through unchanged. */
+async function resolveSource(s: string): Promise<string[]> {
+  if (/^https?:\/\//i.test(s)) return [await downloadToFile(s)]
+  const stat = await fs.stat(s).catch(() => null)
+  if (stat?.isDirectory()) {
+    const names = await fs.readdir(s)
+    return names
+      .map((n) => join(s, n))
+      .filter((p) => clipTypeForExtension(extname(p).replace(/^\./, '')) !== null)
+      .sort()
+  }
+  return [s]
+}
+
+/** Resolve every source (URL download, folder expansion, or file path) to local paths, then
+ *  import them all. A folder path imports every supported media file inside it. */
 export async function importMediaFromSources(sources: string[]): Promise<ImportedAsset[]> {
   const paths: string[] = []
-  for (const s of sources) {
-    paths.push(/^https?:\/\//i.test(s) ? await downloadToFile(s) : s)
-  }
+  for (const s of sources) paths.push(...(await resolveSource(s)))
   return importMedia(paths)
 }

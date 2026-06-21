@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { EditorController } from '../controller/EditorController'
-import { editorTools, executeTool, summarizeTimeline, toJsonSchemaTools } from './tools'
+import { HOST_EXECUTED_TOOLS, editorTools, executeTool, summarizeTimeline, toJsonSchemaTools } from './tools'
 
 interface Rec {
   [k: string]: unknown
@@ -91,6 +91,28 @@ describe('executeTool — validation & dispatch', () => {
     const r = executeTool(c, 'import_media', { sources: ['https://example.com/clip.mp4'] })
     expect(r.ok).toBe(false)
     expect(r.error).toMatch(/host/i)
+  })
+
+  it('advertises import_folder + export as host-only tools the core executor refuses', () => {
+    const c = new EditorController()
+    expect(HOST_EXECUTED_TOOLS.has('import_folder')).toBe(true)
+    expect(HOST_EXECUTED_TOOLS.has('export')).toBe(true)
+    const folder = executeTool(c, 'import_folder', { folderPath: 'D:/crudos' })
+    expect(folder.ok).toBe(false)
+    expect(folder.error).toMatch(/host/i)
+    const exp = executeTool(c, 'export', { outputPath: 'D:/out/video.mp4' })
+    expect(exp.ok).toBe(false)
+    expect(exp.error).toMatch(/host/i)
+    expect(HOST_EXECUTED_TOOLS.has('remove_silences')).toBe(true)
+    const rs = executeTool(c, 'remove_silences', {})
+    expect(rs.ok).toBe(false)
+    expect(rs.error).toMatch(/host/i)
+  })
+
+  it('rejects export / import_folder when required fields are missing', () => {
+    const c = new EditorController()
+    expect(executeTool(c, 'export', {}).ok).toBe(false)
+    expect(executeTool(c, 'import_folder', {}).ok).toBe(false)
   })
 
   it('exposes transport-ready JSON-Schema tools', () => {

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Wire types shared across main, preload, and renderer (type-only; no runtime code).
 
-import type { ClipType, MediaManifest, MediaManifestEntry, Timeline } from '../core'
+import type { ClipType, MediaManifest, MediaManifestEntry, SilenceSeconds, Timeline } from '../core'
+
+export type { SilenceSeconds }
 
 export interface FfmpegStatus {
   ffmpeg: boolean
@@ -75,6 +77,13 @@ export interface AiCompleteResponse {
   error?: string
   stopReason?: string | null
   content?: unknown[]
+}
+
+/** Request for the `media:detectSilences` IPC — analyze one media file's audio for silent spans. */
+export interface DetectSilencesRequest {
+  path: string
+  noiseDb?: number
+  minDurationSec?: number
 }
 
 export const PROJECT_SCHEMA_VERSION = 1

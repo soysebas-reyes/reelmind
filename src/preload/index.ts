@@ -2,12 +2,14 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AiCompleteRequest,
   AiCompleteResponse,
+  DetectSilencesRequest,
   ExportRequest,
   ExportResult,
   FfmpegStatus,
   ImportedAsset,
   ProjectData,
   SaveResult,
+  SilenceSeconds,
   ThumbnailRequest,
   ThumbnailResult
 } from '../shared/ipc'
@@ -37,6 +39,8 @@ const editorBridge = {
   pickExportPath: (defaultName: string): Promise<string | null> =>
     ipcRenderer.invoke('project:pickExportPath', defaultName),
   exportTimeline: (req: ExportRequest): Promise<ExportResult> => ipcRenderer.invoke('project:export', req),
+  detectSilences: (req: DetectSilencesRequest): Promise<SilenceSeconds[]> =>
+    ipcRenderer.invoke('media:detectSilences', req),
 
   aiHasKey: (): Promise<boolean> => ipcRenderer.invoke('ai:hasKey'),
   aiSetKey: (key: string): Promise<void> => ipcRenderer.invoke('ai:setKey', key),

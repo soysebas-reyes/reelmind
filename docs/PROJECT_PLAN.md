@@ -65,6 +65,7 @@ rebuild the platform layers on cross-platform tech (Electron, FFmpeg, ONNX, whis
 | **P8** | Windows installer (electron-builder) | ✅ done — NSIS + bundled ffmpeg + GitHub auto-update; run `npm run dist` on a build machine |
 | **P9** | Color: manual grading + look presets + `.cube` LUTs + AI control + reusable saved profiles | 📋 planned — see [`COLOR_GRADING_PLAN.md`](./COLOR_GRADING_PLAN.md) |
 | **P10** | Color: AI colorization (B&W → color) | 📋 planned (later) — see [`COLOR_GRADING_PLAN.md`](./COLOR_GRADING_PLAN.md) §2 |
+| **P11** | Agentic copilot workflow: `import_folder` · `export` · `remove_silences` · recipes | 🚧 in progress — `import_folder` + `export` landing; see [`AGENTIC_WORKFLOW_PLAN.md`](./AGENTIC_WORKFLOW_PLAN.md) |
 
 **Verification bar (all green as of P6):** `npm run typecheck`, `npm run build`, `npm test` (173 tests,
 incl. 29 EditorController command/undo, 6 compositor, 11 export-graph, 11 AI-tool, 6 agent-loop, and a real

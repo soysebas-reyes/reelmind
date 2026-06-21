@@ -2,11 +2,12 @@
 // Registers all ipcMain handlers backing the preload `editorBridge`.
 
 import { BrowserWindow, dialog, ipcMain } from 'electron'
-import type { AiCompleteRequest, ExportRequest, ProjectData, ThumbnailRequest } from '../shared/ipc'
+import type { AiCompleteRequest, DetectSilencesRequest, ExportRequest, ProjectData, ThumbnailRequest } from '../shared/ipc'
 import { complete } from './ai/anthropic'
 import { clearApiKey, hasApiKey, setApiKey } from './ai/secrets'
 import { checkFfmpeg, generateThumbnail } from './ffmpeg'
 import { exportTimeline } from './ffmpeg/exporter'
+import { detectSilences } from './ffmpeg/silence'
 import { importMedia } from './media/importer'
 import { importMediaFromSources } from './media/importSources'
 import { loadProject, saveProject } from './project/projectStore'
@@ -104,6 +105,10 @@ export function registerIpc(): void {
   })
 
   ipcMain.handle('project:export', (_e, req: ExportRequest) => exportTimeline(req))
+
+  ipcMain.handle('media:detectSilences', (_e, req: DetectSilencesRequest) =>
+    detectSilences(req.path, { noiseDb: req.noiseDb, minDurationSec: req.minDurationSec })
+  )
 
   ipcMain.handle('ai:hasKey', () => hasApiKey())
   ipcMain.handle('ai:setKey', (_e, key: string) => setApiKey(key))
