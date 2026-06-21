@@ -63,6 +63,8 @@ rebuild the platform layers on cross-platform tech (Electron, FFmpeg, ONNX, whis
 | **P6** | AI: embedded MCP server (Claude Code / Cursor / Claude Desktop) | ✅ done (HTTP on localhost; integration-tested) |
 | **P7** | Generation | ✅ via import — generate externally (Higgsfield) → import as media; provider SDK deferred |
 | **P8** | Windows installer (electron-builder) | ✅ done — NSIS + bundled ffmpeg + GitHub auto-update; run `npm run dist` on a build machine |
+| **P9** | Color: manual grading + look presets + `.cube` LUTs + AI control + reusable saved profiles | 📋 planned — see [`COLOR_GRADING_PLAN.md`](./COLOR_GRADING_PLAN.md) |
+| **P10** | Color: AI colorization (B&W → color) | 📋 planned (later) — see [`COLOR_GRADING_PLAN.md`](./COLOR_GRADING_PLAN.md) §2 |
 
 **Verification bar (all green as of P6):** `npm run typecheck`, `npm run build`, `npm test` (173 tests,
 incl. 29 EditorController command/undo, 6 compositor, 11 export-graph, 11 AI-tool, 6 agent-loop, and a real
