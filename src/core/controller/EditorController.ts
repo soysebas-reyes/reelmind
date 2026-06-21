@@ -16,6 +16,7 @@ import { type Patch, applyPatches, current, enablePatches, produceWithPatches } 
 import { Snap, newId, sround } from '../constants'
 import { type ClipType, isCompatible } from '../model/clipType'
 import { type Interpolation, lerpNumber, sampleTrack } from '../model/keyframe'
+import { type ColorAdjustments, IDENTITY_COLOR, mergeColor } from '../model/color'
 import {
   type Clip,
   type Crop,
@@ -112,6 +113,7 @@ export interface ClipPropertyEdit {
   fadeOutInterpolation?: Interpolation
   transform?: Transform
   crop?: Crop
+  color?: ColorAdjustments
   textContent?: string
   textStyle?: TextStyle
 }
@@ -126,6 +128,7 @@ const EDITABLE_KEYS: (keyof ClipPropertyEdit)[] = [
   'fadeOutInterpolation',
   'transform',
   'crop',
+  'color',
   'textContent',
   'textStyle'
 ]
@@ -872,6 +875,13 @@ export class EditorController {
         clampFadesToDuration(c)
       })
     )
+  }
+
+  /** Merge a partial color grade onto a clip (so one slider doesn't reset the others) as one undo step. */
+  setClipColor(clipId: string, patch: Partial<ColorAdjustments>, label = 'Change Color'): void {
+    const c = this.getClip(clipId)
+    if (!c) return
+    this.setClipProperties(clipId, { color: mergeColor(c.color ?? IDENTITY_COLOR, patch) }, label)
   }
 
   // MARK: Playhead / selection (not undoable)

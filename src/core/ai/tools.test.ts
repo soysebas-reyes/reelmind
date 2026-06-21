@@ -137,3 +137,38 @@ describe('summarizeTimeline', () => {
     expect(() => JSON.stringify(summary)).not.toThrow()
   })
 })
+
+describe('set_clip_color (P9.5)', () => {
+  function withClip(): { c: EditorController; clipId: string } {
+    const c = new EditorController()
+    const trackId = rec(executeTool(c, 'add_track', { type: 'video' }).result).trackId as string
+    const clipId = rec(executeTool(c, 'add_clip', { trackId, mediaRef: 'a', startFrame: 0, durationFrames: 60 }).result)
+      .clipId as string
+    return { c, clipId }
+  }
+
+  it('merges color fields onto a clip across calls', () => {
+    const { c, clipId } = withClip()
+    expect(executeTool(c, 'set_clip_color', { clipId, saturation: 0.88 }).ok).toBe(true)
+    expect(executeTool(c, 'set_clip_color', { clipId, contrast: 1.2, shadows: 8.6 }).ok).toBe(true)
+    const color = c.getClip(clipId)!.color!
+    expect(color.saturation).toBe(0.88) // preserved (merge, not reset)
+    expect(color.contrast).toBe(1.2)
+    expect(color.shadows).toBe(8.6)
+  })
+
+  it('rejects out-of-range values', () => {
+    const { c, clipId } = withClip()
+    expect(executeTool(c, 'set_clip_color', { clipId, saturation: 5 }).ok).toBe(false) // max 2
+    expect(executeTool(c, 'set_clip_color', { clipId, temperature: -500 }).ok).toBe(false) // min -100
+  })
+
+  it('is agent-tagged and surfaces color in summarizeTimeline', () => {
+    const { c, clipId } = withClip()
+    executeTool(c, 'set_clip_color', { clipId, saturation: 0.88 })
+    expect(c.snapshot().undoOrigin).toBe('agent')
+    const summary = rec(summarizeTimeline(c))
+    const tracks = summary.tracks as { clips: { color?: { saturation: number } }[] }[]
+    expect(tracks[0].clips[0].color?.saturation).toBe(0.88)
+  })
+})

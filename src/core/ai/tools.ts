@@ -59,7 +59,8 @@ export function summarizeTimeline(c: EditorController): unknown {
         trimEndFrame: clip.trimEndFrame,
         speed: clip.speed,
         volume: clip.volume,
-        opacity: clip.opacity
+        opacity: clip.opacity,
+        color: clip.color
       }))
     }))
   }
@@ -183,6 +184,31 @@ export const editorTools: ToolDef[] = [
     (c, input) => {
       const { clipId, ...props } = input
       c.setClipProperties(clipId, props)
+      return { ok: true }
+    }
+  ),
+  tool(
+    'set_clip_color',
+    'Color-grade a clip (Phase 9.5). All fields optional and MERGE onto the current grade — omitted fields stay unchanged. Ranges: exposure -2..2 (stops), brightness -1..1, contrast 0..2 (1=neutral), saturation 0..2 (1=neutral; 0.88 ≈ Lumetri saturation 88), temperature -100..100 (negative=cooler), tint -100..100 (positive=magenta), hue -180..180 deg, gamma 0.1..3, highlights/shadows/whites/blacks -100..100 (0=neutral), lutIntensity 0..1.',
+    z.object({
+      clipId: z.string(),
+      exposure: z.number().min(-2).max(2).optional(),
+      brightness: z.number().min(-1).max(1).optional(),
+      contrast: z.number().min(0).max(2).optional(),
+      saturation: z.number().min(0).max(2).optional(),
+      temperature: z.number().min(-100).max(100).optional(),
+      tint: z.number().min(-100).max(100).optional(),
+      hue: z.number().min(-180).max(180).optional(),
+      gamma: z.number().min(0.1).max(3).optional(),
+      highlights: z.number().min(-100).max(100).optional(),
+      shadows: z.number().min(-100).max(100).optional(),
+      whites: z.number().min(-100).max(100).optional(),
+      blacks: z.number().min(-100).max(100).optional(),
+      lutIntensity: z.number().min(0).max(1).optional()
+    }),
+    (c, input) => {
+      const { clipId, ...patch } = input
+      c.setClipColor(clipId, patch)
       return { ok: true }
     }
   ),

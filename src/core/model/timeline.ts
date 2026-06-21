@@ -6,6 +6,7 @@
 // and the computed properties as pure free functions. Time is integer frames throughout.
 
 import type { ClipType } from './clipType'
+import { type ColorAdjustments, IDENTITY_COLOR } from './color'
 import {
   type AnimPair,
   type Interpolation,
@@ -108,6 +109,7 @@ export interface Clip {
   opacity: number
   transform: Transform
   crop: Crop
+  color?: ColorAdjustments
   linkGroupId?: string
   captionGroupId?: string
   textContent?: string
@@ -224,6 +226,12 @@ export function transformAt(c: Clip, frame: number): Transform {
 
 export function cropAt(c: Clip, frame: number): Crop {
   return sampleTrack(c.cropTrack, keyframeOffset(c, frame), c.crop, lerpCrop)
+}
+
+/** Per-clip color grade at a frame. v1 is static (`clip.color ?? identity`); the `frame` arg keeps
+ *  the signature parallel to `opacityAt`/`cropAt` so a future `colorTrack` slots in here unchanged. */
+export function colorAt(c: Clip, _frame: number): ColorAdjustments {
+  return c.color ?? IDENTITY_COLOR
 }
 
 /** 0…1 envelope from the fade head/tail ramps. */

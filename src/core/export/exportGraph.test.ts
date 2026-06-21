@@ -2,6 +2,7 @@
 // Export-graph builder: deterministic structure of the ffmpeg arg vector / filter_complex.
 
 import { describe, expect, it } from 'vitest'
+import { makeColorAdjustments } from '../model/color'
 import { makeClip, makeTimeline, makeTrack } from '../model/timeline'
 import { atempoFilters, buildExportGraph } from './exportGraph'
 
@@ -107,6 +108,62 @@ describe('buildExportGraph', () => {
     const tl = makeTimeline({ fps: 30, tracks: [videoTrack('v', [ok, gone])] })
     const g = buildExportGraph(tl, resolve, 'out.mp4')!
     expect(g.inputCount).toBe(1)
+  })
+})
+
+describe('buildExportGraph — color grading (P9.5)', () => {
+  const lutResolver = (ref: string): string | null => (ref.includes('missing') ? null : 'C:/luts/look.cube')
+
+  function gradedFc(color: ReturnType<typeof makeColorAdjustments>, resolveLut?: (ref: string) => string | null): string {
+    const clip = makeClip({ id: 'A', mediaRef: 'a', startFrame: 0, durationFrames: 60 })
+    clip.color = color
+    const tl = makeTimeline({ fps: 30, width: 1920, height: 1080, tracks: [videoTrack('v', [clip])] })
+    return buildExportGraph(tl, resolve, 'out.mp4', {}, resolveLut)!.filterComplex
+  }
+
+  it('emits no color filters for a neutral (identity) clip — byte-identical clip chain', () => {
+    const clip = makeClip({ id: 'A', mediaRef: 'a', startFrame: 0, durationFrames: 60 })
+    clip.color = makeColorAdjustments() // identity
+    const tl = makeTimeline({ fps: 30, width: 1920, height: 1080, tracks: [videoTrack('v', [clip])] })
+    const fc = buildExportGraph(tl, resolve, 'out.mp4')!.filterComplex
+    expect(fc).not.toContain('eq=')
+    expect(fc).not.toContain('lut3d')
+    expect(fc).not.toContain('curves=')
+    expect(fc).not.toContain('[gin0]')
+    expect(fc).toContain('[0:v]scale=1920:1080,setpts=(PTS-STARTPTS)/1+0/TB,format=yuva420p[v0]')
+  })
+
+  it('emits eq + colorbalance + curves for a no-LUT grade', () => {
+    const fc = gradedFc(
+      makeColorAdjustments({ saturation: 0.88, contrast: 0.789, temperature: -7.4, tint: 4, shadows: 8.6 })
+    )
+    expect(fc).toContain('eq=contrast=0.789:saturation=0.88')
+    expect(fc).toContain('colorbalance=')
+    expect(fc).toContain("curves=all='0/0 0.25/0.293 1/1'")
+    expect(fc).toContain('[gin0]')
+    expect(fc).toContain('[gout0]')
+    expect(fc).not.toContain('lut3d')
+  })
+
+  it('applies a full-intensity LUT inline (no split/blend)', () => {
+    const fc = gradedFc(makeColorAdjustments({ lutRef: 'preset:x', lutIntensity: 1 }), lutResolver)
+    expect(fc).toContain("lut3d=file='C\\:/luts/look.cube':interp=tetrahedral")
+    expect(fc).not.toContain('split')
+    expect(fc).not.toContain('blend=')
+  })
+
+  it('blends a partial-intensity LUT via split + blend, with grade after the blend', () => {
+    const fc = gradedFc(makeColorAdjustments({ lutRef: 'preset:x', lutIntensity: 0.5, saturation: 0.88 }), lutResolver)
+    expect(fc).toContain('split[gout0_a][gout0_b]')
+    expect(fc).toContain("[gout0_b]lut3d=file='C\\:/luts/look.cube':interp=tetrahedral[gout0_l]")
+    expect(fc).toContain("[gout0_l][gout0_a]blend=all_expr='A*0.5+B*0.5',eq=saturation=0.88[gout0]")
+  })
+
+  it('skips an unresolved LUT but still applies the grade (graceful)', () => {
+    const fc = gradedFc(makeColorAdjustments({ lutRef: 'preset:missing', lutIntensity: 0.5, saturation: 0.88 }), lutResolver)
+    expect(fc).not.toContain('lut3d')
+    expect(fc).not.toContain('split')
+    expect(fc).toContain('eq=saturation=0.88')
   })
 })
 

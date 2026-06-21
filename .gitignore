@@ -14,6 +14,11 @@ resources/ffmpeg/
 # Upstream clone kept only as a local porting reference — never published
 reference/
 
+# Client-confidential color assets — LUTs + reference docs, never commit (see docs/COLOR_GRADING_PLAN.md §9.5.3)
+Guia_Colorizacion/
+**/luts/*.cube
+*.cube
+
 # Secrets & local env (API keys are stored via Windows safeStorage/DPAPI, never committed)
 .env
 .env.*

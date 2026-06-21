@@ -8,7 +8,9 @@
 // (speed/atempo, volume, delay, mix). Not yet: rotation/flip, text rendering, per-track blend
 // modes — flagged for a later pass.
 
-import { type Clip, type Timeline, clipEndFrame, cropIsIdentity, totalFrames } from '../model/timeline'
+import { colorIsIdentity } from '../model/color'
+import { type Clip, type Timeline, clipEndFrame, colorAt, cropIsIdentity, totalFrames } from '../model/timeline'
+import { buildColorFilterChain } from './colorFilters'
 
 export interface ExportOptions {
   videoCodec?: string
@@ -74,7 +76,8 @@ export function buildExportGraph(
   timeline: Timeline,
   resolve: (mediaRef: string) => string | null,
   outputPath: string,
-  opts: ExportOptions = {}
+  opts: ExportOptions = {},
+  resolveLut?: (lutRef: string) => string | null
 ): ExportGraph | null {
   const fps = timeline.fps
   const W = timeline.width
@@ -135,21 +138,36 @@ export function buildExportGraph(
     const ry = Math.round((c.transform.centerY - c.transform.height / 2) * H)
     const sp = c.speed || 1
 
-    const filters: string[] = []
+    // Head: geometry + timing + alpha-capable pixel format. Tail: opacity + fades (need the alpha).
+    const head: string[] = []
     if (!cropIsIdentity(c.crop)) {
-      filters.push(
+      head.push(
         `crop=iw*${fmt(1 - c.crop.left - c.crop.right)}:ih*${fmt(1 - c.crop.top - c.crop.bottom)}:iw*${fmt(c.crop.left)}:ih*${fmt(c.crop.top)}`
       )
     }
-    filters.push(`scale=${rw}:${rh}`)
-    filters.push(`setpts=(PTS-STARTPTS)/${fmt(sp)}+${fmt(startSec)}/TB`)
-    filters.push('format=yuva420p')
-    if (c.opacity < 1) filters.push(`colorchannelmixer=aa=${fmt(c.opacity)}`)
-    if (c.fadeInFrames > 0) filters.push(`fade=t=in:st=${fmt(startSec)}:d=${fmt(c.fadeInFrames / fps)}:alpha=1`)
+    head.push(`scale=${rw}:${rh}`)
+    head.push(`setpts=(PTS-STARTPTS)/${fmt(sp)}+${fmt(startSec)}/TB`)
+    head.push('format=yuva420p')
+    const tail: string[] = []
+    if (c.opacity < 1) tail.push(`colorchannelmixer=aa=${fmt(c.opacity)}`)
+    if (c.fadeInFrames > 0) tail.push(`fade=t=in:st=${fmt(startSec)}:d=${fmt(c.fadeInFrames / fps)}:alpha=1`)
     if (c.fadeOutFrames > 0) {
-      filters.push(`fade=t=out:st=${fmt(endSec - c.fadeOutFrames / fps)}:d=${fmt(c.fadeOutFrames / fps)}:alpha=1`)
+      tail.push(`fade=t=out:st=${fmt(endSec - c.fadeOutFrames / fps)}:d=${fmt(c.fadeOutFrames / fps)}:alpha=1`)
     }
-    chains.push(`[${k}:v]${filters.join(',')}[v${k}]`)
+
+    // Color grade (Phase 9.5) sits between head and tail. Identity → emit nothing (byte-identical to an
+    // un-graded render). The LUT path comes from resolveLut; a missing LUT is skipped by the chain builder.
+    const color = colorAt(c, c.startFrame)
+    if (colorIsIdentity(color)) {
+      chains.push(`[${k}:v]${[...head, ...tail].join(',')}[v${k}]`)
+    } else {
+      const lutPath = color.lutRef && resolveLut ? resolveLut(color.lutRef) : null
+      const gin = `[gin${k}]`
+      const gout = `[gout${k}]`
+      chains.push(`[${k}:v]${head.join(',')}${gin}`)
+      chains.push(...buildColorFilterChain(color, lutPath, gin, gout))
+      chains.push(`${gout}${tail.length > 0 ? tail.join(',') : 'null'}[v${k}]`)
+    }
     chains.push(`${prev}[v${k}]overlay=x=${rx}:y=${ry}:enable='between(t,${fmt(startSec)},${fmt(endSec)})':eof_action=pass[ov${k}]`)
     prev = `[ov${k}]`
   })

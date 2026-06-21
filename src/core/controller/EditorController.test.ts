@@ -398,3 +398,39 @@ describe('EditorController — agent parity & persistence', () => {
     expect(reopened.canUndo()).toBe(false) // history reset on load
   })
 })
+
+describe('EditorController — color grading (P9.5)', () => {
+  it('merges partial color edits as one undo step and reverses exactly', () => {
+    const c = new EditorController()
+    const trackId = c.addTrack('video')
+    const clipId = c.addClip({ trackId, mediaRef: 'a', startFrame: 0, durationFrames: 60 })!
+    c.reset(c.getTimeline()) // clean the add-track/add-clip history
+
+    c.setClipColor(clipId, { saturation: 0.88 })
+    c.setClipColor(clipId, { contrast: 1.2 })
+    const color = c.getClip(clipId)!.color!
+    expect(color.saturation).toBe(0.88) // preserved across the second edit (merge, not reset)
+    expect(color.contrast).toBe(1.2)
+    expect(color.exposure).toBe(0) // untouched fields keep neutral defaults
+
+    expect(c.undo()).toBe(true) // one undo step per setClipColor
+    expect(c.getClip(clipId)!.color!.contrast).toBe(1) // second edit reversed
+    expect(c.getClip(clipId)!.color!.saturation).toBe(0.88) // first edit intact
+  })
+
+  it('persists color through a JSON load round-trip', () => {
+    const c = new EditorController()
+    const trackId = c.addTrack('video')
+    const clipId = c.addClip({ trackId, mediaRef: 'a', startFrame: 0, durationFrames: 60 })!
+    c.setClipColor(clipId, { saturation: 0.88, shadows: 8.6, lutRef: 'preset:guillermo-frontal-v1', lutIntensity: 0.5 })
+    const saved = JSON.parse(JSON.stringify(c.getTimeline())) as Timeline
+
+    const reopened = new EditorController()
+    reopened.load(saved)
+    const color = reopened.getClip(clipId)!.color!
+    expect(color.saturation).toBe(0.88)
+    expect(color.shadows).toBe(8.6)
+    expect(color.lutRef).toBe('preset:guillermo-frontal-v1')
+    expect(color.lutIntensity).toBe(0.5)
+  })
+})
