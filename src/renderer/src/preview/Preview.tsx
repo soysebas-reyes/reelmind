@@ -5,7 +5,14 @@
 // video decode (pooled <video> via a main-process media protocol) is the remaining P3 runtime piece.
 
 import { useEffect, useRef, useState } from 'react'
-import { type ColorAdjustments, colorIsIdentity, composeFrame, expectedPath, volumeAt } from '@core'
+import {
+  type ColorAdjustments,
+  colorIsIdentity,
+  composeFrame,
+  expectedPath,
+  timelineFrameForSourceSeconds,
+  volumeAt
+} from '@core'
 import { getController, timelineTotalFrames, useEditorStore } from '../store'
 
 /** Approximate ColorAdjustments → Canvas 2D filter. CSS filters cover brightness/contrast/saturation/
@@ -52,6 +59,7 @@ export default function Preview(): React.JSX.Element {
   const drawRef = useRef<() => void>(() => {})
   const [size, setSize] = useState({ width: 0, height: 0 })
   const [playing, setPlaying] = useState(false)
+  const [exactUrl, setExactUrl] = useState<string | null>(null)
 
   const fps = timeline.fps
   const total = timelineTotalFrames(timeline)
@@ -300,29 +308,84 @@ export default function Preview(): React.JSX.Element {
     }
   }, [])
 
-  // Playback clock — advance the controller playhead at the project fps.
+  // Playback clock — the lead on-screen VIDEO is the master clock: the playhead follows its real
+  // `currentTime`, so video, embedded audio, and the timecode stay locked across pause/resume (a
+  // free timer would race ahead while a 4K seek catches up). Falls back to a timer only when no
+  // video is playing (images / pure audio).
   useEffect(() => {
     if (!playing) return
     const c = getController()
     let last = performance.now()
-    let acc = c.getCurrentFrame()
     let raf = 0
     const tick = (now: number) => {
       const dt = (now - last) / 1000
       last = now
-      acc += dt * fps
-      const f = Math.round(acc)
-      if (total > 0 && f >= total) {
+      const tl = c.getTimeline()
+      const cur = c.getCurrentFrame()
+      let frame: number | null = null
+      for (const layer of composeFrame(tl, cur).visual) {
+        if (layer.mediaType !== 'video') continue
+        const v = videoPoolRef.current.get(layer.mediaRef)
+        if (!v || v.paused) continue
+        const clip = tl.tracks[layer.trackIndex]?.clips.find((cl) => cl.id === layer.clipId)
+        const f = clip ? timelineFrameForSourceSeconds(clip, v.currentTime, fps) : null
+        if (f !== null) {
+          frame = f
+          break
+        }
+      }
+      if (frame === null) frame = Math.round(cur + dt * fps)
+      if (total > 0 && frame >= total) {
         c.seek(total)
         setPlaying(false)
         return
       }
-      c.seek(f)
+      c.seek(frame)
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
   }, [playing, fps, total])
+
+  // Exact graded overlay when paused: the Canvas approximation can't show LUTs, so for a paused frame
+  // whose top video clip carries a grade, render the precise frame (FFmpeg — same chain as the export)
+  // and lay it over the canvas. Debounced; cleared while playing or when the frame is un-graded.
+  useEffect(() => {
+    if (playing) {
+      setExactUrl(null)
+      return
+    }
+    const { manifest, projectDir } = useEditorStore.getState()
+    let req: { path: string; seconds: number; color: ColorAdjustments } | null = null
+    for (const layer of composeFrame(timeline, currentFrame).visual) {
+      if (layer.mediaType !== 'video') continue
+      const clip = timeline.tracks[layer.trackIndex]?.clips.find((c) => c.id === layer.clipId)
+      if (!clip?.color || colorIsIdentity(clip.color)) continue
+      const path = expectedPath(manifest, layer.mediaRef, projectDir)
+      if (path) {
+        req = { path, seconds: Math.max(0, layer.sourceSeconds), color: clip.color }
+        break
+      }
+    }
+    if (!req) {
+      setExactUrl(null)
+      return
+    }
+    const r = req
+    let cancelled = false
+    const t = setTimeout(() => {
+      void window.editorBridge
+        .colorStill({ mediaPath: r.path, seekSeconds: r.seconds, color: r.color, width: 900, projectDir })
+        .then((url) => {
+          if (!cancelled) setExactUrl(url)
+        })
+    }, 220)
+    return () => {
+      cancelled = true
+      clearTimeout(t)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentFrame, playing, timeline])
 
   const togglePlay = (): void => {
     const c = getController()
@@ -334,6 +397,7 @@ export default function Preview(): React.JSX.Element {
     <div className="preview">
       <div className="preview-stage" ref={wrapRef}>
         <canvas ref={canvasRef} />
+        {!playing && exactUrl && <img className="preview-exact" src={exactUrl} alt="" />}
       </div>
       <div className="preview-transport">
         <button className="play" onClick={togglePlay} disabled={total === 0} title={playing ? 'Pause' : 'Play'}>

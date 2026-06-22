@@ -16,7 +16,8 @@ import {
   colorIsIdentity,
   expectedPath,
   makeColorAdjustments,
-  mergeColor
+  mergeColor,
+  parseLutRef
 } from '@core'
 import { getController, useEditorStore } from '../store'
 
@@ -52,7 +53,7 @@ interface Sample {
   url: string | null
 }
 
-export default function ColorInspector(): React.JSX.Element {
+export default function ColorInspector({ onClose }: { onClose?: () => void }): React.JSX.Element {
   const selectedClipIds = useEditorStore((s) => s.selectedClipIds)
   const timeline = useEditorStore((s) => s.timeline)
   const manifest = useEditorStore((s) => s.manifest)
@@ -68,6 +69,9 @@ export default function ColorInspector(): React.JSX.Element {
   const [rawUrl, setRawUrl] = useState<string | null>(null)
   const [samples, setSamples] = useState<Sample[]>([])
   const [lutLib, setLutLib] = useState<string | null>(null)
+  const [appliedMsg, setAppliedMsg] = useState<string | null>(null)
+  const [activePresetId, setActivePresetId] = useState<string | null>(null)
+  const [applying, setApplying] = useState(false)
   const lastClipId = useRef<string | undefined>(undefined)
 
   const mediaPath = clip ? expectedPath(manifest, clip.mediaRef, projectDir) : null
@@ -112,6 +116,7 @@ export default function ColorInspector(): React.JSX.Element {
   }, [draft, mediaPath, seekSeconds, lutLib])
 
   function update(key: NumericColorKey, value: number): void {
+    setActivePresetId(null)
     setDraft((d) => ({ ...d, [key]: value }) as ColorAdjustments)
   }
 
@@ -119,8 +124,9 @@ export default function ColorInspector(): React.JSX.Element {
     if (clipId) getController().setClipColor(clipId, color, 'Color grade')
   }
 
-  function loadPreset(color: ColorAdjustments): void {
+  function loadPreset(color: ColorAdjustments, presetId?: string): void {
     const next = makeColorAdjustments(color)
+    setActivePresetId(presetId ?? null)
     setDraft(next)
     applyToClip(next)
   }
@@ -139,16 +145,21 @@ export default function ColorInspector(): React.JSX.Element {
     setSamples((s) => [...s, { id, name, color, url }])
   }
 
-  function elegir(): void {
+  async function elegir(): Promise<void> {
     const c = getController()
     const ids = c
       .getTimeline()
       .tracks.filter((t) => t.type !== 'audio')
       .flatMap((t) => t.clips.map((cl) => cl.id))
     if (ids.length === 0) return
+    setApplying(true)
     c.transact('Aplicar look a todo el video', () => {
       for (const id of ids) c.setClipColor(id, draft)
     })
+    // Verification beat: render the graded frame to confirm it composes before showing the full video.
+    await renderStill(draft, 720)
+    setApplying(false)
+    onClose?.()
   }
 
   async function pickLutFolder(): Promise<void> {
@@ -165,6 +176,12 @@ export default function ColorInspector(): React.JSX.Element {
 
   return (
     <div className="ci-modal">
+      {applying && (
+        <div className="ci-loading">
+          <div className="spinner" />
+          <p>Colorizando todo el video…</p>
+        </div>
+      )}
       <div className="ci-left">
         <div className="ci-preview big">
           {previewUrl ? <img src={previewUrl} alt="preview" /> : <div className="ci-preview-empty">Preview…</div>}
@@ -194,14 +211,26 @@ export default function ColorInspector(): React.JSX.Element {
           <h3>Configuraciones recomendadas</h3>
           <div className="ci-presets">
             {DOCUMENT_PRESETS.map((p) => (
-              <button key={p.id} className="ci-preset" title={p.source} onClick={() => loadPreset(p.color)}>
+              <button
+                key={p.id}
+                className={`ci-preset${activePresetId === p.id ? ' active' : ''}`}
+                title={p.source}
+                onClick={() => loadPreset(p.color, p.id)}
+              >
                 {p.name}
               </button>
             ))}
           </div>
           <div className="ci-looks">
             {GENERIC_LOOKS.map((l) => (
-              <button key={l.id} className="ci-look" onClick={() => setDraft((d) => mergeColor(d, l.patch))}>
+              <button
+                key={l.id}
+                className="ci-look"
+                onClick={() => {
+                  setActivePresetId(null)
+                  setDraft((d) => mergeColor(d, l.patch))
+                }}
+              >
                 {l.name}
               </button>
             ))}
@@ -222,6 +251,17 @@ export default function ColorInspector(): React.JSX.Element {
             <button className="ci-link" onClick={reset}>
               Reset
             </button>
+          </div>
+          <div className="ci-lut">
+            <span>LUT</span>
+            <strong title={draft.lutRef ?? ''}>
+              {draft.lutRef ? parseLutRef(draft.lutRef).name.replace(/\.cube$/i, '') : 'Ninguno'}
+            </strong>
+            {draft.lutRef && (
+              <button className="ci-link" onClick={() => setDraft((d) => ({ ...d, lutRef: undefined }))}>
+                Quitar
+              </button>
+            )}
           </div>
           {SLIDERS.map((s) => (
             <div className="ci-row" key={s.key}>
@@ -247,13 +287,21 @@ export default function ColorInspector(): React.JSX.Element {
         </div>
 
         <div className="ci-actions">
-          <button onClick={() => applyToClip(draft)} disabled={colorIsIdentity(draft)}>
+          <button
+            onClick={() => {
+              applyToClip(draft)
+              setAppliedMsg('✓ Aplicado a este clip')
+              window.setTimeout(() => setAppliedMsg(null), 2200)
+            }}
+            disabled={colorIsIdentity(draft)}
+          >
             Aplicar a este clip
           </button>
           <button onClick={() => void guardarMuestra()}>+ Guardar muestra</button>
-          <button className="primary" onClick={elegir}>
-            Elegir (todo el video)
+          <button className="primary" onClick={() => void elegir()}>
+            Elegir (aplicar a todo y cerrar)
           </button>
+          {appliedMsg && <p className="ci-applied">{appliedMsg}</p>}
         </div>
       </div>
     </div>

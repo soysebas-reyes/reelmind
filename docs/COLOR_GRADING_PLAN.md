@@ -210,6 +210,14 @@ stage; see [`App.tsx:170`](../src/renderer/src/App.tsx)):
 > **tweak every parameter → one-click load a recommended config → see an *exact* preview of a shot →
 > save several *muestras* → compare them against the RAW → "Elegir" one look → apply to the whole video.**
 
+> **⚠️ Status (2026-06-21) — shipped on branch `feat/p95-colorization-core`, NOT merged.** The headless
+> core (model, export chain, presets, LUT resolver, still) **and** the renderer UI (modal Explorer with
+> resizable panels, exact still preview, recommended presets, `set_clip_color` tool) are implemented and
+> unit-tested (209 tests green; build green). **Open bug to investigate next session → see §9.5.12:** the
+> grade/LUT shows correctly in the *paused* preview and in the *export*, but **NOT during live playback**
+> (the Canvas-2D preview can't sample a 3D `.cube` LUT). The play→pause→resume sync fix
+> (video-as-master-clock) also landed this session.
+
 ### 9.5.1 Goal & origin
 
 This is the in-app version of a loop we first ran by hand with FFmpeg (raw vs LUT V.1/V.2, LUT-intensity
@@ -378,6 +386,34 @@ color); `colorSample` round-trip through timeline JSON.
   LUT carries the dominant look, so small WB drift is cosmetic.
 - **Saturation foot-gun:** Lumetri 100 = neutral → model `1.0` (range 0..2). Centralize the `/100`
   conversion in `presets.ts` and test it (a raw `88` in the model would mean 88× saturation).
+
+### 9.5.12 ⚠️ OPEN BUG — live playback shows no colorization (investigate next session)
+
+**Symptom (user-reported, 2026-06-21):** after "Elegir", the *paused* preview frame is correctly graded
+(LUT included), but **pressing Play shows the clip ungraded** — the whole video plays without the look.
+
+**Root cause — two different preview paths:**
+- *Paused* → `generateStillWithColor` (FFmpeg, exact, incl. `lut3d`) overlaid on the canvas
+  ([`Preview.tsx`](../src/renderer/src/preview/Preview.tsx), the `exactUrl` effect). ✅ shows the LUT.
+- *Playing* → Canvas-2D `ctx.filter` (`colorToCanvasFilter` in `Preview.tsx`), which only does
+  brightness/contrast/saturation/hue and **cannot sample a 3D `.cube` LUT**. ❌ no LUT. Because the
+  Guillermo looks are LUT-dominant, live playback looks essentially uncolorized.
+
+This is **not a data bug**: `set_clip_color` correctly stores the grade on every clip and the FFmpeg
+**export is exact**. It is a **preview-fidelity gap during playback**.
+
+**Options to investigate next session (pick one):**
+1. **WebGL preview compositor (recommended; was the v1.1 note in §1.3).** Render the live preview in
+   WebGL and sample the loaded `.cube` as a 3D texture in a fragment shader (plus temperature/tonal/
+   intensity-blend) → exact, WYSIWYG live playback. Biggest correctness win; medium lift.
+2. **Graded proxy on "Elegir".** Render a low-res graded proxy via FFmpeg (full color chain) and play
+   THAT in the preview instead of the raw source. Exact playback, no shader work, but adds a render
+   step + temp-file lifecycle + invalidation whenever the grade changes.
+3. **Status quo + honest labeling.** Keep approximate-while-playing / exact-when-paused / exact-export
+   and label the transport. Lowest effort; does NOT satisfy "watch the colorized video play".
+
+**Recommendation:** option 1 (WebGL) for a true live preview; option 2 if WebGL is too costly.
+Also re-verify the play/pause/resume **video-as-master-clock** fix once the preview path changes.
 
 ---
 

@@ -280,7 +280,7 @@ export default function App() {
                 ✕
               </button>
             </div>
-            <ColorInspector />
+            <ColorInspector onClose={() => setColorOpen(false)} />
           </div>
         </div>
       )}
