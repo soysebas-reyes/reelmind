@@ -5,8 +5,21 @@
 // video decode (pooled <video> via a main-process media protocol) is the remaining P3 runtime piece.
 
 import { useEffect, useRef, useState } from 'react'
-import { composeFrame, expectedPath, volumeAt } from '@core'
+import { type ColorAdjustments, colorIsIdentity, composeFrame, expectedPath, volumeAt } from '@core'
 import { getController, timelineTotalFrames, useEditorStore } from '../store'
+
+/** Approximate ColorAdjustments → Canvas 2D filter. CSS filters cover brightness/contrast/saturation/
+ *  hue; temperature/tint/tonal/LUT are NOT representable here — the FFmpeg still/export is the exact
+ *  reference. Intentionally a fast approximation for live scrubbing. */
+function colorToCanvasFilter(c: ColorAdjustments): string {
+  const parts: string[] = []
+  const brightness = 1 + c.brightness + c.exposure * 0.1
+  if (Math.abs(brightness - 1) > 1e-6) parts.push(`brightness(${brightness.toFixed(3)})`)
+  if (c.contrast !== 1) parts.push(`contrast(${c.contrast})`)
+  if (c.saturation !== 1) parts.push(`saturate(${c.saturation})`)
+  if (c.hue !== 0) parts.push(`hue-rotate(${c.hue}deg)`)
+  return parts.length > 0 ? parts.join(' ') : 'none'
+}
 
 /** Renderer-usable URL for any media asset (video/audio), served by the main-process media protocol. */
 function assetMediaUrl(mediaRef: string): string | null {
@@ -169,9 +182,15 @@ export default function Preview(): React.JSX.Element {
         ctx.textAlign = 'center'
         ctx.textBaseline = 'middle'
         ctx.fillText(layer.textContent || 'Text', fx + cx * sx, fy + cy * sy, dw)
-      } else if (!drawSource(ctx, layer.mediaType, layer.mediaRef, layer.crop, dx, dy, dw, dh)) {
-        ctx.fillStyle = '#23232e'
-        ctx.fillRect(dx, dy, dw, dh)
+      } else {
+        // Approximate color grade (P9.5). Reset by ctx.restore() at the end of this layer.
+        const clip = timeline.tracks[layer.trackIndex]?.clips.find((c) => c.id === layer.clipId)
+        if (clip?.color && !colorIsIdentity(clip.color)) ctx.filter = colorToCanvasFilter(clip.color)
+        if (!drawSource(ctx, layer.mediaType, layer.mediaRef, layer.crop, dx, dy, dw, dh)) {
+          ctx.filter = 'none'
+          ctx.fillStyle = '#23232e'
+          ctx.fillRect(dx, dy, dw, dh)
+        }
       }
       ctx.restore()
     }

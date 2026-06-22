@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AiCompleteRequest,
   AiCompleteResponse,
+  ColorStillRequest,
   DetectSilencesRequest,
   ExportRequest,
   ExportResult,
@@ -41,6 +42,11 @@ const editorBridge = {
   exportTimeline: (req: ExportRequest): Promise<ExportResult> => ipcRenderer.invoke('project:export', req),
   detectSilences: (req: DetectSilencesRequest): Promise<SilenceSeconds[]> =>
     ipcRenderer.invoke('media:detectSilences', req),
+
+  // Color (Phase 9.5)
+  colorStill: (req: ColorStillRequest): Promise<string | null> => ipcRenderer.invoke('color:still', req),
+  colorGetLutLibrary: (): Promise<string | null> => ipcRenderer.invoke('color:getLutLibrary'),
+  colorSetLutLibrary: (): Promise<string | null> => ipcRenderer.invoke('color:setLutLibrary'),
 
   aiHasKey: (): Promise<boolean> => ipcRenderer.invoke('ai:hasKey'),
   aiSetKey: (key: string): Promise<void> => ipcRenderer.invoke('ai:setKey', key),

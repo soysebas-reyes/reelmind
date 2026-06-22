@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Wire types shared across main, preload, and renderer (type-only; no runtime code).
 
-import type { ClipType, MediaManifest, MediaManifestEntry, SilenceSeconds, Timeline } from '../core'
+import type { ClipType, ColorAdjustments, MediaManifest, MediaManifestEntry, SilenceSeconds, Timeline } from '../core'
 
 export type { SilenceSeconds }
 
@@ -84,6 +84,15 @@ export interface DetectSilencesRequest {
   path: string
   noiseDb?: number
   minDurationSec?: number
+}
+
+/** Request for `color:still` — render one color-graded preview frame as a base64 data URL (P9.5). */
+export interface ColorStillRequest {
+  mediaPath: string
+  seekSeconds: number
+  color: ColorAdjustments
+  width?: number
+  projectDir: string | null
 }
 
 export const PROJECT_SCHEMA_VERSION = 1

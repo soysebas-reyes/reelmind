@@ -2,10 +2,19 @@
 // Registers all ipcMain handlers backing the preload `editorBridge`.
 
 import { BrowserWindow, dialog, ipcMain } from 'electron'
-import type { AiCompleteRequest, DetectSilencesRequest, ExportRequest, ProjectData, ThumbnailRequest } from '../shared/ipc'
+import type {
+  AiCompleteRequest,
+  ColorStillRequest,
+  DetectSilencesRequest,
+  ExportRequest,
+  ProjectData,
+  ThumbnailRequest
+} from '../shared/ipc'
 import { complete } from './ai/anthropic'
 import { clearApiKey, hasApiKey, setApiKey } from './ai/secrets'
-import { checkFfmpeg, generateThumbnail } from './ffmpeg'
+import { getLutLibraryDir, profileLutDir, setLutLibraryDir } from './color/colorSettings'
+import { resolveLut } from './color/lutResolver'
+import { checkFfmpeg, generateStillWithColor, generateThumbnail } from './ffmpeg'
 import { exportTimeline } from './ffmpeg/exporter'
 import { detectSilences } from './ffmpeg/silence'
 import { importMedia } from './media/importer'
@@ -109,6 +118,29 @@ export function registerIpc(): void {
   ipcMain.handle('media:detectSilences', (_e, req: DetectSilencesRequest) =>
     detectSilences(req.path, { noiseDb: req.noiseDb, minDurationSec: req.minDurationSec })
   )
+
+  // Color (Phase 9.5): exact graded preview still + the side-loaded LUT library folder.
+  ipcMain.handle('color:still', (_e, req: ColorStillRequest) => {
+    const lutPath = req.color.lutRef
+      ? resolveLut(req.color.lutRef, {
+          projectDir: req.projectDir,
+          libraryDir: getLutLibraryDir(),
+          profileDir: profileLutDir()
+        })
+      : null
+    return generateStillWithColor(req.mediaPath, req.seekSeconds, req.color, { width: req.width, lutPath })
+  })
+  ipcMain.handle('color:getLutLibrary', () => getLutLibraryDir())
+  ipcMain.handle('color:setLutLibrary', async () => {
+    const win = focused()
+    const props: 'openDirectory'[] = ['openDirectory']
+    const res = win
+      ? await dialog.showOpenDialog(win, { properties: props })
+      : await dialog.showOpenDialog({ properties: props })
+    if (res.canceled || !res.filePaths[0]) return getLutLibraryDir()
+    setLutLibraryDir(res.filePaths[0])
+    return res.filePaths[0]
+  })
 
   ipcMain.handle('ai:hasKey', () => hasApiKey())
   ipcMain.handle('ai:setKey', (_e, key: string) => setApiKey(key))

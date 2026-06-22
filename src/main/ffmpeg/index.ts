@@ -2,3 +2,4 @@
 export * from './binary'
 export * from './probe'
 export * from './thumbnail'
+export * from './colorStill'
