@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { type CSSProperties, useEffect, useState } from 'react'
 import { type ClipType, type MediaManifestEntry } from '@core'
+import type { ExportQuality } from '../../shared/ipc'
 import { getController, useEditorStore } from './store'
 import Timeline from './timeline/Timeline'
 import Preview from './preview/Preview'
@@ -15,6 +16,11 @@ const RESOLUTIONS: { label: string; w: number; h: number }[] = [
   { label: '1080×1080 (1:1)', w: 1080, h: 1080 }
 ]
 const FPS_OPTIONS = [24, 25, 30, 50, 60]
+const QUALITY_OPTIONS: { value: ExportQuality; label: string }[] = [
+  { value: 'high', label: 'Alta' },
+  { value: 'veryHigh', label: 'Muy alta' },
+  { value: 'max', label: 'Máxima (sin pérdida visual)' }
+]
 
 const TYPE_GLYPH: Record<ClipType, string> = {
   video: '🎬',
@@ -128,11 +134,27 @@ export default function App() {
     openProject,
     exportProject,
     setResolution,
-    setFps
+    setFps,
+    exportQuality,
+    setExportQuality,
+    exportProgress,
+    exportResult,
+    dismissExportResult,
+    revealExport,
+    extractAudioFromClip,
+    analyzeSyncForSelection,
+    applySyncAngles,
+    dismissSyncResult,
+    syncBusy,
+    syncResult
   } = useEditorStore()
 
   const [layout, setLayout] = useState<Layout>(loadLayout)
   const [colorOpen, setColorOpen] = useState(false)
+  // Sync confirmation modal options (frontal/lateral swap, which audio to keep, per-angle color).
+  const [syncSwap, setSyncSwap] = useState(false)
+  const [syncKeepAudio, setSyncKeepAudio] = useState<'frontal' | 'lateral'>('frontal')
+  const [syncAutoColor, setSyncAutoColor] = useState(true)
   useEffect(() => {
     localStorage.setItem('reelmind.layout', JSON.stringify(layout))
   }, [layout])
@@ -149,6 +171,18 @@ export default function App() {
   }, [dirty, projectDir, timeline, manifest, saveProject])
 
   const ffmpegOk = ffmpeg?.ffmpeg && ffmpeg?.ffprobe
+
+  // Multicam actions key off how many *video* clips are selected.
+  const selectedVideoIds = selectedClipIds.filter((id) => getController().getClip(id)?.mediaType === 'video')
+  const canExtractAudio = selectedVideoIds.length === 1
+  const canSyncAngles = selectedVideoIds.length === 2
+  const clipDisplayName = (clipId?: string): string => {
+    if (!clipId) return ''
+    const clip = getController().getClip(clipId)
+    return (clip && manifest.entries.find((x) => x.id === clip.mediaRef)?.name) || 'Clip'
+  }
+  const syncFrontalId = syncSwap ? syncResult?.lateralClipId : syncResult?.frontalClipId
+  const syncLateralId = syncSwap ? syncResult?.frontalClipId : syncResult?.lateralClipId
 
   return (
     <div className="app">
@@ -186,9 +220,20 @@ export default function App() {
           <label>
             FPS
             <select value={timeline.fps} onChange={(e) => setFps(Number(e.target.value))}>
+              {FPS_OPTIONS.every((f) => f !== timeline.fps) && <option value={timeline.fps}>{timeline.fps}</option>}
               {FPS_OPTIONS.map((f) => (
                 <option key={f} value={f}>
                   {f}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Calidad
+            <select value={exportQuality} onChange={(e) => setExportQuality(e.target.value as ExportQuality)}>
+              {QUALITY_OPTIONS.map((q) => (
+                <option key={q.value} value={q.value}>
+                  {q.label}
                 </option>
               ))}
             </select>
@@ -217,6 +262,28 @@ export default function App() {
             title={selectedClipIds.length === 0 ? 'Selecciona un clip para colorizar' : 'Colorización'}
           >
             🎨 Color
+          </button>
+          <button
+            onClick={() => {
+              const id = selectedVideoIds[0]
+              if (id) void extractAudioFromClip(id)
+            }}
+            disabled={!canExtractAudio || !!busy}
+            title={canExtractAudio ? 'Extraer el audio a un asset nuevo' : 'Selecciona un solo clip de video'}
+          >
+            🎙️ Extraer audio
+          </button>
+          <button
+            onClick={() => {
+              setSyncSwap(false)
+              setSyncKeepAudio('frontal')
+              setSyncAutoColor(true)
+              void analyzeSyncForSelection()
+            }}
+            disabled={!canSyncAngles || !!busy || syncBusy}
+            title={canSyncAngles ? 'Alinear dos ángulos por su audio' : 'Selecciona exactamente 2 clips de video'}
+          >
+            🎬 Sincronizar ángulos
           </button>
         </div>
       </header>
@@ -281,6 +348,137 @@ export default function App() {
               </button>
             </div>
             <ColorInspector onClose={() => setColorOpen(false)} />
+          </div>
+        </div>
+      )}
+
+      {/* Blocking export overlay: a long render must finish before the .mp4 is playable, so we show
+          real progress and explicitly tell the user not to open the file / close the app until done. */}
+      {exportProgress !== null && (
+        <div className="modal-backdrop">
+          <div className="modal export-modal" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="spinner" />
+            <h2>Exportando tu video…</h2>
+            <div className="export-bar">
+              <div className="export-bar-fill" style={{ width: `${Math.round(exportProgress * 100)}%` }} />
+            </div>
+            <p className="export-pct">{Math.round(exportProgress * 100)}%</p>
+            <p className="export-note">
+              Puede tardar varios minutos en videos largos o en alta calidad. No cierres la app; el archivo
+              no se podrá reproducir hasta que termine.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {exportResult && (
+        <div className="modal-backdrop" onMouseDown={() => dismissExportResult()}>
+          <div className="modal export-modal" onMouseDown={(e) => e.stopPropagation()}>
+            {exportResult.ok ? (
+              <>
+                <div className="export-check">✓</div>
+                <h2>Exportación completa</h2>
+                <p className="export-path" title={exportResult.outputPath}>
+                  {exportResult.outputPath}
+                </p>
+                <div className="export-actions">
+                  {exportResult.outputPath && (
+                    <button className="primary" onClick={() => revealExport(exportResult.outputPath as string)}>
+                      Mostrar en carpeta
+                    </button>
+                  )}
+                  <button onClick={() => dismissExportResult()}>Cerrar</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="export-fail">✗</div>
+                <h2>La exportación falló</h2>
+                <p className="export-err">{exportResult.error}</p>
+                <div className="export-actions">
+                  <button onClick={() => dismissExportResult()}>Cerrar</button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {syncBusy && (
+        <div className="modal-backdrop">
+          <div className="modal export-modal" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="spinner" />
+            <h2>Analizando audio para sincronizar…</h2>
+            <p className="export-note">Comparando las pistas de audio de ambos ángulos. Puede tardar unos segundos.</p>
+          </div>
+        </div>
+      )}
+
+      {syncResult && (
+        <div className="modal-backdrop" onMouseDown={() => dismissSyncResult()}>
+          <div className="modal export-modal" onMouseDown={(e) => e.stopPropagation()}>
+            {syncResult.ok ? (
+              <>
+                <h2>Sincronización detectada</h2>
+                <p className="sync-angles">
+                  <strong>Frontal:</strong> {clipDisplayName(syncFrontalId)} · <strong>Lateral:</strong>{' '}
+                  {clipDisplayName(syncLateralId)}{' '}
+                  <button className="ci-link" onClick={() => setSyncSwap((v) => !v)} title="Intercambiar frontal/lateral">
+                    ⇄ Intercambiar
+                  </button>
+                </p>
+                <p className="export-pct">Desfase: {syncResult.offsetSeconds?.toFixed(3)} s</p>
+                <p className={`sync-conf ${syncResult.reliable ? 'ok' : 'low'}`}>
+                  Confianza: {Math.round((syncResult.confidence ?? 0) * 100)}%
+                </p>
+                {!syncResult.reliable && (
+                  <p className="export-note">
+                    ⚠️ Confianza baja: revisa la alineación tras aplicar; quizá debas ajustar manualmente arrastrando un
+                    clip.
+                  </p>
+                )}
+                <label className="sync-keep">
+                  Mantener audio de:
+                  <select value={syncKeepAudio} onChange={(e) => setSyncKeepAudio(e.target.value as 'frontal' | 'lateral')}>
+                    <option value="frontal">Frontal</option>
+                    <option value="lateral">Lateral</option>
+                  </select>
+                </label>
+                <label className="sync-keep">
+                  <input type="checkbox" checked={syncAutoColor} onChange={(e) => setSyncAutoColor(e.target.checked)} />
+                  Aplicar colorización por ángulo (Frontal / Lateral)
+                </label>
+                <div className="export-actions">
+                  <button
+                    className="primary"
+                    onClick={() => {
+                      if (syncFrontalId && syncLateralId && syncResult.offsetSeconds !== undefined) {
+                        void applySyncAngles({
+                          frontalClipId: syncFrontalId,
+                          lateralClipId: syncLateralId,
+                          offsetSeconds: syncSwap ? -syncResult.offsetSeconds : syncResult.offsetSeconds,
+                          keepAudioOf: syncKeepAudio,
+                          autoColor: syncAutoColor
+                        })
+                      }
+                      dismissSyncResult()
+                    }}
+                  >
+                    Aplicar
+                  </button>
+                  <button onClick={() => dismissSyncResult()}>Cancelar</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="export-fail">✗</div>
+                <h2>No se pudo analizar</h2>
+                <p className="export-err">{syncResult.error}</p>
+                <div className="export-actions">
+                  <button onClick={() => dismissSyncResult()}>Cerrar</button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

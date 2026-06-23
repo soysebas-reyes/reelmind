@@ -5,7 +5,7 @@
 // this so they behave identically.
 
 import { type FrameCut, type SilenceSeconds, type ToolCallResult, executeTool, expectedPath, silencesToCuts } from '@core'
-import { getController, useEditorStore } from '../store'
+import { type SyncAnglesInput, getController, useEditorStore } from '../store'
 
 /** Import sources (file paths, http(s) URLs, or folders) through the store and report asset ids. */
 async function importAndReport(sources: string[]): Promise<ToolCallResult> {
@@ -120,6 +120,17 @@ export async function runEditorTool(name: string, input: unknown): Promise<ToolC
 
   if (name === 'remove_silences') {
     return removeSilences((input ?? {}) as RemoveSilencesInput)
+  }
+
+  if (name === 'extract_audio') {
+    const { clipId, assetId } = (input ?? {}) as { clipId?: string; assetId?: string }
+    const target = clipId ?? assetId ?? getController().getSelectedClipIds()[0]
+    if (!target) return { ok: false, error: 'extract_audio: selecciona un clip o pasa clipId/assetId.' }
+    return useEditorStore.getState().extractAudioFromClip(target)
+  }
+
+  if (name === 'sync_angles') {
+    return useEditorStore.getState().syncAnglesTool((input ?? {}) as SyncAnglesInput)
   }
 
   return executeTool(getController(), name, input)

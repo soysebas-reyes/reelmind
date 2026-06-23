@@ -166,10 +166,11 @@ export default function ColorInspector({ onClose }: { onClose?: () => void }): R
     setLutLib(await window.editorBridge.colorSetLutLibrary())
   }
 
-  if (!clipId || !clip) {
+  const isColorable = clip && (clip.mediaType === 'video' || clip.mediaType === 'image')
+  if (!clipId || !clip || !isColorable) {
     return (
       <div className="ci-empty">
-        <p className="empty-sub">Selecciona un clip de video en la línea de tiempo para colorizar.</p>
+        <p className="empty-sub">Selecciona un clip de video (o imagen) en la línea de tiempo para colorizar.</p>
       </div>
     )
   }

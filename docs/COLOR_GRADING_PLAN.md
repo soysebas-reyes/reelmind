@@ -213,10 +213,10 @@ stage; see [`App.tsx:170`](../src/renderer/src/App.tsx)):
 > **⚠️ Status (2026-06-21) — shipped on branch `feat/p95-colorization-core`, NOT merged.** The headless
 > core (model, export chain, presets, LUT resolver, still) **and** the renderer UI (modal Explorer with
 > resizable panels, exact still preview, recommended presets, `set_clip_color` tool) are implemented and
-> unit-tested (209 tests green; build green). **Open bug to investigate next session → see §9.5.12:** the
-> grade/LUT shows correctly in the *paused* preview and in the *export*, but **NOT during live playback**
-> (the Canvas-2D preview can't sample a 3D `.cube` LUT). The play→pause→resume sync fix
-> (video-as-master-clock) also landed this session.
+> unit-tested (215 tests green; build green). **Live-playback LUT (§9.5.12) — FIX IMPLEMENTED (WebGL),
+> pending on-device visual confirmation:** a WebGL2 per-layer color pass now samples the 3D `.cube` and
+> applies the full grade live, so playback/scrub match the paused still and export. The play→pause→resume
+> sync fix (video-as-master-clock) landed earlier and was left untouched by this change.
 
 ### 9.5.1 Goal & origin
 
@@ -387,7 +387,31 @@ color); `colorSample` round-trip through timeline JSON.
 - **Saturation foot-gun:** Lumetri 100 = neutral → model `1.0` (range 0..2). Centralize the `/100`
   conversion in `presets.ts` and test it (a raw `88` in the model would mean 88× saturation).
 
-### 9.5.12 ⚠️ OPEN BUG — live playback shows no colorization (investigate next session)
+### 9.5.12 ✅ RESOLVED (implementation) — live playback now shows the LUT (WebGL preview)
+
+**Fix shipped (2026-06-21):** chose **option 1 (WebGL)**. A WebGL2 per-layer color stage
+([`src/renderer/src/preview/colorGL.ts`](../src/renderer/src/preview/colorGL.ts)) samples the resolved
+`.cube` as a 3D texture and applies the full grade in a fragment shader, in the **same order as the
+export** (LUT → intensity blend → eq → hue → colorbalance → curves), reusing the export's calibration
+constants (now exported from [`colorFilters.ts`](../src/core/export/colorFilters.ts)). `Preview.tsx`'s
+`draw()` routes graded video/image layers through it (`ctx.drawImage(glCanvas, …)` inside the existing
+transform/opacity/rotation save-block — **the 2D compositor, master-clock, and audio paths are
+untouched**), falling back to the Canvas-2D CSS approximation only when un-graded or WebGL2 is
+unavailable. The redundant paused FFmpeg-still overlay was removed (WebGL now shows the LUT paused
+*and* playing; the Explorer keeps its own exact FFmpeg still as the decision reference).
+
+- **LUT delivery:** new pure parser `parseCubeLut` ([`core/color/lut.ts`](../src/core/color/lut.ts),
+  unit-tested incl. the real 65³ client LUT) + IPC `color:lutData` (main resolves via the same
+  `resolveLut` order as `color:still`, parses, returns grid data; renderer caches per `lutRef`, uploads
+  once, retries a miss after 3 s so configuring the LUT folder mid-session self-heals).
+- **Fidelity:** LUT is trilinear (hardware) vs FFmpeg tetrahedral — cosmetically identical for these
+  film LUTs; WB/tone use the same approximate constants as the still/export, so preview ≈ still ≈ export.
+- **Verified headless:** typecheck (node+web), 215 tests, production build all green; real client `.cube`
+  (65³) parses to a normalized 0..1 grid. **Pending: on-device visual confirmation** that pressing Play
+  shows the graded look, and a re-check of play/pause/resume sync.
+
+<details>
+<summary>Original bug report &amp; options considered (kept for history)</summary>
 
 **Symptom (user-reported, 2026-06-21):** after "Elegir", the *paused* preview frame is correctly graded
 (LUT included), but **pressing Play shows the clip ungraded** — the whole video plays without the look.
@@ -414,6 +438,8 @@ This is **not a data bug**: `set_clip_color` correctly stores the grade on every
 
 **Recommendation:** option 1 (WebGL) for a true live preview; option 2 if WebGL is too costly.
 Also re-verify the play/pause/resume **video-as-master-clock** fix once the preview path changes.
+
+</details>
 
 ---
 

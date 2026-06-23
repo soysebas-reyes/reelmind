@@ -60,7 +60,8 @@ export function summarizeTimeline(c: EditorController): unknown {
         speed: clip.speed,
         volume: clip.volume,
         opacity: clip.opacity,
-        color: clip.color
+        color: clip.color,
+        linkGroupId: clip.linkGroupId
       }))
     }))
   }
@@ -276,6 +277,26 @@ export const editorTools: ToolDef[] = [
       throw new Error('remove_silences is executed by the host app, not the core executor')
     }
   ),
+  tool(
+    'extract_audio',
+    "Extract a video's audio track into a NEW audio asset in the bin. Pass `clipId` (a timeline clip) or `assetId` (a bin asset); defaults to the selected clip. Returns the new audio assetId. NOTE: executed by the host app (FFmpeg + media bin), not the timeline core.",
+    z.object({ clipId: z.string().optional(), assetId: z.string().optional() }),
+    () => {
+      throw new Error('extract_audio is executed by the host app, not the core executor')
+    }
+  ),
+  tool(
+    'sync_angles',
+    "Align two camera angles of the SAME take by their audio (cross-correlation): place them on two video tracks at the matching time offset, mute both videos, add the kept angle's audio on its own track (continuous audio for cutting between angles), and tag both clips with a shared linkGroupId. Pass `clipIds` (exactly 2 video clips already on the timeline) or use the current selection; `keepAudioOf` ('first'|'second', default 'first') chooses which angle's audio to keep; `autoColor` (default true) applies the Guillermo Frontal/Lateral LUT per angle. Returns offsetSeconds + confidence. NOTE: executed by the host app (FFmpeg + filesystem), not the timeline core.",
+    z.object({
+      clipIds: z.array(z.string()).length(2).optional(),
+      keepAudioOf: z.enum(['first', 'second']).optional(),
+      autoColor: z.boolean().optional()
+    }),
+    () => {
+      throw new Error('sync_angles is executed by the host app, not the core executor')
+    }
+  ),
   tool('undo', 'Undo the last edit.', z.object({}).strict(), (c) => ({ done: c.undo() })),
   tool('redo', 'Redo the last undone edit.', z.object({}).strict(), (c) => ({ done: c.redo() }))
 ]
@@ -285,7 +306,9 @@ export const HOST_EXECUTED_TOOLS: ReadonlySet<string> = new Set([
   'import_media',
   'import_folder',
   'export',
-  'remove_silences'
+  'remove_silences',
+  'extract_audio',
+  'sync_angles'
 ])
 
 export const editorToolsByName: Map<string, ToolDef> = new Map(editorTools.map((t) => [t.name, t]))

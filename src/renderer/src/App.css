@@ -163,15 +163,6 @@ button.primary {
 .preview-stage canvas {
   display: block;
 }
-.preview-exact {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  background: #000;
-  pointer-events: none;
-}
 .ci-applied {
   font-size: 11px;
   color: #4ade80;
@@ -311,6 +302,97 @@ button.primary {
 .color-modal {
   width: min(1100px, 94vw);
   height: min(760px, 90vh);
+}
+.export-modal {
+  width: min(440px, 92vw);
+  align-items: center;
+  text-align: center;
+  padding: 28px 26px 24px;
+  gap: 6px;
+}
+.export-modal h2 {
+  margin: 6px 0 2px;
+  font-size: 16px;
+}
+.export-bar {
+  width: 100%;
+  height: 8px;
+  background: var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 8px;
+}
+.export-bar-fill {
+  height: 100%;
+  background: var(--accent, #7c5cff);
+  border-radius: 999px;
+  transition: width 0.2s ease;
+}
+.export-pct {
+  margin: 6px 0 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.export-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--muted, #9a9aa6);
+  line-height: 1.4;
+}
+.export-check,
+.export-fail {
+  font-size: 40px;
+  line-height: 1;
+  margin-bottom: 2px;
+}
+.export-check {
+  color: #4ade80;
+}
+.export-fail {
+  color: #f87171;
+}
+.export-path {
+  font-size: 12px;
+  color: var(--muted, #9a9aa6);
+  word-break: break-all;
+  margin: 4px 0 0;
+}
+.export-err {
+  font-size: 12px;
+  color: #f87171;
+  white-space: pre-wrap;
+  text-align: left;
+  max-height: 180px;
+  overflow: auto;
+  width: 100%;
+  margin: 4px 0 0;
+}
+.export-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+.sync-angles {
+  font-size: 12px;
+  color: var(--muted, #9a9aa6);
+  margin: 4px 0 0;
+}
+.sync-conf {
+  margin: 2px 0 0;
+  font-weight: 600;
+}
+.sync-conf.ok {
+  color: #4ade80;
+}
+.sync-conf.low {
+  color: #fbbf24;
+}
+.sync-keep {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+  margin-top: 10px;
 }
 .modal-head {
   display: flex;

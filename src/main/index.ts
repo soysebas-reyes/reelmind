@@ -42,6 +42,19 @@ function createWindow(): void {
 
   win.on('ready-to-show', () => win.show())
 
+  // Observability: renderer logs + process/GPU crashes don't otherwise reach this terminal. A React
+  // render error blanks the window WITHOUT killing the process, so console-message is what surfaces it.
+  win.webContents.on('render-process-gone', (_e, details) => {
+    console.error(`[reelmind] renderer gone: ${details.reason} (exit ${details.exitCode})`)
+  })
+  if (isDev) {
+    win.webContents.on('console-message', (details) => {
+      if (details.level === 'error' || details.level === 'warning') {
+        console.log(`[renderer:${details.level}] ${details.message}`)
+      }
+    })
+  }
+
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
     win.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
@@ -54,6 +67,10 @@ app.whenReady().then(() => {
   handleMediaProtocol()
   registerIpc()
   createWindow()
+
+  app.on('child-process-gone', (_e, details) => {
+    console.error(`[reelmind] child gone: ${details.type} — ${details.reason}`)
+  })
 
   // Embedded MCP server (localhost) so external agents drive the same editor commands.
   if (!process.env.REELMIND_NO_MCP) {

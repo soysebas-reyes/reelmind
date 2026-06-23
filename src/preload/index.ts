@@ -2,10 +2,16 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AiCompleteRequest,
   AiCompleteResponse,
+  AudioOffsetRequest,
+  AudioOffsetResult,
+  ColorLutData,
+  ColorLutDataRequest,
   ColorStillRequest,
   DetectSilencesRequest,
   ExportRequest,
   ExportResult,
+  ExtractAudioRequest,
+  ExtractAudioResult,
   FfmpegStatus,
   ImportedAsset,
   ProjectData,
@@ -40,11 +46,20 @@ const editorBridge = {
   pickExportPath: (defaultName: string): Promise<string | null> =>
     ipcRenderer.invoke('project:pickExportPath', defaultName),
   exportTimeline: (req: ExportRequest): Promise<ExportResult> => ipcRenderer.invoke('project:export', req),
+  /** Subscribe to export progress (0..1) for the current render. */
+  onExportProgress: (cb: (fraction: number) => void): void => {
+    ipcRenderer.on('export:progress', (_e, fraction: number) => cb(fraction))
+  },
+  showItemInFolder: (filePath: string): Promise<void> => ipcRenderer.invoke('shell:showItem', filePath),
   detectSilences: (req: DetectSilencesRequest): Promise<SilenceSeconds[]> =>
     ipcRenderer.invoke('media:detectSilences', req),
+  extractAudio: (req: ExtractAudioRequest): Promise<ExtractAudioResult> => ipcRenderer.invoke('media:extractAudio', req),
+  computeAudioOffset: (req: AudioOffsetRequest): Promise<AudioOffsetResult> =>
+    ipcRenderer.invoke('media:computeAudioOffset', req),
 
   // Color (Phase 9.5)
   colorStill: (req: ColorStillRequest): Promise<string | null> => ipcRenderer.invoke('color:still', req),
+  colorLutData: (req: ColorLutDataRequest): Promise<ColorLutData | null> => ipcRenderer.invoke('color:lutData', req),
   colorGetLutLibrary: (): Promise<string | null> => ipcRenderer.invoke('color:getLutLibrary'),
   colorSetLutLibrary: (): Promise<string | null> => ipcRenderer.invoke('color:setLutLibrary'),
 

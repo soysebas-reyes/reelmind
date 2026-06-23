@@ -14,6 +14,7 @@ import {
   volumeAt
 } from '@core'
 import { getController, timelineTotalFrames, useEditorStore } from '../store'
+import { type ColorGL, getColorGL } from './colorGL'
 
 /** Approximate ColorAdjustments → Canvas 2D filter. CSS filters cover brightness/contrast/saturation/
  *  hue; temperature/tint/tonal/LUT are NOT representable here — the FFmpeg still/export is the exact
@@ -57,9 +58,16 @@ export default function Preview(): React.JSX.Element {
   const videoPoolRef = useRef<Map<string, HTMLVideoElement>>(new Map())
   const audioPoolRef = useRef<Map<string, HTMLAudioElement>>(new Map())
   const drawRef = useRef<() => void>(() => {})
+  // LUT load state per lutRef: 'loading' (in flight) / 'ready' / 'failed' (retried later). Once a LUT
+  // is uploaded to the GL renderer, gl.hasLut is the source of truth; this just gates the async fetch.
+  const lutStateRef = useRef<Map<string, 'loading' | 'ready' | 'failed'>>(new Map())
+  // Live playhead during playback. The rAF loop advances this and draws directly, pushing it into the
+  // store (→ React re-render for the timecode/scrubber) only ~10×/s instead of every frame — the
+  // per-frame setState was a big chunk of the playback jank. Refs so the rAF/draw closures read fresh.
+  const playheadRef = useRef(0)
+  const playingRef = useRef(false)
   const [size, setSize] = useState({ width: 0, height: 0 })
   const [playing, setPlaying] = useState(false)
-  const [exactUrl, setExactUrl] = useState<string | null>(null)
 
   const fps = timeline.fps
   const total = timelineTotalFrames(timeline)
@@ -87,6 +95,8 @@ export default function Preview(): React.JSX.Element {
     let v = pool.get(mediaRef)
     if (!v) {
       v = document.createElement('video')
+      // Origin-clean (with the media protocol's CORS header) so WebGL can sample frames untainted.
+      v.crossOrigin = 'anonymous'
       v.src = url
       v.muted = false
       v.preload = 'auto'
@@ -111,6 +121,36 @@ export default function Preview(): React.JSX.Element {
       pool.set(mediaRef, a)
     }
     return a
+  }
+
+  /** The decode-ready element to feed the WebGL grade: the video frame if ready, else the poster. */
+  function gradeSourceFor(mediaType: string, mediaRef: string): TexImageSource | null {
+    if (mediaType === 'video') {
+      const v = videoFor(mediaRef)
+      if (v && v.readyState >= 2 && v.videoWidth > 0) return v
+    }
+    return imageFor(mediaRef)
+  }
+
+  /** Ensure a clip's LUT is resident in the GL renderer: kicks an async fetch on first need and
+   *  redraws when it lands. Returns true only once the texture is uploaded. A miss is retried after a
+   *  delay (so configuring the LUT folder mid-session self-heals) without re-requesting every frame. */
+  function ensureLut(gl: ColorGL, lutRef: string): boolean {
+    if (gl.hasLut(lutRef)) return true
+    if (lutStateRef.current.get(lutRef)) return false // 'loading' or 'failed'
+    lutStateRef.current.set(lutRef, 'loading')
+    const { projectDir } = useEditorStore.getState()
+    void window.editorBridge.colorLutData({ lutRef, projectDir }).then((res) => {
+      if (res && res.size > 0) {
+        gl.setLut(lutRef, res.size, new Float32Array(res.data))
+        lutStateRef.current.set(lutRef, 'ready')
+      } else {
+        lutStateRef.current.set(lutRef, 'failed')
+        window.setTimeout(() => lutStateRef.current.delete(lutRef), 3000)
+      }
+      drawRef.current()
+    })
+    return false
   }
 
   /** Draw the real source (video frame if ready, else poster/thumbnail) with crop. */
@@ -162,7 +202,10 @@ export default function Preview(): React.JSX.Element {
     ctx.fillStyle = '#000'
     ctx.fillRect(fx, fy, fw, fh)
 
-    const composed = composeFrame(timeline, currentFrame)
+    // While playing, draw the live playhead (advanced by the rAF loop) rather than the throttled store
+    // frame, so playback stays smooth even though the store only updates ~10×/s.
+    const frame = playingRef.current ? playheadRef.current : currentFrame
+    const composed = composeFrame(timeline, frame)
     for (const layer of composed.visual) {
       const t = layer.transform
       const w = t.width * timeline.width
@@ -191,13 +234,38 @@ export default function Preview(): React.JSX.Element {
         ctx.textBaseline = 'middle'
         ctx.fillText(layer.textContent || 'Text', fx + cx * sx, fy + cy * sy, dw)
       } else {
-        // Approximate color grade (P9.5). Reset by ctx.restore() at the end of this layer.
+        // Color grade (P9.5). WebGL path applies the FULL grade incl. the 3D `.cube` LUT live (so
+        // playback/scrub match the export — §9.5.12); on any failure (or un-graded / no WebGL2) it
+        // falls back to the Canvas-2D CSS-filter approximation. ctx.filter is reset by restore().
         const clip = timeline.tracks[layer.trackIndex]?.clips.find((c) => c.id === layer.clipId)
-        if (clip?.color && !colorIsIdentity(clip.color)) ctx.filter = colorToCanvasFilter(clip.color)
-        if (!drawSource(ctx, layer.mediaType, layer.mediaRef, layer.crop, dx, dy, dw, dh)) {
-          ctx.filter = 'none'
-          ctx.fillStyle = '#23232e'
-          ctx.fillRect(dx, dy, dw, dh)
+        const color = clip?.color
+        const graded = !!color && !colorIsIdentity(color)
+        let painted = false
+        if (graded && color) {
+          const gl = getColorGL()
+          const glSource = gl ? gradeSourceFor(layer.mediaType, layer.mediaRef) : null
+          if (gl && glSource) {
+            try {
+              const lutKey = color.lutRef && ensureLut(gl, color.lutRef) ? color.lutRef : null
+              const outW = Math.max(1, Math.round(dw * dpr))
+              const outH = Math.max(1, Math.round(dh * dpr))
+              const g = gl.render(glSource, layer.crop, color, lutKey, outW, outH)
+              if (g) {
+                ctx.drawImage(g, dx, dy, dw, dh)
+                painted = true
+              }
+            } catch {
+              painted = false // fall through to the approximation below
+            }
+          }
+        }
+        if (!painted) {
+          if (graded && color) ctx.filter = colorToCanvasFilter(color)
+          if (!drawSource(ctx, layer.mediaType, layer.mediaRef, layer.crop, dx, dy, dw, dh)) {
+            ctx.filter = 'none'
+            ctx.fillStyle = '#23232e'
+            ctx.fillRect(dx, dy, dw, dh)
+          }
         }
       }
       ctx.restore()
@@ -207,6 +275,14 @@ export default function Preview(): React.JSX.Element {
     ctx.strokeRect(fx + 0.5, fy + 0.5, fw, fh)
   }
   drawRef.current = draw
+
+  // Keep the refs the rAF/draw closures read in sync with React state.
+  useEffect(() => {
+    playingRef.current = playing
+  }, [playing])
+  useEffect(() => {
+    if (!playing) playheadRef.current = currentFrame
+  }, [currentFrame, playing])
 
   useEffect(() => {
     const wrap = wrapRef.current
@@ -316,17 +392,20 @@ export default function Preview(): React.JSX.Element {
     if (!playing) return
     const c = getController()
     let last = performance.now()
+    let lastSync = 0
     let raf = 0
     const tick = (now: number) => {
       const dt = (now - last) / 1000
       last = now
       const tl = c.getTimeline()
-      const cur = c.getCurrentFrame()
+      const cur = playheadRef.current
       let frame: number | null = null
       for (const layer of composeFrame(tl, cur).visual) {
         if (layer.mediaType !== 'video') continue
         const v = videoPoolRef.current.get(layer.mediaRef)
-        if (!v || v.paused) continue
+        // Don't adopt the video clock while it's seeking: a mid-seek currentTime can read stale/0 and
+        // yank the playhead back to the start on resume. Advance by timer until the seek lands.
+        if (!v || v.paused || v.seeking || v.readyState < 2) continue
         const clip = tl.tracks[layer.trackIndex]?.clips.find((cl) => cl.id === layer.clipId)
         const f = clip ? timelineFrameForSourceSeconds(clip, v.currentTime, fps) : null
         if (f !== null) {
@@ -336,56 +415,23 @@ export default function Preview(): React.JSX.Element {
       }
       if (frame === null) frame = Math.round(cur + dt * fps)
       if (total > 0 && frame >= total) {
+        playheadRef.current = total
         c.seek(total)
         setPlaying(false)
         return
       }
-      c.seek(frame)
+      playheadRef.current = frame
+      drawRef.current() // draw every frame from the live playhead (no React re-render in the hot path)
+      // Push to the store ~10×/s so the timecode + scrubber follow without a per-frame re-render.
+      if (now - lastSync > 100) {
+        lastSync = now
+        c.seek(frame)
+      }
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
   }, [playing, fps, total])
-
-  // Exact graded overlay when paused: the Canvas approximation can't show LUTs, so for a paused frame
-  // whose top video clip carries a grade, render the precise frame (FFmpeg — same chain as the export)
-  // and lay it over the canvas. Debounced; cleared while playing or when the frame is un-graded.
-  useEffect(() => {
-    if (playing) {
-      setExactUrl(null)
-      return
-    }
-    const { manifest, projectDir } = useEditorStore.getState()
-    let req: { path: string; seconds: number; color: ColorAdjustments } | null = null
-    for (const layer of composeFrame(timeline, currentFrame).visual) {
-      if (layer.mediaType !== 'video') continue
-      const clip = timeline.tracks[layer.trackIndex]?.clips.find((c) => c.id === layer.clipId)
-      if (!clip?.color || colorIsIdentity(clip.color)) continue
-      const path = expectedPath(manifest, layer.mediaRef, projectDir)
-      if (path) {
-        req = { path, seconds: Math.max(0, layer.sourceSeconds), color: clip.color }
-        break
-      }
-    }
-    if (!req) {
-      setExactUrl(null)
-      return
-    }
-    const r = req
-    let cancelled = false
-    const t = setTimeout(() => {
-      void window.editorBridge
-        .colorStill({ mediaPath: r.path, seekSeconds: r.seconds, color: r.color, width: 900, projectDir })
-        .then((url) => {
-          if (!cancelled) setExactUrl(url)
-        })
-    }, 220)
-    return () => {
-      cancelled = true
-      clearTimeout(t)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentFrame, playing, timeline])
 
   const togglePlay = (): void => {
     const c = getController()
@@ -397,7 +443,6 @@ export default function Preview(): React.JSX.Element {
     <div className="preview">
       <div className="preview-stage" ref={wrapRef}>
         <canvas ref={canvasRef} />
-        {!playing && exactUrl && <img className="preview-exact" src={exactUrl} alt="" />}
       </div>
       <div className="preview-transport">
         <button className="play" onClick={togglePlay} disabled={total === 0} title={playing ? 'Pause' : 'Play'}>

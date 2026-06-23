@@ -434,3 +434,16 @@ describe('EditorController — color grading (P9.5)', () => {
     expect(color.lutIntensity).toBe(0.5)
   })
 })
+
+describe('EditorController — project settings', () => {
+  it('setProjectSettings adopts resolution + fps in one undo step and marks configured', () => {
+    const c = new EditorController()
+    expect(c.getTimeline().settingsConfigured).toBe(false)
+    c.setProjectSettings(3840, 2160, 25)
+    const tl = c.getTimeline()
+    expect([tl.width, tl.height, tl.fps]).toEqual([3840, 2160, 25])
+    expect(tl.settingsConfigured).toBe(true)
+    expect(c.undo()).toBe(true) // single step
+    expect([c.getTimeline().width, c.getTimeline().settingsConfigured]).toEqual([1920, false])
+  })
+})

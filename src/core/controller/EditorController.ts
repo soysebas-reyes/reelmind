@@ -116,6 +116,8 @@ export interface ClipPropertyEdit {
   color?: ColorAdjustments
   textContent?: string
   textStyle?: TextStyle
+  /** Shared id linking clips edited as a unit (e.g. the two synced camera angles). */
+  linkGroupId?: string
 }
 
 const EDITABLE_KEYS: (keyof ClipPropertyEdit)[] = [
@@ -130,7 +132,8 @@ const EDITABLE_KEYS: (keyof ClipPropertyEdit)[] = [
   'crop',
   'color',
   'textContent',
-  'textStyle'
+  'textStyle',
+  'linkGroupId'
 ]
 
 // MARK: - Module helpers (operate on a draft or plain timeline)
@@ -451,6 +454,19 @@ export class EditorController {
   setFps(fps: number): void {
     this.run('Set FPS', () =>
       this.mutate((tl) => {
+        tl.fps = fps
+        tl.settingsConfigured = true
+      })
+    )
+  }
+
+  /** Adopt resolution + fps together (one undo step), e.g. from the first imported clip's source so the
+   *  project — and therefore the export — matches the footage instead of the 1080p/30 default. */
+  setProjectSettings(width: number, height: number, fps: number): void {
+    this.run('Project Settings', () =>
+      this.mutate((tl) => {
+        tl.width = width
+        tl.height = height
         tl.fps = fps
         tl.settingsConfigured = true
       })

@@ -11,10 +11,12 @@
 import type { ColorAdjustments } from '../model/color'
 
 // --- Calibration constants (approximate; tune against reference stills, lock with tests) ---
-const EXPOSURE_TO_BRIGHTNESS = 0.1 // eq.brightness added per exposure "stop" unit
-const TEMP_RB = 0.005 // colorbalance red/blue shift per temperature unit (-100..100 → ∓0.5)
-const TINT_G = 0.005 // colorbalance green shift per tint unit (-100..100 → ∓0.5)
-const TONAL_LIFT = 0.005 // curves y-lift per tonal unit (-100..100 → ∓0.5)
+// Exported so the renderer's WebGL live preview (preview/colorGL.ts) mirrors this exact math —
+// one source of truth keeps preview ≈ still ≈ export as the constants are tuned.
+export const EXPOSURE_TO_BRIGHTNESS = 0.1 // eq.brightness added per exposure "stop" unit
+export const TEMP_RB = 0.005 // colorbalance red/blue shift per temperature unit (-100..100 → ∓0.5)
+export const TINT_G = 0.005 // colorbalance green shift per tint unit (-100..100 → ∓0.5)
+export const TONAL_LIFT = 0.005 // curves y-lift per tonal unit (-100..100 → ∓0.5)
 
 function fmt(n: number): string {
   return Number(n.toFixed(6)).toString()

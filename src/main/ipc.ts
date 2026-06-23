@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Registers all ipcMain handlers backing the preload `editorBridge`.
 
-import { BrowserWindow, dialog, ipcMain } from 'electron'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { parseCubeLut } from '../core'
 import type {
   AiCompleteRequest,
+  AudioOffsetRequest,
+  ColorLutDataRequest,
   ColorStillRequest,
   DetectSilencesRequest,
   ExportRequest,
+  ExtractAudioRequest,
   ProjectData,
   ThumbnailRequest
 } from '../shared/ipc'
@@ -14,7 +20,7 @@ import { complete } from './ai/anthropic'
 import { clearApiKey, hasApiKey, setApiKey } from './ai/secrets'
 import { getLutLibraryDir, profileLutDir, setLutLibraryDir } from './color/colorSettings'
 import { resolveLut } from './color/lutResolver'
-import { checkFfmpeg, generateStillWithColor, generateThumbnail } from './ffmpeg'
+import { checkFfmpeg, computeAudioOffset, extractAudio, generateStillWithColor, generateThumbnail } from './ffmpeg'
 import { exportTimeline } from './ffmpeg/exporter'
 import { detectSilences } from './ffmpeg/silence'
 import { importMedia } from './media/importer'
@@ -113,22 +119,78 @@ export function registerIpc(): void {
     return res.canceled || !res.filePath ? null : res.filePath
   })
 
-  ipcMain.handle('project:export', (_e, req: ExportRequest) => exportTimeline(req))
+  ipcMain.handle('project:export', (e, req: ExportRequest) => {
+    // Quality tier → x264 CRF (lower = larger/closer to source). Default 'veryHigh' so a graded export
+    // lands near the source size instead of the older CRF-18 default that looked "too small".
+    const crf = req.quality === 'max' ? 12 : req.quality === 'high' ? 20 : 16
+    return exportTimeline(
+      { ...req, options: { crf } },
+      {
+        onProgress: (fraction) => e.sender.send('export:progress', fraction),
+        resolveLut: (lutRef) =>
+          resolveLut(lutRef, { projectDir: req.projectDir, libraryDir: getLutLibraryDir(), profileDir: profileLutDir() })
+      }
+    )
+  })
+
+  // Reveal a finished export in the OS file manager (the export confirmation's "show in folder").
+  ipcMain.handle('shell:showItem', (_e, filePath: string) => {
+    if (filePath) shell.showItemInFolder(filePath)
+  })
 
   ipcMain.handle('media:detectSilences', (_e, req: DetectSilencesRequest) =>
     detectSilences(req.path, { noiseDb: req.noiseDb, minDurationSec: req.minDurationSec })
   )
 
+  // Multicam (audio): extract a video's audio to a new file, and cross-correlate two videos' audio.
+  ipcMain.handle('media:extractAudio', async (_e, req: ExtractAudioRequest) => {
+    try {
+      const outDir = req.outDir ?? join(app.getPath('userData'), 'imported')
+      return { ok: true, outputPath: await extractAudio(req.videoPath, outDir) }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+  ipcMain.handle('media:computeAudioOffset', async (_e, req: AudioOffsetRequest) => {
+    try {
+      const r = await computeAudioOffset(req.pathA, req.pathB, req.fps)
+      return { ok: true, offsetSeconds: r.offsetSeconds, offsetFrames: r.offsetFrames, confidence: r.confidence, reliable: r.reliable }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
   // Color (Phase 9.5): exact graded preview still + the side-loaded LUT library folder.
-  ipcMain.handle('color:still', (_e, req: ColorStillRequest) => {
-    const lutPath = req.color.lutRef
-      ? resolveLut(req.color.lutRef, {
-          projectDir: req.projectDir,
-          libraryDir: getLutLibraryDir(),
-          profileDir: profileLutDir()
-        })
-      : null
-    return generateStillWithColor(req.mediaPath, req.seekSeconds, req.color, { width: req.width, lutPath })
+  ipcMain.handle('color:still', async (_e, req: ColorStillRequest) => {
+    try {
+      const lutPath = req.color.lutRef
+        ? resolveLut(req.color.lutRef, {
+            projectDir: req.projectDir,
+            libraryDir: getLutLibraryDir(),
+            profileDir: profileLutDir()
+          })
+        : null
+      return await generateStillWithColor(req.mediaPath, req.seekSeconds, req.color, { width: req.width, lutPath })
+    } catch {
+      return null // e.g. invoked on a streamless (audio) asset — fail soft, no rejected promise
+    }
+  })
+  // Resolve + parse a .cube into grid data the renderer's WebGL preview can sample as a 3D texture, so
+  // the LUT shows during live playback (not just in the paused FFmpeg still / export). Same resolution
+  // order as color:still; a missing/invalid LUT returns null and the preview renders the grade without it.
+  ipcMain.handle('color:lutData', (_e, req: ColorLutDataRequest) => {
+    const path = resolveLut(req.lutRef, {
+      projectDir: req.projectDir,
+      libraryDir: getLutLibraryDir(),
+      profileDir: profileLutDir()
+    })
+    if (!path) return null
+    try {
+      const lut = parseCubeLut(readFileSync(path, 'utf8'))
+      return { size: lut.size, data: Array.from(lut.data) }
+    } catch {
+      return null
+    }
   })
   ipcMain.handle('color:getLutLibrary', () => getLutLibraryDir())
   ipcMain.handle('color:setLutLibrary', async () => {

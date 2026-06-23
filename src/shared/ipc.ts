@@ -47,11 +47,15 @@ export interface SaveResult {
   error?: string
 }
 
+/** Export quality tier → CRF (mapped host-side). Higher tier = bigger file, closer to the source. */
+export type ExportQuality = 'high' | 'veryHigh' | 'max'
+
 export interface ExportRequest {
   timeline: Timeline
   manifest: MediaManifest
   projectDir: string | null
   outputPath: string
+  quality?: ExportQuality
 }
 
 export interface ExportResult {
@@ -93,6 +97,48 @@ export interface ColorStillRequest {
   color: ColorAdjustments
   width?: number
   projectDir: string | null
+}
+
+/** Request for `color:lutData` — resolve a logical `lutRef` and parse it into 3D-LUT grid data so the
+ *  renderer's WebGL preview can sample the same `.cube` the FFmpeg export uses (live-playback LUT). */
+export interface ColorLutDataRequest {
+  lutRef: string
+  projectDir: string | null
+}
+
+/** Parsed 3D LUT for the renderer: `size³` RGB triplets, red varying fastest (a plain `number[]` so it
+ *  crosses the IPC boundary cleanly; the renderer wraps it in a `Float32Array` for `texImage3D`). */
+export interface ColorLutData {
+  size: number
+  data: number[]
+}
+
+/** media:extractAudio — pull a video's audio track into a standalone file (then imported as an asset). */
+export interface ExtractAudioRequest {
+  videoPath: string
+  /** Where to write the .m4a; null → the host's userData/imported folder. */
+  outDir: string | null
+}
+export interface ExtractAudioResult {
+  ok: boolean
+  outputPath?: string
+  error?: string
+}
+
+/** media:computeAudioOffset — cross-correlate two videos' audio to find their time offset (multicam). */
+export interface AudioOffsetRequest {
+  pathA: string
+  pathB: string
+  fps: number
+}
+export interface AudioOffsetResult {
+  ok: boolean
+  /** B relative to A; positive ⇒ B started later. */
+  offsetSeconds?: number
+  offsetFrames?: number
+  confidence?: number
+  reliable?: boolean
+  error?: string
 }
 
 export const PROJECT_SCHEMA_VERSION = 1
