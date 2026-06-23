@@ -199,132 +199,120 @@ export default function App() {
 
   return (
     <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          <span className="logo">ReelMind</span>
-          <span className="proj">
-            {projectName}
-            {dirty && <span className="dot" title="Unsaved changes" />}
-          </span>
+      <header className="app-header">
+        {/* Row 1: brand + project settings */}
+        <div className="topbar">
+          <div className="brand">
+            <span className="logo">ReelMind</span>
+            <span className="proj">
+              {projectName}
+              {dirty && <span className="dot" title="Cambios sin guardar" />}
+            </span>
+          </div>
+          <div className="settings">
+            <label>
+              Resolución
+              <select
+                value={`${timeline.width}×${timeline.height}`}
+                onChange={(e) => {
+                  const r = RESOLUTIONS.find((x) => `${x.w}×${x.h}` === e.target.value)
+                  if (r) setResolution(r.w, r.h)
+                }}
+              >
+                {RESOLUTIONS.every((r) => `${r.w}×${r.h}` !== `${timeline.width}×${timeline.height}`) && (
+                  <option value={`${timeline.width}×${timeline.height}`}>
+                    {timeline.width}×{timeline.height}
+                  </option>
+                )}
+                {RESOLUTIONS.map((r) => (
+                  <option key={r.label} value={`${r.w}×${r.h}`}>
+                    {r.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              FPS
+              <select value={timeline.fps} onChange={(e) => setFps(Number(e.target.value))}>
+                {FPS_OPTIONS.every((f) => f !== timeline.fps) && <option value={timeline.fps}>{timeline.fps}</option>}
+                {FPS_OPTIONS.map((f) => (
+                  <option key={f} value={f}>
+                    {f}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Calidad
+              <select value={exportQuality} onChange={(e) => setExportQuality(e.target.value as ExportQuality)}>
+                {QUALITY_OPTIONS.map((q) => (
+                  <option key={q.value} value={q.value}>
+                    {q.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
         </div>
 
-        <div className="settings">
-          <label>
-            Resolution
-            <select
-              value={`${timeline.width}×${timeline.height}`}
-              onChange={(e) => {
-                const r = RESOLUTIONS.find((x) => `${x.w}×${x.h}` === e.target.value)
-                if (r) setResolution(r.w, r.h)
-              }}
-            >
-              {RESOLUTIONS.every((r) => `${r.w}×${r.h}` !== `${timeline.width}×${timeline.height}`) && (
-                <option value={`${timeline.width}×${timeline.height}`}>
-                  {timeline.width}×{timeline.height}
-                </option>
-              )}
-              {RESOLUTIONS.map((r) => (
-                <option key={r.label} value={`${r.w}×${r.h}`}>
-                  {r.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            FPS
-            <select value={timeline.fps} onChange={(e) => setFps(Number(e.target.value))}>
-              {FPS_OPTIONS.every((f) => f !== timeline.fps) && <option value={timeline.fps}>{timeline.fps}</option>}
-              {FPS_OPTIONS.map((f) => (
-                <option key={f} value={f}>
-                  {f}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Calidad
-            <select value={exportQuality} onChange={(e) => setExportQuality(e.target.value as ExportQuality)}>
-              {QUALITY_OPTIONS.map((q) => (
-                <option key={q.value} value={q.value}>
-                  {q.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-
-        <div className="actions">
-          <button onClick={() => getController().undo()} disabled={!canUndo} title={undoLabel ? `Undo ${undoLabel}` : 'Undo'}>
-            ↶ Undo
+        {/* Row 2: action toolbar */}
+        <div className="toolbar">
+          <button onClick={() => getController().undo()} disabled={!canUndo} title={undoLabel ? `Deshacer: ${undoLabel}` : 'Deshacer'}>
+            ↶ Deshacer
           </button>
-          <button onClick={() => getController().redo()} disabled={!canRedo} title={redoLabel ? `Redo ${redoLabel}` : 'Redo'}>
-            ↷ Redo
+          <button onClick={() => getController().redo()} disabled={!canRedo} title={redoLabel ? `Rehacer: ${redoLabel}` : 'Rehacer'}>
+            ↷ Rehacer
           </button>
           <span className="tl-sep" />
-          <button onClick={newProject}>New</button>
-          <button onClick={() => void openProject()}>Open</button>
-          <button className="primary" onClick={() => void saveProject()} disabled={!dirty && !!projectDir}>
-            Save
+          <button onClick={newProject} title="Nuevo proyecto">Nuevo</button>
+          <button onClick={() => void openProject()} title="Abrir proyecto">Abrir</button>
+          <button className="primary" onClick={() => void saveProject()} disabled={!dirty && !!projectDir} title="Guardar proyecto">
+            Guardar
           </button>
-          <button onClick={() => void exportProject()} disabled={!!busy || timeline.tracks.length === 0}>
-            Export
+          <button onClick={() => void exportProject()} disabled={!!busy || timeline.tracks.length === 0} title="Exportar a MP4">
+            Exportar
           </button>
+          <span className="tl-sep" />
           <button
             onClick={() => setColorOpen(true)}
             disabled={selectedClipIds.length === 0}
-            title={selectedClipIds.length === 0 ? 'Selecciona un clip para colorizar' : 'Colorización'}
+            title={selectedClipIds.length === 0 ? 'Selecciona un clip para colorizar' : 'Abrir explorador de colorización'}
           >
             🎨 Color
           </button>
           <button
-            onClick={() => {
-              const id = selectedVideoIds[0]
-              if (id) void extractAudioFromClip(id)
-            }}
+            onClick={() => { const id = selectedVideoIds[0]; if (id) void extractAudioFromClip(id) }}
             disabled={!canExtractAudio || !!busy}
-            title={canExtractAudio ? 'Extraer el audio a un asset nuevo' : 'Selecciona un solo clip de video'}
+            title={canExtractAudio ? 'Extraer audio a un asset nuevo' : 'Selecciona un solo clip de video'}
           >
-            🎙️ Extraer audio
+            🎙️ Audio
           </button>
           <button
-            onClick={() => {
-              setSyncSwap(false)
-              setSyncKeepAudio('frontal')
-              setSyncAutoColor(true)
-              void analyzeSyncForSelection()
-            }}
+            onClick={() => { setSyncSwap(false); setSyncKeepAudio('frontal'); setSyncAutoColor(true); void analyzeSyncForSelection() }}
             disabled={!canSyncAngles || !!busy || syncBusy}
-            title={canSyncAngles ? 'Alinear dos ángulos por su audio' : 'Selecciona exactamente 2 clips de video'}
+            title={canSyncAngles ? 'Sincronizar 2 ángulos por audio' : 'Selecciona exactamente 2 clips de video'}
           >
-            🎬 Sincronizar ángulos
+            🎬 Sincronizar
           </button>
           <button
             onClick={() => {
-              if (canTranscribe) {
-                void transcribeClip(selectedVideoIds[0])
-                setTranscriptOpen(true)
-              }
+              if (transcript) { setTranscriptOpen(true); return }
+              if (canTranscribe) { void transcribeClip(selectedVideoIds[0]); setTranscriptOpen(true) }
             }}
-            disabled={!canTranscribe || !!busy || transcribing}
-            title={canTranscribe ? 'Transcribir con ElevenLabs (requiere API key)' : 'Selecciona un clip de video'}
+            disabled={(!canTranscribe && !transcript) || !!busy || transcribing}
+            title={transcript ? 'Ver transcript' : canTranscribe ? 'Transcribir con ElevenLabs' : 'Selecciona un clip de video'}
+            className={transcript ? 'toolbar-active' : ''}
           >
-            {transcribing ? '⏳ Transcribiendo…' : '📝 Transcribir'}
+            {transcribing ? '⏳ …' : transcript ? '📄 Transcript' : '📝 Transcribir'}
           </button>
-          {transcript && (
-            <button onClick={() => setTranscriptOpen(true)} title="Ver transcript">
-              📄 Ver transcript
-            </button>
-          )}
           <span className="tl-sep" />
           <button
-            onClick={() => {
-              if (selectedTrackId) getController().removeTrack(selectedTrackId)
-            }}
+            onClick={() => { if (selectedTrackId) getController().removeTrack(selectedTrackId) }}
             disabled={!canDeleteTrack}
-            title={canDeleteTrack ? 'Eliminar la pista del clip seleccionado' : 'Selecciona un clip primero'}
-            style={{ color: canDeleteTrack ? 'var(--danger, #e05555)' : undefined }}
+            title={canDeleteTrack ? 'Eliminar la pista del clip seleccionado (y todos sus clips)' : 'Selecciona un clip primero'}
+            className={canDeleteTrack ? 'toolbar-danger' : ''}
           >
-            🗑️ Eliminar pista
+            🗑️ Pista
           </button>
         </div>
       </header>

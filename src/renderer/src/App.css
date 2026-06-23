@@ -34,43 +34,54 @@ body {
   flex-direction: column;
 }
 
-/* Top bar */
+/* App header — two rows: brand/settings + toolbar */
+.app-header {
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+/* Row 1: brand + project settings */
 .topbar {
   display: flex;
   align-items: center;
   gap: 20px;
-  padding: 10px 16px;
+  padding: 8px 16px 6px;
   border-bottom: 1px solid var(--line);
-  background: var(--panel);
 }
 .brand {
   display: flex;
   align-items: baseline;
-  gap: 12px;
-  min-width: 220px;
+  gap: 10px;
+  flex-shrink: 0;
 }
 .logo {
   font-weight: 700;
-  font-size: 17px;
+  font-size: 16px;
   letter-spacing: -0.01em;
 }
 .proj {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .proj .dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--accent);
+  flex-shrink: 0;
 }
 
 .settings {
   display: flex;
-  gap: 16px;
+  gap: 12px;
   margin-left: auto;
 }
 .settings label {
@@ -86,23 +97,40 @@ select {
   background: var(--panel-2);
   color: var(--text);
   border: 1px solid var(--line);
-  border-radius: 7px;
-  padding: 5px 8px;
-  font-size: 13px;
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 12px;
 }
 
-.actions {
+/* Row 2: action toolbar */
+.toolbar {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  flex-wrap: wrap;
 }
+
 button {
   background: var(--panel-2);
   color: var(--text);
   border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 7px 14px;
-  font-size: 13px;
+  border-radius: 7px;
+  padding: 5px 11px;
+  font-size: 12px;
   cursor: pointer;
+  white-space: nowrap;
+}
+button.toolbar-active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+button.toolbar-danger {
+  color: #e05555;
+}
+button.toolbar-danger:hover:not(:disabled) {
+  border-color: #e05555;
+  background: rgba(224, 85, 85, 0.1);
 }
 button:hover:not(:disabled) {
   border-color: var(--accent);

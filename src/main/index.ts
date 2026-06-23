@@ -1,3 +1,5 @@
+// Load .env before anything else — electron-vite does NOT inject non-VITE_ vars into main.
+import 'dotenv/config'
 import { app, BrowserWindow } from 'electron'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
