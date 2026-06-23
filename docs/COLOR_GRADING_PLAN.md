@@ -210,13 +210,15 @@ stage; see [`App.tsx:170`](../src/renderer/src/App.tsx)):
 > **tweak every parameter → one-click load a recommended config → see an *exact* preview of a shot →
 > save several *muestras* → compare them against the RAW → "Elegir" one look → apply to the whole video.**
 
-> **⚠️ Status (2026-06-21) — shipped on branch `feat/p95-colorization-core`, NOT merged.** The headless
+> **⚠️ Status (2026-06-23) — shipped on branch `feat/p95-colorization-core`, NOT merged.** The headless
 > core (model, export chain, presets, LUT resolver, still) **and** the renderer UI (modal Explorer with
 > resizable panels, exact still preview, recommended presets, `set_clip_color` tool) are implemented and
-> unit-tested (215 tests green; build green). **Live-playback LUT (§9.5.12) — FIX IMPLEMENTED (WebGL),
-> pending on-device visual confirmation:** a WebGL2 per-layer color pass now samples the 3D `.cube` and
-> applies the full grade live, so playback/scrub match the paused still and export. The play→pause→resume
-> sync fix (video-as-master-clock) landed earlier and was left untouched by this change.
+> unit-tested. **Live-playback LUT (§9.5.12) — SHIPPED:** WebGL2 per-layer color pass (`colorGL.ts`)
+> samples the 3D `.cube` as a GPU texture and applies the full grade live (LUT → intensity blend →
+> eq → hue → colorbalance → curves), matching export order exactly. Pending on-device visual confirmation.
+> **Multicam audio sync (§9.5.13) — SHIPPED:** pure-DSP cross-correlation offset recovery (`audioSync.ts`),
+> FFmpeg PCM decode bridge, store actions + confirmation modal. **Project auto-settings** (resolution/fps
+> auto-adopted from first imported video) also landed.
 
 ### 9.5.1 Goal & origin
 
@@ -441,6 +443,27 @@ Also re-verify the play/pause/resume **video-as-master-clock** fix once the prev
 
 </details>
 
+### 9.5.13 ✅ SHIPPED — Multicam audio sync
+
+**Shipped 2026-06-23** on `feat/p95-colorization-core`.
+
+Recovers the time offset between two camera angles by cross-correlating their short-time RMS energy
+envelopes (no FFT, no dependencies — bounded direct cross-correlation is cheap enough since both
+cameras film the same take).
+
+- **`src/core/edit/audioSync.ts`** — pure DSP (Electron-free): `rmsEnvelope`, `crossCorrelateOffset`,
+  `lagToSeconds`, `SYNC_MIN_CONFIDENCE`, `SYNC_MIN_MARGIN`. Tested in `audioSync.test.ts`.
+- **`src/main/ffmpeg/audioSync.ts`** — FFmpeg bridge: decodes each source to 8 kHz mono PCM
+  (only loudness-over-time matters → 8 kHz is enough), calls the DSP core, returns `{ offsetSeconds,
+  confidence }`. `extractAudio` utility for standalone audio extraction.
+- **`store.ts`** — `SyncResultState`, `syncClips(clipIdA, clipIdB)` action (triggers IPC, opens
+  confirmation modal with offset + confidence), `confirmSync` (shifts clip B by the recovered offset).
+- **`tools.ts`** — `sync_clips` AI tool so the agent can sync two angles by name.
+- **`App.tsx`** — `SyncConfirmModal` component; shows offset in seconds + frames and confidence %.
+
+**Pending on-device verification:** run with two real dual-camera clips to confirm the offset
+recovery is accurate and the modal flow end-to-end is correct.
+
 ---
 
 ## 2. Phase 10 — AI colorization (B&W → color), deferred
@@ -464,19 +487,20 @@ filter. It reuses the P7 *"generate/process externally → import"* pattern.
 
 ---
 
-## 3. Open decisions before coding P9
+## 3. Open decisions / next steps
 
-1. **Preview fidelity:** ship v1 with Canvas `ctx.filter` (fast, approximate) and defer WebGL to v1.1,
-   or go straight to WebGL for exact temperature/LUT in preview? (Recommend: Canvas first.)
-2. **Inspector placement:** replace the chat column when a clip is selected, or a dedicated fourth
-   pane / collapsible right rail? **Resolved (§9.5.8): collapsible right rail with `AI | Color` tabs**
-   so chat stays visible.
-3. **LUT scope in v1:** full-intensity `lut3d` only, or also partial `lutIntensity` (needs split+blend)?
-   **Resolved: partial `lutIntensity` ships in v1** — the Phase 9.5 document presets all use 50%
-   (split+blend, see §1.4).
-4. **Default profile:** should a "default for new clips" profile auto-apply on `add_clip`, or stay a
-   manual one-click? **Resolved (§9.5.5): auto-apply when a per-project default look is set**, with a
-   UI toggle to disable.
-5. **Bundle the document's `.cube` LUTs?** **Resolved: no.** The "Color Guillermo" LUTs are
-   client-confidential and must not be committed to this public GPL-3.0 repo — referenced by id and
-   side-loaded from a user-configured folder (see §9.5.3).
+All pre-coding P9 decisions are resolved. The branch `feat/p95-colorization-core` is feature-complete
+for the core loop. Remaining work before merge:
+
+1. **On-device visual confirmation** — press Play with a graded clip and verify the LUT renders live
+   (§9.5.12). Re-check play/pause/resume sync didn't regress.
+2. **Multicam sync end-to-end** — run `sync_clips` with two real dual-camera clips; verify offset
+   accuracy and modal flow (§9.5.13).
+3. **Export with color smoke test** — export a short clip with a document preset; compare to the
+   Explorer still to confirm preview ≈ export.
+4. **Merge to `main`** — once the above are green.
+5. **Future improvements** (to propose in next session):
+   - Per-angle tagging (`shotTag: 'frontal' | 'lateral'`) + bulk apply by tag (§9.5.5 multi-angle note)
+   - Auto-learn color profile from grade history (§1.8 roadmap note)
+   - `(v1.1)` WebGL temperature matrix (currently approximated — cosmetic for LUT-dominant looks)
+   - P10 AI colorization (B&W → color, deferred — §2)
