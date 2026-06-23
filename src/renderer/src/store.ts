@@ -25,7 +25,7 @@ import {
 } from '@core'
 import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
-import { PROJECT_SCHEMA_VERSION, type ExportQuality, type FfmpegStatus, type ImportedAsset } from '../../shared/ipc'
+import { PROJECT_SCHEMA_VERSION, type ExportQuality, type FfmpegStatus, type ImportedAsset, type TranscriptWord } from '../../shared/ipc'
 
 const controller = new EditorController()
 
@@ -129,6 +129,10 @@ export interface EditorState {
   syncBusy: boolean
   /** Detected offset (or error) — drives the sync confirmation modal. */
   syncResult: SyncResultState | null
+  /** True while ElevenLabs transcription is running. */
+  transcribing: boolean
+  /** Transcript from the last `transcribeClip` call (words with ms timestamps). */
+  transcript: TranscriptWord[] | null
 
   init: () => Promise<void>
   newProject: () => void
@@ -153,6 +157,11 @@ export interface EditorState {
   /** AI/MCP entry: compute the offset then apply, in one go. */
   syncAnglesTool: (input: SyncAnglesInput) => Promise<ToolCallResult>
   dismissSyncResult: () => void
+  /** Transcribe a clip (or asset) using ElevenLabs Scribe. Returns word-level timestamps. */
+  transcribeClip: (clipOrAssetId: string, opts?: { languageCode?: string; diarize?: boolean }) => Promise<ToolCallResult>
+  clearTranscript: () => void
+  /** Re-export the current transcript as a plain .srt subtitle file via save dialog. */
+  exportTranscriptSrt: () => Promise<void>
 }
 
 export const useEditorStore = create<EditorState>()(
@@ -179,6 +188,8 @@ export const useEditorStore = create<EditorState>()(
     exportResult: null,
     syncBusy: false,
     syncResult: null,
+    transcribing: false,
+    transcript: null,
 
     init: async () => {
       window.editorBridge.onExportProgress((fraction) =>
@@ -561,7 +572,78 @@ export const useEditorStore = create<EditorState>()(
     dismissSyncResult: () =>
       set((s) => {
         s.syncResult = null
-      })
+      }),
+
+    transcribeClip: async (clipOrAssetId, opts) => {
+      // Resolve the media path from either a clip id or an asset id.
+      const tl = controller.getTimeline()
+      const manifest = get().manifest
+      let mediaPath: string | null = null
+
+      // Try as asset id first, then as clip id.
+      const entry = manifest.entries.find((e) => e.id === clipOrAssetId)
+      if (entry) {
+        mediaPath = expectedPath(manifest, clipOrAssetId, get().projectDir)
+      } else {
+        for (const track of tl.tracks) {
+          const clip = track.clips.find((c) => c.id === clipOrAssetId)
+          if (clip) {
+            mediaPath = expectedPath(manifest, clip.mediaRef, get().projectDir)
+            break
+          }
+        }
+      }
+      if (!mediaPath) return { ok: false, error: `transcribe: clip/asset "${clipOrAssetId}" not found.` }
+
+      set((s) => { s.transcribing = true; s.lastError = null })
+      try {
+        const res = await window.editorBridge.transcribeMedia({ mediaPath, ...opts })
+        if (!res.ok || !res.words) {
+          set((s) => { s.transcribing = false; s.lastError = res.error ?? 'Transcription failed.' })
+          return { ok: false, error: res.error }
+        }
+        set((s) => { s.transcribing = false; s.transcript = res.words! })
+        return { ok: true, result: { wordCount: res.words!.length, text: res.text } }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        set((s) => { s.transcribing = false; s.lastError = msg })
+        return { ok: false, error: msg }
+      }
+    },
+
+    clearTranscript: () => set((s) => { s.transcript = null }),
+
+    exportTranscriptSrt: async () => {
+      const words = get().transcript
+      if (!words) return
+      // Group consecutive words into ~5-word subtitle lines, emit SRT.
+      const onlyWords = words.filter((w) => w.type === 'word')
+      if (!onlyWords.length) return
+      const lines: { start: number; end: number; text: string }[] = []
+      const GROUP = 5
+      for (let i = 0; i < onlyWords.length; i += GROUP) {
+        const chunk = onlyWords.slice(i, i + GROUP)
+        lines.push({ start: chunk[0].startMs, end: chunk[chunk.length - 1].endMs, text: chunk.map((w) => w.text).join(' ') })
+      }
+      const toSrtTime = (ms: number): string => {
+        const h = Math.floor(ms / 3600000)
+        const m = Math.floor((ms % 3600000) / 60000)
+        const s = Math.floor((ms % 60000) / 1000)
+        const msRem = ms % 1000
+        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(msRem).padStart(3, '0')}`
+      }
+      const srt = lines
+        .map((l, i) => `${i + 1}\n${toSrtTime(l.start)} --> ${toSrtTime(l.end)}\n${l.text}`)
+        .join('\n\n')
+      // Write to a blob and trigger download via a data URL.
+      const blob = new Blob([srt], { type: 'text/plain' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${get().projectName}.srt`
+      a.click()
+      URL.revokeObjectURL(url)
+    }
   }))
 )
 

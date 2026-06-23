@@ -141,4 +141,29 @@ export interface AudioOffsetResult {
   error?: string
 }
 
+/** A single word (or spacing/audio-event) from ElevenLabs Scribe, with ms-accurate timestamps. */
+export interface TranscriptWord {
+  text: string
+  startMs: number
+  endMs: number
+  type: 'word' | 'spacing' | 'audio_event'
+  speakerId: string | null
+}
+
+/** Request for `ai:transcribe` — run ElevenLabs STT on a media file. */
+export interface TranscribeRequest {
+  /** Absolute path to the source video/audio file. */
+  mediaPath: string
+  languageCode?: string
+  /** Enable speaker diarization (who said what). */
+  diarize?: boolean
+}
+
+export interface TranscribeResult {
+  ok: boolean
+  text?: string
+  words?: TranscriptWord[]
+  error?: string
+}
+
 export const PROJECT_SCHEMA_VERSION = 1

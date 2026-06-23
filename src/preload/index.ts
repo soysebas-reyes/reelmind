@@ -18,7 +18,9 @@ import type {
   SaveResult,
   SilenceSeconds,
   ThumbnailRequest,
-  ThumbnailResult
+  ThumbnailResult,
+  TranscribeRequest,
+  TranscribeResult
 } from '../shared/ipc'
 
 /**
@@ -62,6 +64,9 @@ const editorBridge = {
   colorLutData: (req: ColorLutDataRequest): Promise<ColorLutData | null> => ipcRenderer.invoke('color:lutData', req),
   colorGetLutLibrary: (): Promise<string | null> => ipcRenderer.invoke('color:getLutLibrary'),
   colorSetLutLibrary: (): Promise<string | null> => ipcRenderer.invoke('color:setLutLibrary'),
+
+  transcribeMedia: (req: TranscribeRequest): Promise<TranscribeResult> =>
+    ipcRenderer.invoke('ai:transcribe', req),
 
   aiHasKey: (): Promise<boolean> => ipcRenderer.invoke('ai:hasKey'),
   aiSetKey: (key: string): Promise<void> => ipcRenderer.invoke('ai:setKey', key),

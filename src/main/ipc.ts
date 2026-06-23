@@ -14,9 +14,11 @@ import type {
   ExportRequest,
   ExtractAudioRequest,
   ProjectData,
-  ThumbnailRequest
+  ThumbnailRequest,
+  TranscribeRequest
 } from '../shared/ipc'
 import { complete } from './ai/anthropic'
+import { transcribeMedia } from './elevenlabs/transcript'
 import { clearApiKey, hasApiKey, setApiKey } from './ai/secrets'
 import { getLutLibraryDir, profileLutDir, setLutLibraryDir } from './color/colorSettings'
 import { resolveLut } from './color/lutResolver'
@@ -202,6 +204,22 @@ export function registerIpc(): void {
     if (res.canceled || !res.filePaths[0]) return getLutLibraryDir()
     setLutLibraryDir(res.filePaths[0])
     return res.filePaths[0]
+  })
+
+  // ElevenLabs Speech-to-Text: extract audio → Scribe v1 → word-level timestamps.
+  ipcMain.handle('ai:transcribe', async (_e, req: TranscribeRequest) => {
+    const apiKey = process.env.ELEVENLABS_API_KEY
+    if (!apiKey) return { ok: false, error: 'ELEVENLABS_API_KEY not set. Add it to .env or app settings.' }
+    try {
+      const outDir = join(app.getPath('userData'), 'imported')
+      const result = await transcribeMedia(req.mediaPath, apiKey, outDir, {
+        languageCode: req.languageCode,
+        diarize: req.diarize
+      })
+      return { ok: true, text: result.text, words: result.words }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
   })
 
   ipcMain.handle('ai:hasKey', () => hasApiKey())

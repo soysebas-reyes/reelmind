@@ -133,5 +133,30 @@ export async function runEditorTool(name: string, input: unknown): Promise<ToolC
     return useEditorStore.getState().syncAnglesTool((input ?? {}) as SyncAnglesInput)
   }
 
+  if (name === 'transcribe_clip') {
+    const { clipId, languageCode, diarize } = (input ?? {}) as {
+      clipId?: string
+      languageCode?: string
+      diarize?: boolean
+    }
+    const target = clipId ?? getController().getSelectedClipIds()[0]
+    if (!target) return { ok: false, error: 'transcribe_clip: selecciona un clip o pasa clipId.' }
+    return useEditorStore.getState().transcribeClip(target, { languageCode, diarize })
+  }
+
+  if (name === 'get_transcript') {
+    const transcript = useEditorStore.getState().transcript
+    if (!transcript) return { ok: true, result: null }
+    const words = transcript.filter((w) => w.type === 'word')
+    return {
+      ok: true,
+      result: {
+        wordCount: words.length,
+        durationMs: words.length > 0 ? words[words.length - 1].endMs : 0,
+        words: transcript
+      }
+    }
+  }
+
   return executeTool(getController(), name, input)
 }

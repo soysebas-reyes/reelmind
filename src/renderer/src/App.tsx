@@ -146,11 +146,17 @@ export default function App() {
     applySyncAngles,
     dismissSyncResult,
     syncBusy,
-    syncResult
+    syncResult,
+    transcribing,
+    transcript,
+    transcribeClip,
+    clearTranscript,
+    exportTranscriptSrt
   } = useEditorStore()
 
   const [layout, setLayout] = useState<Layout>(loadLayout)
   const [colorOpen, setColorOpen] = useState(false)
+  const [transcriptOpen, setTranscriptOpen] = useState(false)
   // Sync confirmation modal options (frontal/lateral swap, which audio to keep, per-angle color).
   const [syncSwap, setSyncSwap] = useState(false)
   const [syncKeepAudio, setSyncKeepAudio] = useState<'frontal' | 'lateral'>('frontal')
@@ -176,6 +182,13 @@ export default function App() {
   const selectedVideoIds = selectedClipIds.filter((id) => getController().getClip(id)?.mediaType === 'video')
   const canExtractAudio = selectedVideoIds.length === 1
   const canSyncAngles = selectedVideoIds.length === 2
+  const canDeleteTrack = selectedClipIds.length > 0
+  const selectedTrackId: string | null = (() => {
+    if (selectedClipIds.length === 0) return null
+    const id = selectedClipIds[0]
+    return timeline.tracks.find((t) => t.clips.some((c) => c.id === id))?.id ?? null
+  })()
+  const canTranscribe = selectedVideoIds.length >= 1
   const clipDisplayName = (clipId?: string): string => {
     if (!clipId) return ''
     const clip = getController().getClip(clipId)
@@ -284,6 +297,34 @@ export default function App() {
             title={canSyncAngles ? 'Alinear dos ángulos por su audio' : 'Selecciona exactamente 2 clips de video'}
           >
             🎬 Sincronizar ángulos
+          </button>
+          <button
+            onClick={() => {
+              if (canTranscribe) {
+                void transcribeClip(selectedVideoIds[0])
+                setTranscriptOpen(true)
+              }
+            }}
+            disabled={!canTranscribe || !!busy || transcribing}
+            title={canTranscribe ? 'Transcribir con ElevenLabs (requiere API key)' : 'Selecciona un clip de video'}
+          >
+            {transcribing ? '⏳ Transcribiendo…' : '📝 Transcribir'}
+          </button>
+          {transcript && (
+            <button onClick={() => setTranscriptOpen(true)} title="Ver transcript">
+              📄 Ver transcript
+            </button>
+          )}
+          <span className="tl-sep" />
+          <button
+            onClick={() => {
+              if (selectedTrackId) getController().removeTrack(selectedTrackId)
+            }}
+            disabled={!canDeleteTrack}
+            title={canDeleteTrack ? 'Eliminar la pista del clip seleccionado' : 'Selecciona un clip primero'}
+            style={{ color: canDeleteTrack ? 'var(--danger, #e05555)' : undefined }}
+          >
+            🗑️ Eliminar pista
           </button>
         </div>
       </header>
@@ -410,6 +451,58 @@ export default function App() {
             <div className="spinner" />
             <h2>Analizando audio para sincronizar…</h2>
             <p className="export-note">Comparando las pistas de audio de ambos ángulos. Puede tardar unos segundos.</p>
+          </div>
+        </div>
+      )}
+
+      {transcriptOpen && (
+        <div className="modal-backdrop" onMouseDown={() => setTranscriptOpen(false)}>
+          <div className="modal transcript-modal" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h2>Transcript</h2>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {transcript && (
+                  <button className="primary" onClick={() => void exportTranscriptSrt()} title="Exportar como .srt">
+                    ↓ .srt
+                  </button>
+                )}
+                <button
+                  onClick={() => { clearTranscript(); setTranscriptOpen(false) }}
+                  title="Borrar transcript"
+                  style={{ color: 'var(--danger, #e05555)' }}
+                >
+                  Borrar
+                </button>
+                <button className="modal-close" onClick={() => setTranscriptOpen(false)}>✕</button>
+              </div>
+            </div>
+            {transcribing ? (
+              <div style={{ textAlign: 'center', padding: '2rem' }}>
+                <div className="spinner" />
+                <p>Transcribiendo con ElevenLabs Scribe…</p>
+              </div>
+            ) : transcript ? (
+              <div className="transcript-body">
+                <div className="transcript-plain">
+                  {transcript.filter((w) => w.type === 'word').map((w) => w.text).join(' ')}
+                </div>
+                <div className="transcript-words">
+                  {transcript
+                    .filter((w) => w.type === 'word')
+                    .map((w, i) => (
+                      <span key={i} className="transcript-word" title={`${(w.startMs / 1000).toFixed(2)}s – ${(w.endMs / 1000).toFixed(2)}s`}>
+                        {w.text}
+                        <span className="transcript-ts">{(w.startMs / 1000).toFixed(1)}s</span>
+                      </span>
+                    ))}
+                </div>
+              </div>
+            ) : (
+              <div style={{ padding: '1.5rem', color: 'var(--fg-muted)' }}>
+                <p>No hay transcript. Selecciona un clip de video y haz clic en "Transcribir".</p>
+                <p style={{ marginTop: 8, fontSize: '0.85em' }}>Requiere <code>ELEVENLABS_API_KEY</code> en .env</p>
+              </div>
+            )}
           </div>
         </div>
       )}
