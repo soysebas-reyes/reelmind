@@ -17,6 +17,7 @@ import {
   sround
 } from '@core'
 import { getController, timelineTotalFrames, useEditorStore } from '../store'
+import ContextMenu, { type MenuEntry, type MenuItem } from '../ui/ContextMenu'
 import {
   type ClipBox,
   type TimelineLayout,
@@ -151,6 +152,7 @@ export default function Timeline(): React.JSX.Element {
   const [scrollX, setScrollX] = useState(0)
   const [size, setSize] = useState({ width: 0, height: 0 })
   const [notice, setNotice] = useState<string | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
 
   const layout = useMemo<TimelineLayout>(() => makeLayout(pixelsPerFrame), [pixelsPerFrame])
   const selected = useMemo(() => new Set(selectedClipIds), [selectedClipIds])
@@ -506,6 +508,26 @@ export default function Timeline(): React.JSX.Element {
       } else if (mod && (e.key === 'y' || e.key === 'Y')) {
         e.preventDefault()
         c.redo()
+      } else if (mod && (e.key === 'c' || e.key === 'C')) {
+        if (c.getSelectedClipIds().length > 0) {
+          e.preventDefault()
+          useEditorStore.getState().copySelection()
+        }
+      } else if (mod && (e.key === 'x' || e.key === 'X')) {
+        if (c.getSelectedClipIds().length > 0) {
+          e.preventDefault()
+          useEditorStore.getState().cutSelection()
+        }
+      } else if (mod && (e.key === 'v' || e.key === 'V')) {
+        if (useEditorStore.getState().hasClipboard) {
+          e.preventDefault()
+          useEditorStore.getState().pasteAtFrame()
+        }
+      } else if (mod && (e.key === 'd' || e.key === 'D')) {
+        if (c.getSelectedClipIds().length > 0) {
+          e.preventDefault()
+          useEditorStore.getState().duplicateSelection()
+        }
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         if (c.getSelectedClipIds().length > 0) {
           e.preventDefault()
@@ -571,6 +593,9 @@ export default function Timeline(): React.JSX.Element {
   }
 
   function onPointerDown(e: React.PointerEvent<HTMLCanvasElement>): void {
+    // Only the primary button starts interactions — right-click belongs to the context menu
+    // (without this, right-click used to start drags/seeks and capture the pointer).
+    if (e.button !== 0) return
     const { x, y } = localPoint(e)
     const c = getController()
 
@@ -761,6 +786,117 @@ export default function Timeline(): React.JSX.Element {
     drawRef.current()
   }
 
+  // --- Right-click context menu ---
+
+  function onContextMenu(e: React.MouseEvent<HTMLCanvasElement>): void {
+    e.preventDefault()
+    const r = (e.target as HTMLCanvasElement).getBoundingClientRect()
+    const x = e.clientX - r.left
+    const y = e.clientY - r.top
+    const c = getController()
+    const store = useEditorStore.getState()
+    const frame = Math.max(0, frameForX(Math.max(layout.headerWidth, x), layout, scrollX))
+
+    // Track header → track menu.
+    if (x < layout.headerWidth) {
+      const ti = trackIndexForY(y, layout, timeline.tracks.length)
+      if (ti < 0 || ti >= timeline.tracks.length) return
+      const track = timeline.tracks[ti]
+      const roleName: Record<string, string> = { frontal: 'Frontal', lateral: 'Lateral', broll: 'B-roll' }
+      const roleEntry = (role: TrackRole | undefined, label: string): MenuEntry => ({
+        label,
+        checked: track.role === role,
+        onClick: () => c.setTrackRole(track.id, role)
+      })
+      const items: MenuItem[] = [
+        { label: 'Silenciar', checked: track.muted, onClick: () => c.setTrackMuted(track.id) },
+        { label: 'Ocultar', checked: track.hidden, onClick: () => c.setTrackHidden(track.id) },
+        { label: 'Bloquear sincronía', checked: track.syncLocked, onClick: () => c.setTrackSyncLocked(track.id) },
+        'separator',
+        {
+          label: `Rol: ${track.role ? roleName[track.role] : 'Ninguno'}`,
+          submenu: [
+            roleEntry('frontal', 'Frontal'),
+            roleEntry('lateral', 'Lateral'),
+            roleEntry('broll', 'B-roll'),
+            roleEntry(undefined, 'Ninguno')
+          ]
+        },
+        'separator',
+        {
+          label: 'Seleccionar clips de la pista',
+          disabled: track.clips.length === 0,
+          onClick: () => c.selectTrackClips(track.id)
+        },
+        'separator',
+        {
+          label: 'Eliminar pista',
+          danger: true,
+          onClick: () => {
+            if (
+              track.clips.length > 0 &&
+              !window.confirm(`Esta pista tiene ${track.clips.length} clip(s). ¿Eliminar la pista y todos sus clips?`)
+            )
+              return
+            c.removeTrack(track.id)
+          }
+        }
+      ]
+      setMenu({ x: e.clientX, y: e.clientY, items })
+      return
+    }
+
+    const hit = y >= layout.rulerHeight ? hitClip(x, y) : null
+    if (hit && 'clip' in hit) {
+      const clip = hit.clip as Clip
+      // Keep an existing multi-selection when the clicked clip is part of it; otherwise select it.
+      if (!selected.has(clip.id)) c.selectOnly(clip.id)
+      const speedEntry = (v: number): MenuEntry => ({
+        label: `${v}×`,
+        checked: clip.speed === v,
+        onClick: () => c.setClipSpeed(clip.id, v)
+      })
+      const items: MenuItem[] = [
+        { label: 'Cortar', shortcut: 'Ctrl+X', onClick: () => store.cutSelection() },
+        { label: 'Copiar', shortcut: 'Ctrl+C', onClick: () => store.copySelection() },
+        { label: 'Pegar', shortcut: 'Ctrl+V', disabled: !store.hasClipboard, onClick: () => store.pasteAtFrame(frame) },
+        { label: 'Duplicar', shortcut: 'Ctrl+D', onClick: () => store.duplicateSelection() },
+        'separator',
+        {
+          label: 'Dividir aquí',
+          shortcut: 'S',
+          onClick: () => {
+            if (c.splitClip(clip.id, frame) === null) c.splitAtPlayhead()
+          }
+        },
+        { label: 'Eliminar', shortcut: 'Supr', onClick: () => c.removeClips(c.getSelectedClipIds()) },
+        {
+          label: 'Eliminar y cerrar hueco',
+          onClick: () => {
+            const res = c.rippleDelete(c.getSelectedClipIds())
+            if (!res.ok && res.reason) flashNotice(res.reason)
+          }
+        },
+        'separator',
+        { label: 'Velocidad', submenu: [speedEntry(0.5), speedEntry(1), speedEntry(1.5), speedEntry(2)] },
+        'separator',
+        { label: 'Colorizar…', onClick: () => store.setColorInspectorOpen(true) },
+        { label: 'Realzar audio…', onClick: () => store.setAudioInspectorOpen(true) }
+      ]
+      setMenu({ x: e.clientX, y: e.clientY, items })
+      return
+    }
+
+    // Empty area / ruler → paste + track creation.
+    const items: MenuItem[] = [
+      { label: 'Pegar aquí', shortcut: 'Ctrl+V', disabled: !store.hasClipboard, onClick: () => store.pasteAtFrame(frame) },
+      'separator',
+      { label: 'Añadir pista de video', onClick: () => c.addTrack('video') },
+      { label: 'Añadir pista de audio', onClick: () => c.addTrack('audio') }
+    ]
+    setMenu({ x: e.clientX, y: e.clientY, items })
+  }
+
   // --- Drag from media bin ---
 
   function onDragOver(e: React.DragEvent<HTMLDivElement>): void {
@@ -870,8 +1006,10 @@ export default function Timeline(): React.JSX.Element {
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp}
           onWheel={onWheel}
+          onContextMenu={onContextMenu}
         />
       </div>
+      {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
     </div>
   )
 }

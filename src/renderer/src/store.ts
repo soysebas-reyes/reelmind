@@ -9,6 +9,7 @@
 import {
   type AudioEnhanceSettings,
   type Clip,
+  type ClipboardPayload,
   type CommandOrigin,
   Defaults,
   EditorController,
@@ -28,6 +29,8 @@ import {
   makeTimeline,
   newId,
   presetById,
+  resolvePasteTargets,
+  serializeSelection,
   totalFrames
 } from '@core'
 import { create } from 'zustand'
@@ -40,6 +43,10 @@ const controller = new EditorController()
 export function getController(): EditorController {
   return controller
 }
+
+/** Session clipboard for clip copy/paste. Module-scoped (not undoable, not persisted);
+ *  `hasClipboard` mirrors its presence into the store so menus can enable "Pegar". */
+let clipboard: ClipboardPayload | null = null
 
 function baseName(p: string): string {
   const parts = p.split(/[\\/]/)
@@ -491,6 +498,12 @@ export interface EditorState {
   anglePlan: AnglePlan | null
   /** True while the Preview transport is playing. Lifted here so the Timeline can follow the playhead. */
   isPlaying: boolean
+  /** True when the session clipboard holds clips (enables "Pegar" in menus/shortcuts). */
+  hasClipboard: boolean
+  /** Color grading modal visibility. Store-owned so the toolbar AND the clip context menu can open it. */
+  colorInspectorOpen: boolean
+  /** Audio enhance modal visibility (same reason). */
+  audioInspectorOpen: boolean
 
   init: () => Promise<void>
   newProject: () => void
@@ -544,6 +557,16 @@ export interface EditorState {
   /** Toggle playback from anywhere (Space, preview click, transport button). Restarts from 0 when the
    *  playhead sits at the end; no-op on an empty timeline. */
   togglePlayback: () => void
+  /** Copy the selected clips to the session clipboard. */
+  copySelection: () => void
+  /** Copy the selected clips, then remove them (one undo step). */
+  cutSelection: () => void
+  /** Paste the clipboard at `frame` (default: playhead), creating tracks when needed. Selects the copies. */
+  pasteAtFrame: (frame?: number) => void
+  /** Duplicate the selected clips right after their own end (one undo step). Selects the copies. */
+  duplicateSelection: () => void
+  setColorInspectorOpen: (open: boolean) => void
+  setAudioInspectorOpen: (open: boolean) => void
   /** One-shot (agente/MCP): analiza y aplica los cortes de inmediato, sin previsualización. */
   applyAutoAngles: (opts?: { destructive?: boolean }) => Promise<ToolCallResult>
   // Progress modal controls.
@@ -583,6 +606,9 @@ export const useEditorStore = create<EditorState>()(
     progress: null,
     anglePlan: null,
     isPlaying: false,
+    hasClipboard: false,
+    colorInspectorOpen: false,
+    audioInspectorOpen: false,
 
     init: async () => {
       window.editorBridge.onExportProgress((fraction) =>
@@ -1332,6 +1358,51 @@ clearTranscript: () => set((s) => { s.transcript = null }),
       if (!playing && c.getCurrentFrame() >= total) c.seek(0)
       set((s) => { s.isPlaying = !playing })
     },
+
+    copySelection: () => {
+      const c = getController()
+      const payload = serializeSelection(c.getTimeline(), c.getSelectedClipIds())
+      if (!payload) return
+      clipboard = payload
+      set((s) => { s.hasClipboard = true })
+    },
+
+    cutSelection: () => {
+      const c = getController()
+      const ids = c.getSelectedClipIds()
+      const payload = serializeSelection(c.getTimeline(), ids)
+      if (!payload) return
+      clipboard = payload
+      c.transact('Cortar', () => c.removeClips(ids))
+      set((s) => { s.hasClipboard = true })
+    },
+
+    pasteAtFrame: (frame) => {
+      const c = getController()
+      if (!clipboard) return
+      const at = frame ?? c.getCurrentFrame()
+      const targets = resolvePasteTargets(c.getTimeline(), clipboard, at)
+      const newIds: string[] = []
+      c.transact('Pegar', () => {
+        newIds.push(...c.insertClips(targets.existing, 'Pegar'))
+        for (const nt of targets.needTracks) {
+          const trackId = c.addTrack(nt.trackType)
+          newIds.push(...c.insertClips(nt.items.map((it) => ({ ...it, trackId })), 'Pegar'))
+        }
+      })
+      if (newIds.length > 0) c.select(newIds)
+    },
+
+    duplicateSelection: () => {
+      const c = getController()
+      const ids = c.getSelectedClipIds()
+      if (ids.length === 0) return
+      const newIds = c.duplicateClips(ids)
+      if (newIds.length > 0) c.select(newIds)
+    },
+
+    setColorInspectorOpen: (open) => set((s) => { s.colorInspectorOpen = open }),
+    setAudioInspectorOpen: (open) => set((s) => { s.audioInspectorOpen = open }),
 
     applyAutoAngles: async (opts) => {
       // One-shot path (AI/MCP): analyze then apply immediately, no preview.

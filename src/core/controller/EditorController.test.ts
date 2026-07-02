@@ -522,3 +522,143 @@ describe('EditorController — project settings', () => {
     expect([c.getTimeline().width, c.getTimeline().settingsConfigured]).toEqual([1920, false])
   })
 })
+
+describe('EditorController — insertClips / duplicateClips (paste machinery)', () => {
+  it('inserts deep copies with fresh ids, preserving appearance fields and overwriting the landing zone', () => {
+    const { c, v1 } = seeded()
+    c.addClip({ trackId: v1, mediaRef: 'm', startFrame: 0, durationFrames: 60, id: 'SRC' })
+    c.setClipProperties('SRC', { opacity: 0.4, fadeInFrames: 12 })
+    c.setClipColor('SRC', { saturation: 0.7 })
+    c.addClip({ trackId: v1, mediaRef: 'other', startFrame: 100, durationFrames: 60, id: 'VICTIM' })
+
+    const src = c.getClip('SRC')!
+    const [newId] = c.insertClips([{ clip: structuredClone(src), trackId: v1, startFrame: 90 }])
+    const pasted = c.getClip(newId)!
+    expect(pasted.id).not.toBe('SRC')
+    expect(pasted.opacity).toBe(0.4)
+    expect(pasted.fadeInFrames).toBe(12)
+    expect(pasted.color?.saturation).toBe(0.7)
+    expect(pasted.startFrame).toBe(90)
+    // Overwrite semantics: VICTIM was trimmed/split by the landing region [90,150).
+    const victim = c.getClip('VICTIM')
+    expect(victim === null || victim.startFrame >= 150 || clipEndFrame(victim) <= 90).toBe(true)
+  })
+
+  it('one undo step reverts the whole batch', () => {
+    const { c, v1, v2 } = seeded()
+    c.addClip({ trackId: v1, mediaRef: 'a', startFrame: 0, durationFrames: 30, id: 'A' })
+    const a = structuredClone(c.getClip('A')!)
+    c.reset(c.getTimeline())
+    c.insertClips([
+      { clip: a, trackId: v1, startFrame: 200 },
+      { clip: a, trackId: v2, startFrame: 300 }
+    ])
+    expect(c.getTrack(v1)!.clips).toHaveLength(2)
+    expect(c.getTrack(v2)!.clips).toHaveLength(1)
+    expect(c.undo()).toBe(true)
+    expect(c.getTrack(v1)!.clips).toHaveLength(1)
+    expect(c.getTrack(v2)!.clips).toHaveLength(0)
+    expect(c.canUndo()).toBe(false) // exactly one step
+  })
+
+  it('remaps a linkGroup shared inside the batch and drops a singleton linkGroup', () => {
+    const { c, v1, v2 } = seeded()
+    c.addClip({ trackId: v1, mediaRef: 'f', startFrame: 0, durationFrames: 60, id: 'F' })
+    c.addClip({ trackId: v2, mediaRef: 'l', startFrame: 0, durationFrames: 60, id: 'L' })
+    c.setClipProperties('F', { linkGroupId: 'G1' })
+    c.setClipProperties('L', { linkGroupId: 'G1' })
+
+    const f = structuredClone(c.getClip('F')!)
+    const l = structuredClone(c.getClip('L')!)
+    // Pair pasted together: keeps a shared NEW group id.
+    const pairIds = c.insertClips([
+      { clip: f, trackId: v1, startFrame: 100 },
+      { clip: l, trackId: v2, startFrame: 100 }
+    ])
+    const [pf, pl] = pairIds.map((id) => c.getClip(id)!)
+    expect(pf.linkGroupId).toBeTruthy()
+    expect(pf.linkGroupId).toBe(pl.linkGroupId)
+    expect(pf.linkGroupId).not.toBe('G1')
+    // Singleton: link dropped entirely.
+    const [soloId] = c.insertClips([{ clip: f, trackId: v1, startFrame: 300 }])
+    expect(c.getClip(soloId)!.linkGroupId).toBeUndefined()
+  })
+
+  it('skips missing and type-incompatible tracks', () => {
+    const { c, v1, a1 } = seeded()
+    c.addClip({ trackId: v1, mediaRef: 'm', startFrame: 0, durationFrames: 30, id: 'A' })
+    const a = structuredClone(c.getClip('A')!)
+    const ids = c.insertClips([
+      { clip: a, trackId: 'ghost', startFrame: 0 },
+      { clip: a, trackId: a1, startFrame: 0 }, // video clip onto audio track
+      { clip: a, trackId: v1, startFrame: 100 }
+    ])
+    expect(ids).toHaveLength(1)
+    expect(c.getClip(ids[0])!.startFrame).toBe(100)
+  })
+
+  it('duplicateClips lands the block right after its end, preserving multicam relative layout', () => {
+    const { c, v1, v2 } = seeded()
+    c.addClip({ trackId: v1, mediaRef: 'f', startFrame: 30, durationFrames: 60, id: 'F' })
+    c.addClip({ trackId: v2, mediaRef: 'l', startFrame: 60, durationFrames: 90, id: 'L' })
+    c.reset(c.getTimeline()) // clear setup history so the one-step assertion sees only the duplicate
+    const ids = c.duplicateClips(['F', 'L'])
+    expect(ids).toHaveLength(2)
+    // Block is [30, 150) → offset 120. F' at 150, L' at 180.
+    const dupF = c.getClip(ids[0])!
+    const dupL = c.getClip(ids[1])!
+    expect(dupF.startFrame).toBe(150)
+    expect(dupL.startFrame).toBe(180)
+    expect(c.getTrackOfClip(ids[0])!.id).toBe(v1)
+    expect(c.getTrackOfClip(ids[1])!.id).toBe(v2)
+    c.undo()
+    expect(c.getClip(ids[0])).toBeNull()
+    expect(c.canUndo()).toBe(false) // duplicate was one step
+  })
+})
+
+describe('EditorController — undo coalescing (slider gestures)', () => {
+  it('merges same-key edits into one undo step that restores the ORIGINAL value', () => {
+    const { c, v1 } = seeded()
+    c.addClip({ trackId: v1, mediaRef: 'm', startFrame: 0, durationFrames: 60, id: 'A' })
+    c.reset(c.getTimeline())
+    c.setClipProperties('A', { opacity: 0.8 }, 'Opacidad', 'gesture-1')
+    c.setClipProperties('A', { opacity: 0.5 }, 'Opacidad', 'gesture-1')
+    c.setClipProperties('A', { opacity: 0.2 }, 'Opacidad', 'gesture-1')
+    expect(c.getClip('A')!.opacity).toBe(0.2)
+    expect(c.undo()).toBe(true)
+    expect(c.getClip('A')!.opacity).toBe(1) // original, not 0.5
+    expect(c.canUndo()).toBe(false)
+    // Redo replays the whole gesture to its final value.
+    expect(c.redo()).toBe(true)
+    expect(c.getClip('A')!.opacity).toBe(0.2)
+  })
+
+  it('different keys create separate steps; keyless edits never merge', () => {
+    const { c, v1 } = seeded()
+    c.addClip({ trackId: v1, mediaRef: 'm', startFrame: 0, durationFrames: 60, id: 'A' })
+    c.reset(c.getTimeline())
+    c.setClipProperties('A', { opacity: 0.8 }, 'Opacidad', 'g1')
+    c.setClipProperties('A', { opacity: 0.5 }, 'Opacidad', 'g2')
+    c.setClipProperties('A', { volume: 0.5 })
+    c.undo()
+    expect(c.getClip('A')!.volume).toBe(1)
+    c.undo()
+    expect(c.getClip('A')!.opacity).toBe(0.8)
+    c.undo()
+    expect(c.getClip('A')!.opacity).toBe(1)
+  })
+
+  it('coalesces setClipSpeed gestures too', () => {
+    const { c, v1 } = seeded()
+    c.addClip({ trackId: v1, mediaRef: 'm', startFrame: 0, durationFrames: 60, id: 'A' })
+    c.reset(c.getTimeline())
+    c.setClipSpeed('A', 1.5, 'sg')
+    c.setClipSpeed('A', 2, 'sg')
+    expect(c.getClip('A')!.durationFrames).toBe(30)
+    c.undo()
+    expect(c.getClip('A')!.speed).toBe(1)
+    expect(c.getClip('A')!.durationFrames).toBe(60)
+    expect(c.canUndo()).toBe(false)
+  })
+})

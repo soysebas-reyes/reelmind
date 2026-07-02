@@ -323,3 +323,86 @@ describe('set_clip_color (P9.5)', () => {
     expect(tracks[0].clips[0].color?.saturation).toBe(0.88)
   })
 })
+
+describe('batch_operations', () => {
+  it('runs N core ops in order as ONE undo step and returns per-op results', () => {
+    const c = new EditorController()
+    const r = rec(
+      executeTool(c, 'batch_operations', {
+        operations: [
+          { tool: 'add_track', input: { type: 'video' } },
+          { tool: 'set_fps', input: { fps: 25 } },
+          { tool: 'set_resolution', input: { width: 1280, height: 720 } }
+        ]
+      }).result
+    )
+    expect(r.appliedCount).toBe(3)
+    expect(r.firstError).toBeUndefined()
+    const results = r.results as Rec[]
+    expect(results[0].trackId).toBeTruthy()
+    expect(c.getTimeline().fps).toBe(25)
+    expect(c.getTimeline().width).toBe(1280)
+    c.undo() // one step reverts all three
+    expect(c.getTimeline().tracks).toHaveLength(0)
+    expect(c.getTimeline().fps).toBe(30)
+    expect(c.canUndo()).toBe(false)
+  })
+
+  it('pre-validates every input: one invalid op means NOTHING runs', () => {
+    const c = new EditorController()
+    const r = executeTool(c, 'batch_operations', {
+      operations: [
+        { tool: 'add_track', input: { type: 'video' } },
+        { tool: 'add_track', input: { type: 'hologram' } } // invalid enum
+      ]
+    })
+    expect(rec(r.result).error).toMatch(/Operation 1/)
+    expect(c.getTimeline().tracks).toHaveLength(0)
+    expect(c.canUndo()).toBe(false)
+  })
+
+  it('rejects host tools, undo/redo, and nested batches up front', () => {
+    const c = new EditorController()
+    for (const tool of ['export', 'undo', 'batch_operations']) {
+      const r = executeTool(c, 'batch_operations', { operations: [{ tool, input: {} }] })
+      expect(rec(r.result).error).toBeTruthy()
+    }
+    expect(c.canUndo()).toBe(false)
+  })
+
+  it('stops at the first failing op (stopOnError default), keeping earlier ops applied', () => {
+    const c = new EditorController()
+    const trackId = rec(executeTool(c, 'add_track', { type: 'video' }).result).trackId as string
+    c.reset(c.getTimeline())
+    const r = rec(
+      executeTool(c, 'batch_operations', {
+        operations: [
+          { tool: 'add_clip', input: { trackId, mediaRef: 'a', startFrame: 0, durationFrames: 30 } },
+          { tool: 'add_clip', input: { trackId: 'ghost', mediaRef: 'b', startFrame: 50, durationFrames: 30 } },
+          { tool: 'add_clip', input: { trackId, mediaRef: 'c', startFrame: 100, durationFrames: 30 } }
+        ]
+      }).result
+    )
+    expect(r.firstError).toMatch(/op 1/)
+    expect(r.appliedCount).toBe(2) // op 2 never ran
+    expect(c.getTimeline().tracks[0].clips).toHaveLength(1) // op 0 stayed applied
+    c.undo()
+    expect(c.getTimeline().tracks[0].clips).toHaveLength(0)
+  })
+
+  it('enforces the 50-op cap', () => {
+    const c = new EditorController()
+    const operations = Array.from({ length: 51 }, () => ({ tool: 'seek', input: { frame: 0 } }))
+    expect(executeTool(c, 'batch_operations', { operations }).ok).toBe(false)
+  })
+})
+
+describe('list_assets (host-only declaration)', () => {
+  it('advertises list_assets but the core executor refuses it', () => {
+    const c = new EditorController()
+    expect(HOST_EXECUTED_TOOLS.has('list_assets')).toBe(true)
+    const r = executeTool(c, 'list_assets', {})
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/host/i)
+  })
+})

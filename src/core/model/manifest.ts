@@ -68,3 +68,34 @@ export function makeManifest(p: Partial<MediaManifest> = {}): MediaManifest {
     folders: p.folders ?? []
   }
 }
+
+export interface AssetListing {
+  assetId: string
+  name: string
+  type: ClipType
+  durationSeconds: number
+  width?: number
+  height?: number
+  fps?: number
+  hasAudio?: boolean
+  folderId?: string
+  hasProxy: boolean
+}
+
+/** Serializable bin listing for the `list_assets` tool (pure — testable without the store). */
+export function manifestToAssetList(manifest: MediaManifest, type?: ClipType): AssetListing[] {
+  return manifest.entries
+    .filter((e) => type === undefined || e.type === type)
+    .map((e) => ({
+      assetId: e.id,
+      name: e.name,
+      type: e.type,
+      durationSeconds: e.duration,
+      width: e.sourceWidth,
+      height: e.sourceHeight,
+      fps: e.sourceFPS,
+      hasAudio: e.hasAudio,
+      folderId: e.folderId,
+      hasProxy: e.proxyPath !== undefined
+    }))
+}

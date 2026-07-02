@@ -62,6 +62,9 @@ interface UndoEntry {
   inverse: Patch[]
   label: string
   origin: CommandOrigin
+  /** When set and equal to the previous entry's key, the entries merge into one undo step.
+   *  Used by slider gestures: one pointer-down..up = one key = one step. */
+  coalesceKey?: string
 }
 
 export interface RippleOutcome {
@@ -101,6 +104,14 @@ export interface MoveSpec {
   clipId: string
   toTrackId: string
   toFrame: number
+}
+
+/** One clip to insert with full fidelity (paste/duplicate). The clip's appearance fields
+ *  (transform/color/fades/keyframes/…) are preserved verbatim; id and linkGroupId are re-issued. */
+export interface InsertClipItem {
+  clip: Clip
+  trackId: string
+  startFrame: number
 }
 
 /** Whitelisted appearance/behavior fields editable through `setClipProperties`.
@@ -380,7 +391,7 @@ export class EditorController {
     return this.run(label, fn)
   }
 
-  private run<T>(label: string, fn: () => T): T {
+  private run<T>(label: string, fn: () => T, coalesceKey?: string): T {
     const top = this.txDepth === 0
     this.txDepth += 1
     if (top) {
@@ -394,12 +405,21 @@ export class EditorController {
     } finally {
       this.txDepth -= 1
       if (this.txDepth === 0 && this.txChanged && this.txPatches.length > 0) {
-        this.undoStack.push({
-          patches: this.txPatches,
-          inverse: this.txInverse,
-          label: this.txLabel,
-          origin: this.origin
-        })
+        const prev = this.undoStack[this.undoStack.length - 1]
+        if (coalesceKey !== undefined && prev?.coalesceKey === coalesceKey) {
+          // Same gesture: extend the previous step. Forward patches append; inverse patches must
+          // replay newest-first (mirrors mutate()'s unshift).
+          prev.patches = [...prev.patches, ...this.txPatches]
+          prev.inverse = [...this.txInverse, ...prev.inverse]
+        } else {
+          this.undoStack.push({
+            patches: this.txPatches,
+            inverse: this.txInverse,
+            label: this.txLabel,
+            origin: this.origin,
+            coalesceKey
+          })
+        }
         this.redoStack = []
         this.txPatches = []
         this.txInverse = []
@@ -647,6 +667,68 @@ export class EditorController {
       })
     )
     return placed ? id : null
+  }
+
+  /** Full-fidelity insert (paste/duplicate): drops deep copies of the given clips with fresh ids,
+   *  overwriting their landing regions. Unlike `addClip` (which rebuilds via `makeClip`), every
+   *  appearance field — transform, crop, color, fades, keyframe tracks, text — survives verbatim.
+   *  linkGroupId handling: groups with ≥2 members inside this batch get a fresh SHARED id (a pasted
+   *  multicam pair stays linked to itself); singletons drop it (no phantom link to the originals).
+   *  Items whose track is missing or type-incompatible are skipped. Returns the new clip ids. */
+  insertClips(items: InsertClipItem[], label = 'Pegar'): string[] {
+    const newIds: string[] = []
+    if (items.length === 0) return newIds
+    const groupCounts = new Map<string, number>()
+    for (const it of items) {
+      if (it.clip.linkGroupId) groupCounts.set(it.clip.linkGroupId, (groupCounts.get(it.clip.linkGroupId) ?? 0) + 1)
+    }
+    const groupRemap = new Map<string, string>()
+    for (const [g, n] of groupCounts) if (n >= 2) groupRemap.set(g, newId())
+
+    this.run(label, () =>
+      this.mutate((tl) => {
+        for (const it of items) {
+          const ti = trackIndexById(tl, it.trackId)
+          if (ti < 0) continue
+          const track = tl.tracks[ti]
+          if (!isCompatible(track.type, it.clip.mediaType)) continue
+          const clip = cloneClip(it.clip)
+          clip.id = newId()
+          clip.startFrame = Math.max(0, Math.round(it.startFrame))
+          if (clip.linkGroupId !== undefined) {
+            const remapped = groupRemap.get(clip.linkGroupId)
+            if (remapped) clip.linkGroupId = remapped
+            else delete clip.linkGroupId
+          }
+          clearRegionInTrack(track, clip.startFrame, clip.startFrame + clip.durationFrames)
+          track.clips.push(clip)
+          sortTrack(track)
+          newIds.push(clip.id)
+        }
+      })
+    )
+    return newIds
+  }
+
+  /** Duplicate clips CapCut-style: the copied block lands right after its own end (same tracks,
+   *  relative layout preserved — a multicam pair stays aligned). One undo step. Returns new ids. */
+  duplicateClips(ids: string[]): string[] {
+    const items: InsertClipItem[] = []
+    let minStart = Infinity
+    let maxEnd = 0
+    for (const id of ids) {
+      const loc = locateClip(this.timeline, id)
+      if (!loc) continue
+      const track = this.timeline.tracks[loc.trackIndex]
+      const clip = track.clips[loc.clipIndex]
+      minStart = Math.min(minStart, clip.startFrame)
+      maxEnd = Math.max(maxEnd, clipEndFrame(clip))
+      items.push({ clip: cloneClip(clip), trackId: track.id, startFrame: clip.startFrame })
+    }
+    if (items.length === 0) return []
+    const offset = maxEnd - minStart
+    for (const it of items) it.startFrame += offset
+    return this.transact('Duplicar', () => this.insertClips(items, 'Duplicar'))
   }
 
   // MARK: Move
@@ -937,45 +1019,52 @@ export class EditorController {
 
   // MARK: Speed / properties
 
-  setClipSpeed(clipId: string, newSpeed: number): void {
+  setClipSpeed(clipId: string, newSpeed: number, coalesceKey?: string): void {
     if (newSpeed <= 0) return
-    this.run('Change Speed', () =>
-      this.mutate((tl) => {
-        const loc = locateClip(tl, clipId)
-        if (!loc) return
-        const ti = loc.trackIndex
-        const c = tl.tracks[ti].clips[loc.clipIndex]
-        const sourceFrames = c.durationFrames * c.speed
-        const newDuration = Math.max(1, sround(sourceFrames / newSpeed))
-        const oldEnd = clipEndFrame(c)
-        c.speed = newSpeed
-        setClipDuration(c, newDuration)
-        clampKeyframesToDuration(c)
-        const rippleDelta = c.startFrame + newDuration - oldEnd
-        if (rippleDelta !== 0) {
-          const chain = contiguousClipIds(tl.tracks[ti], oldEnd, c.id)
-          for (const cc of tl.tracks[ti].clips) if (chain.has(cc.id)) cc.startFrame += rippleDelta
-        }
-        sortTrack(tl.tracks[ti])
-      })
+    this.run(
+      'Change Speed',
+      () =>
+        this.mutate((tl) => {
+          const loc = locateClip(tl, clipId)
+          if (!loc) return
+          const ti = loc.trackIndex
+          const c = tl.tracks[ti].clips[loc.clipIndex]
+          const sourceFrames = c.durationFrames * c.speed
+          const newDuration = Math.max(1, sround(sourceFrames / newSpeed))
+          const oldEnd = clipEndFrame(c)
+          c.speed = newSpeed
+          setClipDuration(c, newDuration)
+          clampKeyframesToDuration(c)
+          const rippleDelta = c.startFrame + newDuration - oldEnd
+          if (rippleDelta !== 0) {
+            const chain = contiguousClipIds(tl.tracks[ti], oldEnd, c.id)
+            for (const cc of tl.tracks[ti].clips) if (chain.has(cc.id)) cc.startFrame += rippleDelta
+          }
+          sortTrack(tl.tracks[ti])
+        }),
+      coalesceKey
     )
   }
 
-  /** Edit whitelisted appearance fields (volume, opacity, fades, transform, crop, text). */
-  setClipProperties(clipId: string, props: ClipPropertyEdit, label = 'Change Clip Property'): void {
-    this.run(label, () =>
-      this.mutate((tl) => {
-        const loc = locateClip(tl, clipId)
-        if (!loc) return
-        const c = tl.tracks[loc.trackIndex].clips[loc.clipIndex]
-        for (const key of EDITABLE_KEYS) {
-          if (props[key] !== undefined) {
-            // Whitelisted keys only; safe to write through.
-            ;(c as unknown as Record<string, unknown>)[key] = props[key] as unknown
+  /** Edit whitelisted appearance fields (volume, opacity, fades, transform, crop, text).
+   *  `coalesceKey`: pass one key per slider gesture so live updates merge into one undo step. */
+  setClipProperties(clipId: string, props: ClipPropertyEdit, label = 'Change Clip Property', coalesceKey?: string): void {
+    this.run(
+      label,
+      () =>
+        this.mutate((tl) => {
+          const loc = locateClip(tl, clipId)
+          if (!loc) return
+          const c = tl.tracks[loc.trackIndex].clips[loc.clipIndex]
+          for (const key of EDITABLE_KEYS) {
+            if (props[key] !== undefined) {
+              // Whitelisted keys only; safe to write through.
+              ;(c as unknown as Record<string, unknown>)[key] = props[key] as unknown
+            }
           }
-        }
-        clampFadesToDuration(c)
-      })
+          clampFadesToDuration(c)
+        }),
+      coalesceKey
     )
   }
 

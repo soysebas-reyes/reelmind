@@ -4,7 +4,16 @@
 // disk, the media bin, or FFmpeg) are handled here. Both the in-app agent and the MCP bridge call
 // this so they behave identically.
 
-import { type FrameCut, type SilenceSeconds, type ToolCallResult, executeTool, expectedPath, silencesToCuts } from '@core'
+import {
+  type ClipType,
+  type FrameCut,
+  type SilenceSeconds,
+  type ToolCallResult,
+  executeTool,
+  expectedPath,
+  manifestToAssetList,
+  silencesToCuts
+} from '@core'
 import { type SyncAnglesInput, getController, useEditorStore } from '../store'
 
 /** Import sources (file paths, http(s) URLs, or folders) through the store and report asset ids. */
@@ -146,6 +155,12 @@ export async function runEditorTool(name: string, input: unknown): Promise<ToolC
     const target = clipId ?? getController().getSelectedClipIds()[0]
     if (!target) return { ok: false, error: 'transcribe_clip: selecciona un clip o pasa clipId.' }
     return useEditorStore.getState().transcribeClip(target, { languageCode, diarize })
+  }
+
+  if (name === 'list_assets') {
+    const { type } = (input ?? {}) as { type?: ClipType }
+    const manifest = useEditorStore.getState().manifest
+    return { ok: true, result: { assets: manifestToAssetList(manifest, type), folders: manifest.folders } }
   }
 
   if (name === 'get_transcript') {

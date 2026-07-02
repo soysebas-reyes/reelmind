@@ -490,6 +490,68 @@ export const editorTools: ToolDef[] = [
       throw new Error('apply_auto_angles is executed by the host app, not the core executor')
     }
   ),
+  tool(
+    'batch_operations',
+    'Run several CORE timeline edits in ONE call and ONE undo step (e.g. place 10 clips, or split+color a whole sequence). Operations run strictly in order; an operation CANNOT reference results of an earlier one in the same batch — ids returned by add_clip/split_clip/add_track arrive in THIS call\'s results array, so chain batches: discover → batch A → use its ids in batch B. Every input is validated up front: one invalid op means NOTHING runs. If an op fails mid-run (stopOnError, default true), earlier ops stay applied and the whole batch is still one undo step. Host tools (import/export/transcribe/sync/…), undo/redo, and nested batches are not allowed.',
+    z.object({
+      operations: z
+        .array(z.object({ tool: z.string(), input: z.record(z.string(), z.unknown()).optional() }))
+        .min(1)
+        .max(50),
+      stopOnError: z.boolean().optional(),
+      label: z.string().optional()
+    }),
+    (c, input) => {
+      const stopOnError = input.stopOnError ?? true
+      const parsedOps: { name: string; def: ToolDef; data: unknown }[] = []
+      for (let i = 0; i < input.operations.length; i++) {
+        const op = input.operations[i]
+        if (op.tool === 'batch_operations' || op.tool === 'undo' || op.tool === 'redo') {
+          return { error: `Operation ${i} (${op.tool}) is not allowed inside a batch` }
+        }
+        if (HOST_EXECUTED_TOOLS.has(op.tool)) {
+          return { error: `Operation ${i} (${op.tool}) is host-executed and cannot run inside a batch` }
+        }
+        const def = editorToolsByName.get(op.tool)
+        if (!def) return { error: `Operation ${i}: unknown tool ${op.tool}` }
+        const parsed = def.input.safeParse(op.input ?? {})
+        if (!parsed.success) {
+          const msg = parsed.error.issues.map((iss) => `${iss.path.join('.') || '(root)'}: ${iss.message}`).join('; ')
+          return { error: `Operation ${i} (${op.tool}): invalid input — ${msg}` }
+        }
+        parsedOps.push({ name: op.tool, def, data: parsed.data })
+      }
+
+      const results: unknown[] = []
+      let firstError: string | undefined
+      c.transact(input.label ?? `Batch (${parsedOps.length} ops)`, () => {
+        for (let i = 0; i < parsedOps.length; i++) {
+          try {
+            const r = parsedOps[i].def.handler(c, parsedOps[i].data)
+            results.push(r ?? { ok: true })
+            const errMsg = (r as { error?: unknown } | null | undefined)?.error
+            if (typeof errMsg === 'string' && firstError === undefined) {
+              firstError = `op ${i} (${parsedOps[i].name}): ${errMsg}`
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err)
+            results.push({ error: msg })
+            if (firstError === undefined) firstError = `op ${i} (${parsedOps[i].name}): ${msg}`
+          }
+          if (firstError !== undefined && stopOnError) break
+        }
+      })
+      return { results, appliedCount: results.length, ...(firstError !== undefined ? { firstError } : {}) }
+    }
+  ),
+  tool(
+    'list_assets',
+    'List the media-bin assets (id, name, type, duration, resolution, fps, hasAudio, proxy status) so clips can be placed with add_clip — use `assetId` as `mediaRef`. Optionally filter by type. NOTE: executed by the host app (the bin lives outside the timeline core).',
+    z.object({ type: clipType.optional() }),
+    () => {
+      throw new Error('list_assets is executed by the host app, not the core executor')
+    }
+  ),
   tool('undo', 'Undo the last edit.', z.object({}).strict(), (c) => ({ done: c.undo() })),
   tool('redo', 'Redo the last undone edit.', z.object({}).strict(), (c) => ({ done: c.redo() })),
 
@@ -590,7 +652,8 @@ export const HOST_EXECUTED_TOOLS: ReadonlySet<string> = new Set([
   'sync_angles',
   'apply_auto_angles',
   'transcribe_clip',
-  'get_transcript'
+  'get_transcript',
+  'list_assets'
 ])
 
 export const editorToolsByName: Map<string, ToolDef> = new Map(editorTools.map((t) => [t.name, t]))

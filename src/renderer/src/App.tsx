@@ -159,8 +159,11 @@ export default function App() {
   } = useEditorStore()
 
   const [layout, setLayout] = useState<Layout>(loadLayout)
-  const [colorOpen, setColorOpen] = useState(false)
-  const [audioOpen, setAudioOpen] = useState(false)
+  // Store-owned so the clip context menu (Timeline) can open these too.
+  const colorOpen = useEditorStore((s) => s.colorInspectorOpen)
+  const setColorOpen = useEditorStore((s) => s.setColorInspectorOpen)
+  const audioOpen = useEditorStore((s) => s.audioInspectorOpen)
+  const setAudioOpen = useEditorStore((s) => s.setAudioInspectorOpen)
   const [transcriptOpen, setTranscriptOpen] = useState(false)
   // Sync confirmation modal options (frontal/lateral swap, which audio to keep, per-angle color).
   const [syncSwap, setSyncSwap] = useState(false)
