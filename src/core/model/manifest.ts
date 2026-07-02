@@ -42,6 +42,9 @@ export interface MediaManifestEntry {
   hasAudio?: boolean
   folderId?: string
   generationInput?: GenerationInput
+  /** Absolute path to a preview-friendly proxy (1080p H.264 yuv420p). Used ONLY for smooth
+   *  preview playback of hard-to-decode sources (4K / 10-bit / 4:2:2); export uses the original. */
+  proxyPath?: string
 }
 
 export interface MediaFolder {

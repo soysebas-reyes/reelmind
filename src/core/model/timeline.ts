@@ -5,6 +5,7 @@
 // We model the data as plain JSON-serializable interfaces (for IPC, project files, Immer)
 // and the computed properties as pure free functions. Time is integer frames throughout.
 
+import type { AudioEnhanceSettings } from './audioEnhance'
 import type { ClipType } from './clipType'
 import { type ColorAdjustments, IDENTITY_COLOR } from './color'
 import {
@@ -110,6 +111,8 @@ export interface Clip {
   transform: Transform
   crop: Crop
   color?: ColorAdjustments
+  /** Non-destructive voice/loudness enhancement (applied live via Web Audio + exactly on export). */
+  audioEnhance?: AudioEnhanceSettings
   linkGroupId?: string
   captionGroupId?: string
   textContent?: string
@@ -317,22 +320,29 @@ export function timelineFrameForSourceSeconds(c: Clip, sourceSeconds: number, fp
 
 // MARK: - Track
 
+/** Semantic role of a video track in a multicam edit. Drives the auto-angle engine so
+ *  it knows which track is the main (frontal) angle and which is the B-roll/lateral. */
+export type TrackRole = 'frontal' | 'lateral' | 'broll'
+
 export interface Track {
   id: string
   type: ClipType
   muted: boolean
   hidden: boolean
   syncLocked: boolean
+  /** Optional multicam role tag. `undefined` = untagged (normal track / old projects). */
+  role?: TrackRole
   clips: Clip[]
 }
 
-export function makeTrack(p: { id?: string; type: ClipType; clips?: Clip[] }): Track {
+export function makeTrack(p: { id?: string; type: ClipType; role?: TrackRole; clips?: Clip[] }): Track {
   return {
     id: p.id ?? newId(),
     type: p.type,
     muted: false,
     hidden: false,
     syncLocked: true,
+    role: p.role,
     clips: p.clips ?? []
   }
 }

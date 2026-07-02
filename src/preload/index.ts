@@ -4,16 +4,28 @@ import type {
   AiCompleteResponse,
   AudioOffsetRequest,
   AudioOffsetResult,
+  AudioPreviewRequest,
+  AudioPreviewResult,
   ColorLutData,
   ColorLutDataRequest,
   ColorStillRequest,
   DetectSilencesRequest,
   ExportRequest,
   ExportResult,
+  EnhanceAudioRequest,
+  EnhanceAudioResult,
   ExtractAudioRequest,
   ExtractAudioResult,
   FfmpegStatus,
+  GenerateProxyRequest,
+  GenerateProxyResult,
   ImportedAsset,
+  IntensityAnalysisResult,
+  IsolateVoiceRequest,
+  IsolateVoiceResult,
+  PreviewIsolateRequest,
+  PreviewIsolateResult,
+  OpProgressEvent,
   ProjectData,
   SaveResult,
   SilenceSeconds,
@@ -52,12 +64,24 @@ const editorBridge = {
   onExportProgress: (cb: (fraction: number) => void): void => {
     ipcRenderer.on('export:progress', (_e, fraction: number) => cb(fraction))
   },
+  /** Subscribe to generic backend op progress (stage label + raw log line) for long ops. */
+  onOpProgress: (cb: (p: OpProgressEvent) => void): void => {
+    ipcRenderer.on('op:progress', (_e, p: OpProgressEvent) => cb(p))
+  },
   showItemInFolder: (filePath: string): Promise<void> => ipcRenderer.invoke('shell:showItem', filePath),
   detectSilences: (req: DetectSilencesRequest): Promise<SilenceSeconds[]> =>
     ipcRenderer.invoke('media:detectSilences', req),
   extractAudio: (req: ExtractAudioRequest): Promise<ExtractAudioResult> => ipcRenderer.invoke('media:extractAudio', req),
   computeAudioOffset: (req: AudioOffsetRequest): Promise<AudioOffsetResult> =>
     ipcRenderer.invoke('media:computeAudioOffset', req),
+  analyzeIntensity: (path: string): Promise<IntensityAnalysisResult> =>
+    ipcRenderer.invoke('media:analyzeIntensity', path),
+  enhanceAudio: (req: EnhanceAudioRequest): Promise<EnhanceAudioResult> =>
+    ipcRenderer.invoke('media:enhanceAudio', req),
+  enhanceAudioPreview: (req: AudioPreviewRequest): Promise<AudioPreviewResult> =>
+    ipcRenderer.invoke('media:enhanceAudioPreview', req),
+  generateProxy: (req: GenerateProxyRequest): Promise<GenerateProxyResult> =>
+    ipcRenderer.invoke('media:generateProxy', req),
 
   // Color (Phase 9.5)
   colorStill: (req: ColorStillRequest): Promise<string | null> => ipcRenderer.invoke('color:still', req),
@@ -67,6 +91,10 @@ const editorBridge = {
 
   transcribeMedia: (req: TranscribeRequest): Promise<TranscribeResult> =>
     ipcRenderer.invoke('ai:transcribe', req),
+  isolateVoice: (req: IsolateVoiceRequest): Promise<IsolateVoiceResult> =>
+    ipcRenderer.invoke('ai:isolateVoice', req),
+  previewIsolateVoice: (req: PreviewIsolateRequest): Promise<PreviewIsolateResult> =>
+    ipcRenderer.invoke('ai:previewIsolateVoice', req),
 
   aiHasKey: (): Promise<boolean> => ipcRenderer.invoke('ai:hasKey'),
   aiSetKey: (key: string): Promise<void> => ipcRenderer.invoke('ai:setKey', key),

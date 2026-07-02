@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { type CSSProperties, useEffect, useState } from 'react'
-import { type ClipType, type MediaManifestEntry } from '@core'
+import { type ClipType, type MediaManifestEntry, type TrackRole } from '@core'
 import type { ExportQuality } from '../../shared/ipc'
 import { getController, useEditorStore } from './store'
 import Timeline from './timeline/Timeline'
 import Preview from './preview/Preview'
 import ChatPanel from './ai/ChatPanel'
 import ColorInspector from './color/ColorInspector'
+import AudioInspector from './audio/AudioInspector'
+import { Icon, type IconName } from './ui/Icon'
 
 const RESOLUTIONS: { label: string; w: number; h: number }[] = [
   { label: '1920×1080 (16:9)', w: 1920, h: 1080 },
@@ -22,12 +24,12 @@ const QUALITY_OPTIONS: { value: ExportQuality; label: string }[] = [
   { value: 'max', label: 'Máxima (sin pérdida visual)' }
 ]
 
-const TYPE_GLYPH: Record<ClipType, string> = {
-  video: '🎬',
-  audio: '🎵',
-  image: '🖼️',
-  text: 'T',
-  lottie: '✨'
+const TYPE_ICON: Record<ClipType, IconName> = {
+  video: 'video',
+  audio: 'music',
+  image: 'image',
+  text: 'text',
+  lottie: 'sparkles'
 }
 
 function formatDuration(seconds: number): string {
@@ -53,7 +55,9 @@ function AssetCard({ entry, thumbnail }: { entry: MediaManifestEntry; thumbnail:
         {thumbnail ? (
           <img src={thumbnail} alt={entry.name} draggable={false} />
         ) : (
-          <span className="asset-thumb-glyph">{TYPE_GLYPH[entry.type]}</span>
+          <span className="asset-thumb-glyph">
+            <Icon name={TYPE_ICON[entry.type]} size={30} />
+          </span>
         )}
         <span className="asset-type">{entry.type}</span>
       </div>
@@ -66,7 +70,7 @@ function AssetCard({ entry, thumbnail }: { entry: MediaManifestEntry; thumbnail:
           </span>
         )}
         {entry.sourceFPS ? <span>{Math.round(entry.sourceFPS)}fps</span> : null}
-        {entry.type === 'video' && <span>{entry.hasAudio ? '🔊' : '🔇'}</span>}
+        {entry.type === 'video' && <Icon name={entry.hasAudio ? 'sound' : 'mute'} size={13} />}
       </div>
     </div>
   )
@@ -156,6 +160,7 @@ export default function App() {
 
   const [layout, setLayout] = useState<Layout>(loadLayout)
   const [colorOpen, setColorOpen] = useState(false)
+  const [audioOpen, setAudioOpen] = useState(false)
   const [transcriptOpen, setTranscriptOpen] = useState(false)
   // Sync confirmation modal options (frontal/lateral swap, which audio to keep, per-angle color).
   const [syncSwap, setSyncSwap] = useState(false)
@@ -182,6 +187,14 @@ export default function App() {
   const selectedVideoIds = selectedClipIds.filter((id) => getController().getClip(id)?.mediaType === 'video')
   const canExtractAudio = selectedVideoIds.length === 1
   const canSyncAngles = selectedVideoIds.length === 2
+  // Manual razor ("Cortar tomas") splits all tracks at the playhead — enabled whenever the timeline has
+  // any video clip (no selection needed; it only cuts where the playhead is inside a clip).
+  const canRazor = timeline.tracks.some((t) => t.type === 'video' && t.clips.length > 0)
+  // Angle changes need 2-3 DISTINCT video tracks selected (frontal + lateral + optional b-roll).
+  const selectedVideoTrackIds = new Set(
+    selectedVideoIds.map((id) => getController().getTrackOfClip(id)?.id).filter((x): x is string => !!x)
+  )
+  const canChangeAngles = selectedVideoTrackIds.size >= 2 && selectedVideoTrackIds.size <= 3
   const canDeleteTrack = selectedClipIds.length > 0
   const selectedTrackId: string | null = (() => {
     if (selectedClipIds.length === 0) return null
@@ -189,6 +202,11 @@ export default function App() {
     return timeline.tracks.find((t) => t.clips.some((c) => c.id === id))?.id ?? null
   })()
   const canTranscribe = selectedVideoIds.length >= 1
+  // Enhance audio works ONLY on a single selected clip that lives on an audio track.
+  const enhanceClipId = selectedClipIds.length === 1 ? selectedClipIds[0] : null
+  const enhanceMediaType = enhanceClipId ? getController().getClip(enhanceClipId)?.mediaType : undefined
+  const canEnhanceAudio = enhanceMediaType === 'audio'
+  const videosNeedingProxy = manifest.entries.filter((e) => e.type === 'video' && !e.proxyPath).length
   const clipDisplayName = (clipId?: string): string => {
     if (!clipId) return ''
     const clip = getController().getClip(clipId)
@@ -252,67 +270,101 @@ export default function App() {
                 ))}
               </select>
             </label>
+            <div className="topbar-actions" style={{ marginLeft: '1rem', display: 'flex', gap: '0.5rem' }}>
+              <button onClick={() => newProject()} disabled={!!busy} title="Nuevo Proyecto">
+                <Icon name="plus" /> Nuevo
+              </button>
+              <button onClick={() => void openProject()} disabled={!!busy} title="Abrir Proyecto">
+                <Icon name="folder" /> Abrir
+              </button>
+              <button onClick={() => void saveProject()} disabled={!!busy} title="Guardar Proyecto">
+                <Icon name="save" /> Guardar
+              </button>
+              <button className="primary" onClick={() => void exportProject()} disabled={!!busy} title="Exportar Video">
+                <Icon name="export" /> Exportar
+              </button>
+            </div>
           </div>
         </div>
 
-        {/* Row 2: action toolbar */}
+        {/* Row 2: action toolbar (Journey simplificado) */}
         <div className="toolbar">
-          <button onClick={() => getController().undo()} disabled={!canUndo} title={undoLabel ? `Deshacer: ${undoLabel}` : 'Deshacer'}>
-            ↶ Deshacer
+          <button
+            onClick={() => { setSyncSwap(false); setSyncKeepAudio('frontal'); setSyncAutoColor(true); void analyzeSyncForSelection() }}
+            disabled={!canSyncAngles || !!busy || syncBusy}
+            title={canSyncAngles ? 'Sincroniza y recorta 2 ángulos por audio' : 'Selecciona exactamente 2 clips de video'}
+          >
+            <Icon name="sync" /> 0. Sincronizar
           </button>
-          <button onClick={() => getController().redo()} disabled={!canRedo} title={redoLabel ? `Rehacer: ${redoLabel}` : 'Rehacer'}>
-            ↷ Rehacer
+
+          <button
+            onClick={() => getController().razorAtPlayhead()}
+            disabled={!canRazor || !!busy || syncBusy}
+            title={
+              canRazor
+                ? 'Cortar (split) en el cursor: frontal + lateral + audio a la vez. Cortá al inicio y al final del tartamudeo/repetición, seleccioná el tramo y borralo (Ripple delete).'
+                : 'Agrega clips de video a la línea de tiempo'
+            }
+          >
+            <Icon name="cut" /> 1. Cortar tomas
           </button>
-          <span className="tl-sep" />
-          <button onClick={newProject} title="Nuevo proyecto">Nuevo</button>
-          <button onClick={() => void openProject()} title="Abrir proyecto">Abrir</button>
-          <button className="primary" onClick={() => void saveProject()} disabled={!dirty && !!projectDir} title="Guardar proyecto">
-            Guardar
-          </button>
-          <button onClick={() => void exportProject()} disabled={!!busy || timeline.tracks.length === 0} title="Exportar a MP4">
-            Exportar
-          </button>
-          <span className="tl-sep" />
+
           <button
             onClick={() => setColorOpen(true)}
             disabled={selectedClipIds.length === 0}
             title={selectedClipIds.length === 0 ? 'Selecciona un clip para colorizar' : 'Abrir explorador de colorización'}
           >
-            🎨 Color
+            <Icon name="wand" /> 2. Colorizar
           </button>
+
           <button
-            onClick={() => { const id = selectedVideoIds[0]; if (id) void extractAudioFromClip(id) }}
-            disabled={!canExtractAudio || !!busy}
-            title={canExtractAudio ? 'Extraer audio a un asset nuevo' : 'Selecciona un solo clip de video'}
+            onClick={() => void useEditorStore.getState().analyzeAutoAngles()}
+            disabled={!canChangeAngles || !!busy}
+            title={
+              canChangeAngles
+                ? 'Analizar el volumen de cada ángulo y previsualizar los cambios antes de aplicarlos'
+                : 'Haz clic en el nombre de cada pista de video (frontal, lateral y opcional b-roll) para seleccionarla completa'
+            }
           >
-            🎙️ Audio
+            <Icon name="angles" /> 3. Cambios de Ángulo
           </button>
-          <button
-            onClick={() => { setSyncSwap(false); setSyncKeepAudio('frontal'); setSyncAutoColor(true); void analyzeSyncForSelection() }}
-            disabled={!canSyncAngles || !!busy || syncBusy}
-            title={canSyncAngles ? 'Sincronizar 2 ángulos por audio' : 'Selecciona exactamente 2 clips de video'}
-          >
-            🎬 Sincronizar
-          </button>
+
           <button
             onClick={() => {
-              if (transcript) { setTranscriptOpen(true); return }
-              if (canTranscribe) { void transcribeClip(selectedVideoIds[0]); setTranscriptOpen(true) }
+              if (!selectedTrackId) return
+              const tk = timeline.tracks.find((t) => t.id === selectedTrackId)
+              if (tk && tk.clips.length > 1 && !window.confirm(`Eliminar la pista y sus ${tk.clips.length} clips?`)) return
+              getController().removeTrack(selectedTrackId)
             }}
-            disabled={(!canTranscribe && !transcript) || !!busy || transcribing}
-            title={transcript ? 'Ver transcript' : canTranscribe ? 'Transcribir con ElevenLabs' : 'Selecciona un clip de video'}
-            className={transcript ? 'toolbar-active' : ''}
+            disabled={!canDeleteTrack || !!busy}
+            title={canDeleteTrack ? 'Eliminar la pista del clip seleccionado (o usa el chip ✕ en la cabecera)' : 'Selecciona un clip primero'}
+            style={{ color: canDeleteTrack ? 'var(--danger, #e05555)' : undefined }}
           >
-            {transcribing ? '⏳ …' : transcript ? '📄 Transcript' : '📝 Transcribir'}
+            <Icon name="trash" /> Eliminar pista
           </button>
-          <span className="tl-sep" />
+
           <button
-            onClick={() => { if (selectedTrackId) getController().removeTrack(selectedTrackId) }}
-            disabled={!canDeleteTrack}
-            title={canDeleteTrack ? 'Eliminar la pista del clip seleccionado (y todos sus clips)' : 'Selecciona un clip primero'}
-            className={canDeleteTrack ? 'toolbar-danger' : ''}
+            onClick={() => setAudioOpen(true)}
+            disabled={!canEnhanceAudio || !!busy}
+            title={
+              canEnhanceAudio
+                ? 'Abrir el explorador de realce de audio (preview A/B + ajustes)'
+                : 'Selecciona un clip en una pista de audio'
+            }
           >
-            🗑️ Pista
+            <Icon name="waveform" /> Realzar audio
+          </button>
+
+          <button
+            onClick={() => void useEditorStore.getState().optimizePlayback()}
+            disabled={videosNeedingProxy === 0 || !!busy}
+            title={
+              videosNeedingProxy === 0
+                ? 'Reproducción ya optimizada (todos los videos tienen proxy)'
+                : `Genera proxies 1080p para ${videosNeedingProxy} video(s) → reproducción fluida (el export usa el original)`
+            }
+          >
+            <Icon name="bolt" /> Optimizar reproducción{videosNeedingProxy > 0 ? ` (${videosNeedingProxy})` : ''}
           </button>
         </div>
       </header>
@@ -321,18 +373,18 @@ export default function App() {
         <div className="stage" style={{ '--bin-w': `${layout.binW}px`, '--chat-w': `${layout.chatW}px` } as CSSProperties}>
           <section className="bin">
             <div className="bin-head">
-              <h2>Media bin</h2>
+              <h2>Medios</h2>
               <button className="primary" onClick={() => void importFiles()} disabled={!!busy}>
-                + Import
+                <Icon name="plus" size={15} /> Importar
               </button>
             </div>
 
             {manifest.entries.length === 0 ? (
               <div className="empty">
-                <p className="empty-title">No media yet</p>
-                <p className="empty-sub">Import video, audio, or images, then drag them onto the timeline.</p>
+                <p className="empty-title">Aún no hay medios</p>
+                <p className="empty-sub">Importa video, audio o imágenes y arrástralos a la línea de tiempo.</p>
                 <button className="primary" onClick={() => void importFiles()}>
-                  + Import media
+                  <Icon name="plus" size={15} /> Importar medios
                 </button>
               </div>
             ) : (
@@ -373,10 +425,24 @@ export default function App() {
             <div className="modal-head">
               <h2>Colorización</h2>
               <button className="modal-close" onClick={() => setColorOpen(false)} title="Cerrar">
-                ✕
+                <Icon name="close" size={15} />
               </button>
             </div>
             <ColorInspector onClose={() => setColorOpen(false)} />
+          </div>
+        </div>
+      )}
+
+      {audioOpen && (
+        <div className="modal-backdrop" onMouseDown={() => setAudioOpen(false)}>
+          <div className="modal color-modal" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h2>Realzar audio</h2>
+              <button className="modal-close" onClick={() => setAudioOpen(false)} title="Cerrar">
+                <Icon name="close" size={15} />
+              </button>
+            </div>
+            <AudioInspector onClose={() => setAudioOpen(false)} />
           </div>
         </div>
       )}
@@ -399,6 +465,9 @@ export default function App() {
           </div>
         </div>
       )}
+
+      <ProgressModal />
+      <AnglePlanModal />
 
       {exportResult && (
         <div className="modal-backdrop" onMouseDown={() => dismissExportResult()}>
@@ -451,7 +520,7 @@ export default function App() {
               <div style={{ display: 'flex', gap: 8 }}>
                 {transcript && (
                   <button className="primary" onClick={() => void exportTranscriptSrt()} title="Exportar como .srt">
-                    ↓ .srt
+                    <Icon name="download" size={14} /> .srt
                   </button>
                 )}
                 <button
@@ -461,7 +530,9 @@ export default function App() {
                 >
                   Borrar
                 </button>
-                <button className="modal-close" onClick={() => setTranscriptOpen(false)}>✕</button>
+                <button className="modal-close" onClick={() => setTranscriptOpen(false)}>
+                  <Icon name="close" size={15} />
+                </button>
               </div>
             </div>
             {transcribing ? (
@@ -505,12 +576,13 @@ export default function App() {
                   <strong>Frontal:</strong> {clipDisplayName(syncFrontalId)} · <strong>Lateral:</strong>{' '}
                   {clipDisplayName(syncLateralId)}{' '}
                   <button className="ci-link" onClick={() => setSyncSwap((v) => !v)} title="Intercambiar frontal/lateral">
-                    ⇄ Intercambiar
+                    <Icon name="swap" size={13} /> Intercambiar
                   </button>
                 </p>
                 <p className="export-pct">Desfase: {syncResult.offsetSeconds?.toFixed(3)} s</p>
                 <p className={`sync-conf ${syncResult.reliable ? 'ok' : 'low'}`}>
-                  Confianza: {Math.round((syncResult.confidence ?? 0) * 100)}%
+                  Método: {syncResult.method === 'transcript' ? 'transcript (palabras)' : 'audio (correlación)'} · Confianza:{' '}
+                  {Math.round((syncResult.confidence ?? 0) * 100)}%
                 </p>
                 {!syncResult.reliable && (
                   <p className="export-note">
@@ -563,6 +635,279 @@ export default function App() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+/** Live backend-progress modal for long ops (auto-angles): step checklist + expandable raw console.
+ *  Uses selector hooks so it only re-renders on progress changes, not the whole App. */
+function ProgressModal() {
+  const progress = useEditorStore((s) => s.progress)
+  const dismiss = useEditorStore((s) => s.dismissProgress)
+  const [showLog, setShowLog] = useState(false)
+  if (!progress) return null
+  const ico = (status: string): string =>
+    status === 'done' ? '✓' : status === 'error' ? '✗' : status === 'active' ? '…' : '○'
+  return (
+    <div className="modal-backdrop">
+      <div className="modal export-modal progress-modal" onMouseDown={(e) => e.stopPropagation()}>
+        {!progress.done && <div className="spinner" />}
+        <h2>{progress.title}</h2>
+        <ul className="progress-steps">
+          {progress.steps.map((st) => (
+            <li key={st.id} className={`progress-step ${st.status}`}>
+              <span className="progress-ico">{ico(st.status)}</span>
+              <span className="progress-label">{st.label}</span>
+              {st.detail && <span className="progress-detail">{st.detail}</span>}
+            </li>
+          ))}
+        </ul>
+        {progress.error && <p className="export-err">{progress.error}</p>}
+        {progress.log.length > 0 && (
+          <button className="ci-link" onClick={() => setShowLog((v) => !v)}>
+            {showLog ? 'Ocultar' : 'Ver'} detalle técnico ({progress.log.length})
+          </button>
+        )}
+        {showLog && (
+          <pre
+            className="progress-console"
+            ref={(el) => {
+              if (el) el.scrollTop = el.scrollHeight
+            }}
+          >
+            {progress.log.join('\n')}
+          </pre>
+        )}
+        <p className="export-note">
+          {progress.done ? 'Proceso terminado.' : 'Esto puede tardar varios minutos. No cierres la app.'}
+        </p>
+        {progress.done && (
+          <div className="export-actions">
+            <button className="primary" onClick={dismiss}>
+              Cerrar
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+const ANGLE_ROLE_COLOR: Record<TrackRole, string> = { frontal: '#0a84ff', lateral: '#ff9f0a', broll: '#ff375f' }
+const ROLE_LABEL: Record<TrackRole, string> = { frontal: 'Frontal', lateral: 'Lateral', broll: 'B-roll' }
+const ROLE_INITIAL: Record<TrackRole, string> = { frontal: 'F', lateral: 'L', broll: 'B' }
+
+function secLabel(sec: number): string {
+  const s = Math.max(0, Math.round(sec))
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}
+
+type PlanCut = { sec: number; role: TrackRole; trigger?: 'pausa' | 'pico' }
+
+/** One angle's volume waveform (RMS envelope + emphasis peaks + pauses) with the plan's cut lines
+ *  overlaid, so it's transparent WHERE each angle change was identified on this angle's own audio. */
+function AngleWave({
+  envelope,
+  peaks,
+  pauses,
+  cuts,
+  durationSec,
+  role,
+  label,
+  height = 64
+}: {
+  envelope: number[]
+  peaks: number[]
+  pauses?: number[]
+  cuts?: PlanCut[]
+  durationSec: number
+  role: TrackRole
+  label: string
+  height?: number
+}) {
+  const W = 1000
+  const H = height
+  const dur = durationSec > 0 ? durationSec : 1
+  const xAt = (sec: number): number => Math.max(0, Math.min(W, (sec / dur) * W))
+  const pts = envelope.map(
+    (v, i) => `${(envelope.length > 1 ? (i / (envelope.length - 1)) * W : 0).toFixed(1)},${(H - v * H).toFixed(1)}`
+  )
+  const areaPath = envelope.length ? `M0,${H} L${pts.join(' L')} L${W},${H} Z` : ''
+  return (
+    <div className="angleplan-graph">
+      <span className="angleplan-graph-label" style={{ color: ANGLE_ROLE_COLOR[role] }}>
+        {label} · {ROLE_LABEL[role]}
+      </span>
+      <svg
+        className="angleplan-wave"
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        role="img"
+        aria-label={`Volumen ${label}`}
+        style={{ height: H }}
+      >
+        {areaPath ? (
+          <path d={areaPath} fill={ANGLE_ROLE_COLOR[role]} opacity={0.4} />
+        ) : (
+          <text x={8} y={H / 2} fill="#8e8e93" fontSize={11}>
+            (sin audio)
+          </text>
+        )}
+        {(pauses ?? []).map((p, i) => (
+          <line key={`pa${i}`} x1={xAt(p)} x2={xAt(p)} y1={H - 8} y2={H} stroke="#8e8e93" strokeWidth={1} opacity={0.7} />
+        ))}
+        {peaks.map((p, i) => (
+          <line key={`pk${i}`} x1={xAt(p)} x2={xAt(p)} y1={0} y2={8} stroke="#ff9f0a" strokeWidth={1} opacity={0.9} />
+        ))}
+        {(cuts ?? []).map((c, i) => (
+          <line
+            key={`ct${i}`}
+            x1={xAt(c.sec)}
+            x2={xAt(c.sec)}
+            y1={0}
+            y2={H}
+            stroke={ANGLE_ROLE_COLOR[c.role]}
+            strokeWidth={1.25}
+            strokeDasharray="4 3"
+            opacity={0.95}
+          />
+        ))}
+      </svg>
+    </div>
+  )
+}
+
+/** Preview of the proposed angle-cut plan, built for transparency: editable role mapping, a tall master
+ *  intensity curve of the frontal angle with every cut marked (and WHY — pausa/pico), a chip per cut,
+ *  per-angle volume graphs with the same cuts overlaid, a destructive/non-destructive toggle, and a
+ *  per-segment list. Confirm → apply (the cuts actually run on the video tracks). */
+function AnglePlanModal() {
+  const plan = useEditorStore((s) => s.anglePlan)
+  const apply = useEditorStore((s) => s.applyAnglePlan)
+  const dismiss = useEditorStore((s) => s.dismissAnglePlan)
+  const setRole = useEditorStore((s) => s.setAnglePlanRole)
+  const setDestructive = useEditorStore((s) => s.setAnglePlanDestructive)
+  if (!plan) return null
+
+  // Roles available as options = first N of frontal/lateral/broll, where N = number of angles.
+  const roleOptions = (['frontal', 'lateral', 'broll'] as TrackRole[]).slice(0, plan.angleTracks.length)
+  const cuts: PlanCut[] = plan.segments.slice(1).map((s) => ({ sec: s.startSec, role: s.role, trigger: s.trigger }))
+  const picoCount = cuts.filter((c) => c.trigger === 'pico').length
+  const pausaCount = cuts.filter((c) => c.trigger === 'pausa').length
+  const master = plan.angleTracks[0]
+  const rest = plan.angleTracks.slice(1)
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal export-modal angleplan-modal" style={{ maxHeight: '92vh' }} onMouseDown={(e) => e.stopPropagation()}>
+        <h2>Plan de cambios de ángulo</h2>
+        <p className="export-note">
+          {plan.angleTracks.length} ángulos · <strong>{cuts.length} cortes</strong> ({pausaCount} por pausa ⏸︎,{' '}
+          {picoCount} por pico 📈) · modo {plan.destructive ? 'destructivo' : 'no destructivo'}
+        </p>
+
+        <div className="angleplan-scroll">
+          {/* Editable role mapping: which track is Frontal / Lateral / B-roll. */}
+          <div className="angleplan-roles">
+            {plan.angleTracks.map((a) => (
+              <label key={a.trackId} className="angleplan-role" style={{ borderColor: ANGLE_ROLE_COLOR[a.role] }}>
+                <span className="angleplan-role-track">{a.label}</span>
+                <select value={a.role} onChange={(e) => setRole(a.trackId, e.target.value as TrackRole)}>
+                  {roleOptions.map((r) => (
+                    <option key={r} value={r}>
+                      {ROLE_LABEL[r]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ))}
+          </div>
+
+          {/* Master intensity curve (frontal): where each angle change was identified, colored by the
+              angle it switches to. Pauses (bottom, gray) and peaks (top, orange) are the cut triggers. */}
+          {master && (
+            <AngleWave
+              envelope={master.envelope}
+              peaks={master.peaks}
+              pauses={master.pauses}
+              cuts={cuts}
+              durationSec={plan.durationSec}
+              role={master.role}
+              label={master.label}
+              height={132}
+            />
+          )}
+          <div className="angleplan-legend">
+            <span>
+              <i style={{ background: '#ff9f0a' }} /> pico (énfasis)
+            </span>
+            <span>
+              <i style={{ background: '#8e8e93' }} /> pausa (silencio)
+            </span>
+            <span>
+              <i className="dash" /> corte de ángulo (color = ángulo destino)
+            </span>
+          </div>
+
+          {/* One chip per cut: time + trigger + destination angle — the literal change list. */}
+          <div className="angleplan-cuts">
+            {cuts.length === 0 ? (
+              <span className="angleplan-cut-empty">Sin cortes</span>
+            ) : (
+              cuts.map((c, i) => (
+                <span key={i} className="angleplan-cut-chip" style={{ borderColor: ANGLE_ROLE_COLOR[c.role] }}>
+                  {secLabel(c.sec)} {c.trigger === 'pico' ? '📈' : '⏸︎'} → {ROLE_LABEL[c.role]}
+                </span>
+              ))
+            )}
+          </div>
+
+          {/* Remaining angles' volume graphs (frontal is the master above), with the cuts overlaid. */}
+          {rest.length > 0 && (
+            <div className="angleplan-graphs">
+              {rest.map((a) => (
+                <AngleWave
+                  key={a.trackId}
+                  envelope={a.envelope}
+                  peaks={a.peaks}
+                  pauses={a.pauses}
+                  cuts={cuts}
+                  durationSec={plan.durationSec}
+                  role={a.role}
+                  label={a.label}
+                />
+              ))}
+            </div>
+          )}
+
+          <div className="angleplan-list">
+            {plan.segments.map((s, i) => (
+              <div key={`row${i}`} className="angleplan-row">
+                <span className="angleplan-chip" style={{ background: ANGLE_ROLE_COLOR[s.role] }}>
+                  {ROLE_INITIAL[s.role]}
+                </span>
+                <span className="angleplan-time">
+                  {secLabel(s.startSec)}–{secLabel(s.endSec)}
+                </span>
+                <span className="angleplan-trigger">{s.trigger ? (s.trigger === 'pico' ? '📈 pico' : '⏸︎ pausa') : '▶ inicio'}</span>
+                <span className="angleplan-text">{s.text.trim() || '—'}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <label className="angleplan-mode">
+          <input type="checkbox" checked={plan.destructive} onChange={(e) => setDestructive(e.target.checked)} />
+          Modo destructivo (elimina los fragmentos ocultos de cada pista). Si lo desactivás, quedan invisibles
+          pero conservados (opacity 0). Reversible con Ctrl+Z.
+        </label>
+        <div className="export-actions">
+          <button className="primary" onClick={() => apply()}>
+            Aplicar cortes
+          </button>
+          <button onClick={() => dismiss()}>Cancelar</button>
+        </div>
+      </div>
     </div>
   )
 }

@@ -94,18 +94,18 @@ export default function ChatPanel(): React.JSX.Element {
   return (
     <aside className="chat">
       <div className="chat-head">
-        <h2>AI editor</h2>
+        <h2>Editor IA</h2>
         {keyPresent && (
-          <button className="link" onClick={() => void clearKey()} title="Remove the stored API key">
-            key set ✓
+          <button className="link" onClick={() => void clearKey()} title="Quitar la clave de API guardada">
+            Clave activa
           </button>
         )}
       </div>
 
       {keyPresent === false ? (
         <div className="chat-key">
-          <p className="chat-key-title">Connect your Anthropic API key</p>
-          <p className="chat-key-sub">Stored encrypted on this machine (BYOK). It never leaves the app.</p>
+          <p className="chat-key-title">Conecta tu clave de API de Anthropic</p>
+          <p className="chat-key-sub">Se guarda cifrada en este equipo (BYOK). Nunca sale de la app.</p>
           <input
             type="password"
             placeholder="sk-ant-…"
@@ -114,7 +114,7 @@ export default function ChatPanel(): React.JSX.Element {
             onKeyDown={(e) => e.key === 'Enter' && void saveKey()}
           />
           <button className="primary" onClick={() => void saveKey()} disabled={!keyInput.trim()}>
-            Save key
+            Guardar clave
           </button>
         </div>
       ) : (
@@ -122,8 +122,8 @@ export default function ChatPanel(): React.JSX.Element {
           <div className="chat-log" ref={scrollRef}>
             {items.length === 0 && (
               <div className="chat-empty">
-                Ask me to build or edit your timeline — e.g. “add a video track and drop asset X at the start”.
-                I’ll call the same editing commands you do.
+                Pídeme construir o editar tu línea de tiempo — p. ej. «agrega una pista de video y coloca el asset X
+                al inicio». Ejecuto los mismos comandos de edición que tú.
               </div>
             )}
             {items.map((it) => (
@@ -137,14 +137,14 @@ export default function ChatPanel(): React.JSX.Element {
                     ))}
                   </div>
                 )}
-                {it.text ? <div className="msg-text">{it.text}</div> : it.role === 'assistant' && busy ? <div className="msg-text dim">thinking…</div> : null}
+                {it.text ? <div className="msg-text">{it.text}</div> : it.role === 'assistant' && busy ? <div className="msg-text dim">pensando…</div> : null}
               </div>
             ))}
           </div>
 
           <div className="chat-composer">
             <textarea
-              placeholder={keyPresent === null ? 'Loading…' : 'Message the AI editor…'}
+              placeholder={keyPresent === null ? 'Cargando…' : 'Escríbele al editor IA…'}
               value={input}
               disabled={keyPresent === null || busy}
               onChange={(e) => setInput(e.target.value)}
@@ -156,7 +156,7 @@ export default function ChatPanel(): React.JSX.Element {
               }}
             />
             <button className="primary" onClick={() => void send()} disabled={!input.trim() || busy}>
-              {busy ? '…' : 'Send'}
+              {busy ? '…' : 'Enviar'}
             </button>
           </div>
         </>

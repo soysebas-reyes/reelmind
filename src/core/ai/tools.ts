@@ -8,10 +8,12 @@
 // EditorController commands. No transport, no network, no key — just validation + dispatch.
 
 import { z } from 'zod'
-import { type Clip, clipEndFrame } from '../model/timeline'
+import { clipEndFrame } from '../model/timeline'
 import { type EditorController } from '../controller/EditorController'
+import { cutRangeToAngle } from './angleCut'
 
 const clipType = z.enum(['video', 'audio', 'image', 'text', 'lottie'])
+const trackRole = z.enum(['frontal', 'lateral', 'broll'])
 
 export interface ToolDef {
   name: string
@@ -48,6 +50,7 @@ export function summarizeTimeline(c: EditorController): unknown {
       muted: t.muted,
       hidden: t.hidden,
       syncLocked: t.syncLocked,
+      role: t.role,
       clips: t.clips.map((clip) => ({
         id: clip.id,
         mediaRef: clip.mediaRef,
@@ -297,6 +300,14 @@ export const editorTools: ToolDef[] = [
       throw new Error('sync_angles is executed by the host app, not the core executor')
     }
   ),
+  tool(
+    'apply_auto_angles',
+    "Dynamically analyze silences and transcript to apply semantic angles (Frontal/Lateral) on the selected frontal clip. NOTE: executed by the host app.",
+    z.object({}).strict(),
+    () => {
+      throw new Error('apply_auto_angles is executed by the host app, not the core executor')
+    }
+  ),
   tool('undo', 'Undo the last edit.', z.object({}).strict(), (c) => ({ done: c.undo() })),
   tool('redo', 'Redo the last undone edit.', z.object({}).strict(), (c) => ({ done: c.redo() })),
 
@@ -340,7 +351,11 @@ export const editorTools: ToolDef[] = [
       lateralClipId: z.string().describe('Clip id of the lateral-angle video.'),
       fromMs: z.number().nonnegative().describe('Range start in milliseconds from project start.'),
       toMs: z.number().positive().describe('Range end in milliseconds.'),
-      angle: z.enum(['frontal', 'lateral']).describe('Which angle to show for this range.')
+      angle: z.enum(['frontal', 'lateral']).describe('Which angle to show for this range.'),
+      destructive: z
+        .boolean()
+        .optional()
+        .describe('If true, remove the hidden angle segment instead of setting opacity 0 (default false).')
     }),
     (c, input) => {
       const fps = c.getTimeline().fps
@@ -348,40 +363,36 @@ export const editorTools: ToolDef[] = [
       const toFrame = Math.round((input.toMs / 1000) * fps)
       if (fromFrame >= toFrame) return { ok: false, error: 'fromMs must be less than toMs' }
 
-      const findClip = (id: string): Clip | null => {
-        for (const track of c.getTimeline().tracks) {
-          const cl = track.clips.find((x) => x.id === id)
-          if (cl) return cl
-        }
-        return null
-      }
-
-      const applyCut = (clipId: string, show: boolean): void => {
-        const clip = findClip(clipId)
-        if (!clip) return
-        const clipEnd = clip.startFrame + clip.durationFrames
-        if (clip.startFrame >= toFrame || clipEnd <= fromFrame) return // no overlap
-
-        // Split at left boundary → segId becomes the piece starting at fromFrame (or clip.startFrame)
-        let segId = clipId
-        if (clip.startFrame < fromFrame) {
-          const rightId = c.splitClip(clipId, fromFrame)
-          if (rightId) segId = rightId
-        }
-        // Split at right boundary — we only need the left (segId) piece's opacity
-        c.splitClip(segId, toFrame)
-        c.setClipProperties(segId, { opacity: show ? 1 : 0 })
-      }
-
       c.runAs('agent', () =>
         c.transact(
           `Cut to ${input.angle} (${Math.round(input.fromMs / 1000)}s–${Math.round(input.toMs / 1000)}s)`,
-          () => {
-            applyCut(input.frontalClipId, input.angle === 'frontal')
-            applyCut(input.lateralClipId, input.angle === 'lateral')
-          }
+          () =>
+            cutRangeToAngle(
+              c,
+              input.frontalClipId,
+              input.lateralClipId,
+              fromFrame,
+              toFrame,
+              input.angle,
+              input.destructive ?? false
+            )
         )
       )
+      return { ok: true }
+    }
+  ),
+
+  // ── Multicam role tagging ─────────────────────────────────────────────────────────────────────
+  tool(
+    'set_track_role',
+    'Tag a video track with a multicam role so the auto-angle engine knows which track is the main ' +
+      '(frontal) angle and which is the lateral / B-roll. Pass role=null to clear the tag.',
+    z.object({
+      trackId: z.string().describe('Track id to tag (use get_timeline to find it).'),
+      role: trackRole.nullable().describe('frontal | lateral | broll, or null to clear.')
+    }),
+    (c, input) => {
+      c.runAs('agent', () => c.setTrackRole(input.trackId, input.role ?? undefined))
       return { ok: true }
     }
   )
@@ -395,6 +406,7 @@ export const HOST_EXECUTED_TOOLS: ReadonlySet<string> = new Set([
   'remove_silences',
   'extract_audio',
   'sync_angles',
+  'apply_auto_angles',
   'transcribe_clip',
   'get_transcript'
 ])

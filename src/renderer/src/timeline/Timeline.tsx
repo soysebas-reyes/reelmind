@@ -7,7 +7,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   type Clip,
   type ClipType,
+  type MediaManifest,
   type SnapState,
+  type Track,
+  type TrackRole,
   clipEndFrame,
   isCompatible,
   makeSnapState,
@@ -27,37 +30,76 @@ import {
   xForFrame
 } from './geometry'
 
+// Apple system palette (dark) so the canvas matches the CSS token layer.
 const TYPE_COLORS: Record<ClipType, string> = {
-  video: '#3f73e3',
-  audio: '#2fae8f',
-  image: '#b06fe6',
-  text: '#e0a544',
-  lottie: '#e06b9a'
+  video: '#0a84ff',  // system blue
+  audio: '#30d158',  // system green
+  image: '#bf5af2',  // system purple
+  text: '#ff9f0a',   // system orange
+  lottie: '#ff375f'  // system pink
 }
-const ACCENT = '#7c5cff'
+const ACCENT = '#0a84ff'
 const TRACK_LABEL_PREFIX: Record<ClipType, string> = { video: 'V', audio: 'A', image: 'I', text: 'T', lottie: 'L' }
 
 type TrackFlag = 'muted' | 'hidden' | 'syncLocked'
+type ChipKind = 'flag' | 'delete' | 'role' | 'audio'
 
 interface ChipRect {
-  flag: TrackFlag
+  kind: ChipKind
+  flag?: TrackFlag
   label: string
   box: ClipBox
 }
 
-function headerChips(trackIndex: number, l: TimelineLayout): ChipRect[] {
+/** Does this video track currently contribute audio? True when it isn't muted and at least one clip
+ *  is audible (volume > 0) AND its source asset actually has an audio stream. Drives the 🔊/🔇 badge so
+ *  it's obvious which video tracks still carry sound (e.g. after sync mutes them and moves audio out). */
+function trackHasActiveAudio(track: Track, manifest: MediaManifest): boolean {
+  if (track.muted) return false
+  return track.clips.some(
+    (c) => c.volume > 0 && (manifest.entries.find((e) => e.id === c.mediaRef)?.hasAudio ?? false)
+  )
+}
+
+const ROLE_COLORS: Record<TrackRole, string> = {
+  frontal: '#0a84ff',
+  lateral: '#ff9f0a',
+  broll: '#ff375f'
+}
+
+function roleInitial(role: TrackRole | undefined): string {
+  return role === 'frontal' ? 'F' : role === 'lateral' ? 'L' : role === 'broll' ? 'B' : '·'
+}
+
+/** Header controls for a track: M/H/L flag chips + a ✕ delete chip (bottom row), and — for video
+ *  tracks — a multicam role chip (F/L/B) plus a read-only audio badge (🔊/🔇) on the label row.
+ *  Sized to fit within HEADER_WIDTH (108). `hasAudio` is only meaningful for video tracks. */
+function headerChips(trackIndex: number, l: TimelineLayout, track: Track, hasAudio = false): ChipRect[] {
   const top = trackTop(trackIndex, l)
   const y = top + l.trackHeight - 24
-  const w = 22
+  const w = 18
   const h = 17
-  const gap = 5
+  const gap = 4
   const x0 = 12
   const flags: { flag: TrackFlag; label: string }[] = [
     { flag: 'muted', label: 'M' },
     { flag: 'hidden', label: 'H' },
     { flag: 'syncLocked', label: 'L' }
   ]
-  return flags.map((f, i) => ({ flag: f.flag, label: f.label, box: { x: x0 + i * (w + gap), y, w, h } }))
+  const chips: ChipRect[] = flags.map((f, i) => ({
+    kind: 'flag' as const,
+    flag: f.flag,
+    label: f.label,
+    box: { x: x0 + i * (w + gap), y, w, h }
+  }))
+  // Delete chip after the flag chips.
+  chips.push({ kind: 'delete', label: '✕', box: { x: x0 + flags.length * (w + gap), y, w, h } })
+  // Role chip + audio badge on the label row, right of the "V1" label (video tracks only).
+  if (track.type === 'video') {
+    chips.push({ kind: 'role', label: roleInitial(track.role), box: { x: 46, y: top + 6, w: 22, h: 17 } })
+    chips.push({ kind: 'audio', label: hasAudio ? '🔊' : '🔇', box: { x: 72, y: top + 6, w: 22, h: 17 } })
+  }
+  return chips
 }
 
 /** Track label like V1 / A1, numbered within its own type. */
@@ -94,6 +136,9 @@ export default function Timeline(): React.JSX.Element {
   const currentFrame = useEditorStore((s) => s.currentFrame)
   const selectedClipIds = useEditorStore((s) => s.selectedClipIds)
   const thumbnails = useEditorStore((s) => s.thumbnails)
+  const manifest = useEditorStore((s) => s.manifest)
+  const anglePlan = useEditorStore((s) => s.anglePlan)
+  const isPlaying = useEditorStore((s) => s.isPlaying)
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const wrapRef = useRef<HTMLDivElement | null>(null)
@@ -152,17 +197,17 @@ export default function Timeline(): React.JSX.Element {
     // Track lane backgrounds (alternating).
     for (let i = 0; i < tracks.length; i++) {
       const top = trackTop(i, l)
-      ctx.fillStyle = i % 2 === 0 ? '#191921' : '#1d1d27'
+      ctx.fillStyle = i % 2 === 0 ? '#000000' : '#08080a'
       ctx.fillRect(l.headerWidth, top, width - l.headerWidth, l.trackHeight)
     }
 
     // Ruler.
-    ctx.fillStyle = '#1c1c24'
+    ctx.fillStyle = '#000000'
     ctx.fillRect(l.headerWidth, 0, width - l.headerWidth, l.rulerHeight)
     const step = rulerStepFrames(l, timeline.fps)
-    ctx.strokeStyle = '#33333f'
-    ctx.fillStyle = '#9a9ab0'
-    ctx.font = '10px Segoe UI, system-ui, sans-serif'
+    ctx.strokeStyle = '#2c2c2e'
+    ctx.fillStyle = '#8e8e93'
+    ctx.font = '10px -apple-system, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif'
     ctx.textBaseline = 'middle'
     const firstFrame = Math.max(0, Math.floor(scrollX / l.pixelsPerFrame / step) * step)
     for (let f = firstFrame; ; f += step) {
@@ -213,9 +258,9 @@ export default function Timeline(): React.JSX.Element {
     }
 
     // Header column.
-    ctx.fillStyle = '#15151b'
+    ctx.fillStyle = '#000000'
     ctx.fillRect(0, 0, l.headerWidth, height)
-    ctx.strokeStyle = '#2c2c38'
+    ctx.strokeStyle = '#2c2c2e'
     ctx.beginPath()
     ctx.moveTo(l.headerWidth + 0.5, 0)
     ctx.lineTo(l.headerWidth + 0.5, height)
@@ -224,21 +269,94 @@ export default function Timeline(): React.JSX.Element {
       const top = trackTop(ti, l)
       ctx.fillStyle = TYPE_COLORS[tracks[ti].type]
       ctx.fillRect(0, top, 3, l.trackHeight)
-      ctx.fillStyle = '#e9e9f0'
-      ctx.font = '600 12px Segoe UI, system-ui, sans-serif'
+      ctx.fillStyle = '#ffffff'
+      ctx.font = '600 12px -apple-system, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif'
       ctx.textBaseline = 'alphabetic'
       ctx.fillText(trackLabelFor(types, ti), 12, top + 20)
-      for (const chip of headerChips(ti, l)) {
-        const active =
-          chip.flag === 'syncLocked' ? tracks[ti].syncLocked : (tracks[ti][chip.flag] as boolean)
-        const on = chip.flag === 'syncLocked' ? active : active // muted/hidden "on" = engaged
-        ctx.fillStyle = on ? (chip.flag === 'syncLocked' ? '#2f3550' : '#5a2230') : '#24242f'
+      const trackAudio = tracks[ti].type === 'video' && trackHasActiveAudio(tracks[ti], manifest)
+      for (const chip of headerChips(ti, l, tracks[ti], trackAudio)) {
+        const cx = chip.box.x + chip.box.w / 2
+        const cy = chip.box.y + chip.box.h / 2 + 1
+        if (chip.kind === 'audio') {
+          ctx.fillStyle = '#1c1c1e'
+          roundRect(ctx, chip.box.x, chip.box.y, chip.box.w, chip.box.h, 4)
+          ctx.fill()
+          ctx.globalAlpha = trackAudio ? 1 : 0.5
+          ctx.font = '11px Segoe UI, system-ui, sans-serif'
+          ctx.textBaseline = 'middle'
+          ctx.textAlign = 'center'
+          ctx.fillText(chip.label, cx, cy)
+          ctx.globalAlpha = 1
+          ctx.textAlign = 'left'
+          continue
+        }
+        if (chip.kind === 'role') {
+          const col = tracks[ti].role ? ROLE_COLORS[tracks[ti].role as TrackRole] : '#3f3f46'
+          ctx.fillStyle = '#1c1c1e'
+          roundRect(ctx, chip.box.x, chip.box.y, chip.box.w, chip.box.h, 4)
+          ctx.fill()
+          ctx.strokeStyle = col
+          ctx.lineWidth = 1
+          roundRect(ctx, chip.box.x + 0.5, chip.box.y + 0.5, chip.box.w - 1, chip.box.h - 1, 4)
+          ctx.stroke()
+          ctx.fillStyle = col
+          ctx.font = '700 10px Segoe UI, system-ui, sans-serif'
+          ctx.textBaseline = 'middle'
+          ctx.textAlign = 'center'
+          ctx.fillText(chip.label, cx, cy)
+          ctx.textAlign = 'left'
+          continue
+        }
+        if (chip.kind === 'delete') {
+          ctx.fillStyle = '#1c1c1e'
+          roundRect(ctx, chip.box.x, chip.box.y, chip.box.w, chip.box.h, 4)
+          ctx.fill()
+          ctx.fillStyle = '#f87171'
+          ctx.font = '600 10px Segoe UI, system-ui, sans-serif'
+          ctx.textBaseline = 'middle'
+          ctx.textAlign = 'center'
+          ctx.fillText(chip.label, cx, cy)
+          ctx.textAlign = 'left'
+          continue
+        }
+        const on = tracks[ti][chip.flag as TrackFlag] as boolean
+        ctx.fillStyle = on ? (chip.flag === 'syncLocked' ? '#1e293b' : '#7f1d1d') : '#18181b'
         roundRect(ctx, chip.box.x, chip.box.y, chip.box.w, chip.box.h, 4)
         ctx.fill()
-        ctx.fillStyle = on ? (chip.flag === 'syncLocked' ? '#9fb0ff' : '#ff9a9a') : '#7a7a8c'
+        ctx.fillStyle = on ? (chip.flag === 'syncLocked' ? '#38bdf8' : '#f87171') : '#71717a'
         ctx.font = '600 10px Segoe UI, system-ui, sans-serif'
         ctx.textBaseline = 'middle'
-        ctx.fillText(chip.label, chip.box.x + 7, chip.box.y + chip.box.h / 2 + 1)
+        ctx.textAlign = 'center'
+        ctx.fillText(chip.label, cx, cy)
+        ctx.textAlign = 'left'
+      }
+    }
+
+    // Angle-cut plan marks (preview): a dashed guide + flag at each proposed angle change, colored
+    // by the angle that starts there. Cleared once the plan is applied or cancelled.
+    if (anglePlan) {
+      for (let i = 1; i < anglePlan.segments.length; i++) {
+        const seg = anglePlan.segments[i]
+        const mx = xForFrame(seg.startFrame, l, scrollX)
+        if (mx < l.headerWidth || mx > width) continue
+        const col = ROLE_COLORS[seg.role]
+        ctx.save()
+        ctx.strokeStyle = col
+        ctx.lineWidth = 1
+        ctx.setLineDash([4, 3])
+        ctx.beginPath()
+        ctx.moveTo(mx, l.rulerHeight)
+        ctx.lineTo(mx, height)
+        ctx.stroke()
+        ctx.setLineDash([])
+        ctx.fillStyle = col
+        ctx.beginPath()
+        ctx.moveTo(mx, l.rulerHeight)
+        ctx.lineTo(mx + 7, l.rulerHeight)
+        ctx.lineTo(mx, l.rulerHeight + 7)
+        ctx.closePath()
+        ctx.fill()
+        ctx.restore()
       }
     }
 
@@ -349,12 +467,28 @@ export default function Timeline(): React.JSX.Element {
     cvs.style.height = `${size.height}px`
     draw()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [size, timeline, currentFrame, selectedClipIds, pixelsPerFrame, scrollX, thumbnails])
+  }, [size, timeline, currentFrame, selectedClipIds, pixelsPerFrame, scrollX, thumbnails, manifest, anglePlan])
 
   // Keep scroll within bounds when content shrinks.
   useEffect(() => {
     if (scrollX > maxScrollX) setScrollX(maxScrollX)
   }, [scrollX, maxScrollX])
+
+  // Auto-follow the playhead while playing (Premiere-style PAGE jump): when the playhead crosses the
+  // right edge (or sits left of the visible window after a backward seek), jump the view a "page" so it
+  // reappears near the left. Page-jumping (vs. continuous centering) avoids jitter from the ~10 Hz
+  // store updates the playback clock pushes. Gated on `isPlaying` so manual scroll/zoom is untouched.
+  useEffect(() => {
+    if (!isPlaying || size.width === 0) return
+    const px = xForFrame(currentFrame, layout, scrollX)
+    const rightEdge = size.width - (size.width - layout.headerWidth) * 0.1
+    if (px > rightEdge || px < layout.headerWidth) {
+      const lead = (size.width - layout.headerWidth) * 0.1 // land the playhead ~10% from the left
+      const next = Math.max(0, Math.min(currentFrame * layout.pixelsPerFrame - lead, maxScrollX))
+      if (next !== scrollX) setScrollX(next)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentFrame, isPlaying, pixelsPerFrame, size.width, maxScrollX])
 
   // Keyboard shortcuts.
   useEffect(() => {
@@ -421,14 +555,29 @@ export default function Timeline(): React.JSX.Element {
     if (x < layout.headerWidth) {
       const ti = trackIndexForY(y, layout, timeline.tracks.length)
       if (ti >= 0 && ti < timeline.tracks.length) {
-        for (const chip of headerChips(ti, layout)) {
+        const track = timeline.tracks[ti]
+        for (const chip of headerChips(ti, layout, track)) {
           if (x >= chip.box.x && x <= chip.box.x + chip.box.w && y >= chip.box.y && y <= chip.box.y + chip.box.h) {
-            const trackId = timeline.tracks[ti].id
-            if (chip.flag === 'muted') c.setTrackMuted(trackId)
-            else if (chip.flag === 'hidden') c.setTrackHidden(trackId)
-            else c.setTrackSyncLocked(trackId)
+            if (chip.kind === 'audio') return // read-only badge
+            if (chip.kind === 'role') c.cycleTrackRole(track.id)
+            else if (chip.kind === 'delete') {
+              if (
+                track.clips.length > 0 &&
+                !window.confirm(`Esta pista tiene ${track.clips.length} clip(s). ¿Eliminar la pista y todos sus clips?`)
+              )
+                return
+              c.removeTrack(track.id)
+            } else if (chip.flag === 'muted') c.setTrackMuted(track.id)
+            else if (chip.flag === 'hidden') c.setTrackHidden(track.id)
+            else c.setTrackSyncLocked(track.id)
             return
           }
+        }
+        // Clicking the track NAME (no chip hit) selects the WHOLE track — every clip as one unit, so a
+        // multicam track cut into many pieces can drive angle-cuts as a whole. Shift adds a second track.
+        if (track.clips.length > 0) {
+          c.selectTrackClips(track.id, e.shiftKey)
+          flashNotice(`Pista seleccionada (${track.clips.length} clip${track.clips.length === 1 ? '' : 's'})`)
         }
       }
       return

@@ -133,6 +133,10 @@ export async function runEditorTool(name: string, input: unknown): Promise<ToolC
     return useEditorStore.getState().syncAnglesTool((input ?? {}) as SyncAnglesInput)
   }
 
+  if (name === 'apply_auto_angles') {
+    return useEditorStore.getState().applyAutoAngles()
+  }
+
   if (name === 'transcribe_clip') {
     const { clipId, languageCode, diarize } = (input ?? {}) as {
       clipId?: string

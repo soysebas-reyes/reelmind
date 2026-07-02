@@ -22,7 +22,7 @@ function ensureInstalled(): void {
   })
 }
 
-export function executeToolInRenderer(name: string, input: unknown, timeoutMs = 15_000): Promise<ToolCallResult> {
+export function executeToolInRenderer(name: string, input: unknown, timeoutMs = 300_000): Promise<ToolCallResult> {
   ensureInstalled()
   const win = BrowserWindow.getAllWindows()[0]
   if (!win || win.webContents.isDestroyed()) {

@@ -10,10 +10,12 @@ import {
   colorIsIdentity,
   composeFrame,
   expectedPath,
-  timelineFrameForSourceSeconds,
+  visibleLayerSet,
   volumeAt
 } from '@core'
 import { getController, timelineTotalFrames, useEditorStore } from '../store'
+import { applyAudioEnhance } from '../audio/audioGraph'
+import { Icon } from '../ui/Icon'
 import { type ColorGL, getColorGL } from './colorGL'
 
 /** Approximate ColorAdjustments → Canvas 2D filter. CSS filters cover brightness/contrast/saturation/
@@ -34,7 +36,9 @@ function assetMediaUrl(mediaRef: string): string | null {
   const { manifest, projectDir } = useEditorStore.getState()
   const entry = manifest.entries.find((e) => e.id === mediaRef)
   if (!entry) return null
-  const path = expectedPath(manifest, mediaRef, projectDir)
+  // Prefer a preview proxy for video (smooth decode + reliable seeking on 4K/10-bit/4:2:2 sources).
+  // Export still uses the original (main-process exporter resolves the source, not this URL).
+  const path = entry.type === 'video' && entry.proxyPath ? entry.proxyPath : expectedPath(manifest, mediaRef, projectDir)
   return path ? `reelmind-media://local/${encodeURIComponent(path)}` : null
 }
 
@@ -51,12 +55,30 @@ export default function Preview(): React.JSX.Element {
   const timeline = useEditorStore((s) => s.timeline)
   const currentFrame = useEditorStore((s) => s.currentFrame)
   const thumbnails = useEditorStore((s) => s.thumbnails)
+  // Subscribed so a proxy generated mid-session triggers a redraw → videoFor rebuilds with the proxy URL.
+  const manifest = useEditorStore((s) => s.manifest)
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const imageCacheRef = useRef<Map<string, HTMLImageElement>>(new Map())
   const videoPoolRef = useRef<Map<string, HTMLVideoElement>>(new Map())
+  // The media URL we last assigned per video mediaRef. Compared to detect a proxy swap WITHOUT reading
+  // `video.src` (the browser returns a resolved/re-encoded form that never string-equals our custom URL,
+  // which would otherwise rebuild the element every frame → frozen video).
+  const videoUrlRef = useRef<Map<string, string>>(new Map())
   const audioPoolRef = useRef<Map<string, HTMLAudioElement>>(new Map())
+  // Source time (seconds) we still owe a media element once it becomes seekable. Set when we tried to
+  // seek before metadata/duration were known; applied in the element's loadeddata/canplay handler so a
+  // freshly-shown angle never plays from 0 before jumping (the "always starts from the beginning" bug).
+  const pendingSeekRef = useRef<Map<HTMLMediaElement, number>>(new Map())
+  // The clip-segment each pooled element is currently aligned to. Lets us seek ONCE when the active
+  // segment for a source changes (a multicam jump) instead of re-seeking every tick (which restarted
+  // in-flight proxy seeks → "repeats the same shot / never advances").
+  const alignRef = useRef<Map<HTMLMediaElement, string>>(new Map())
+  // Video elements that have produced at least one frame. Lets us keep drawing a clip's LAST frame during
+  // a brief seek instead of falling back to its poster (a fixed early frame) — which read as the angle
+  // "jumping back to the start" at every cut.
+  const videoReadyRef = useRef<Set<HTMLVideoElement>>(new Set())
   const drawRef = useRef<() => void>(() => {})
   // LUT load state per lutRef: 'loading' (in flight) / 'ready' / 'failed' (retried later). Once a LUT
   // is uploaded to the GL renderer, gl.hasLut is the source of truth; this just gates the async fetch.
@@ -93,6 +115,18 @@ export default function Preview(): React.JSX.Element {
     if (!url) return null
     const pool = videoPoolRef.current
     let v = pool.get(mediaRef)
+    // Rebuild only if the URL WE assigned changed (e.g. a preview proxy was just generated) — never
+    // compare against `v.src` (resolved form differs from our custom URL → would rebuild every frame).
+    if (v && videoUrlRef.current.get(mediaRef) !== url) {
+      v.pause()
+      v.removeAttribute('src')
+      v.load()
+      pool.delete(mediaRef)
+      pendingSeekRef.current.delete(v)
+      alignRef.current.delete(v)
+      videoReadyRef.current.delete(v)
+      v = undefined
+    }
     if (!v) {
       v = document.createElement('video')
       // Origin-clean (with the media protocol's CORS header) so WebGL can sample frames untainted.
@@ -101,9 +135,17 @@ export default function Preview(): React.JSX.Element {
       v.muted = false
       v.preload = 'auto'
       v.playsInline = true
-      v.addEventListener('loadeddata', () => drawRef.current())
+      v.preservesPitch = true // pitch lock: speed changes (playbackRate) keep the voice's pitch
+      // Apply any deferred seek as soon as the element can seek, THEN draw — so a just-shown angle
+      // lands on its synced source time instead of flashing/playing from frame 0.
+      v.addEventListener('loadeddata', (e) => {
+        applyPendingSeek(e.currentTarget as HTMLMediaElement)
+        drawRef.current()
+      })
+      v.addEventListener('canplay', (e) => applyPendingSeek(e.currentTarget as HTMLMediaElement))
       v.addEventListener('seeked', () => drawRef.current())
       pool.set(mediaRef, v)
+      videoUrlRef.current.set(mediaRef, url)
     }
     return v
   }
@@ -116,18 +158,62 @@ export default function Preview(): React.JSX.Element {
     let a = pool.get(mediaRef)
     if (!a) {
       a = new Audio()
+      // Origin-clean (the media protocol sends a CORS header) so a MediaElementAudioSourceNode in the
+      // enhance graph receives real samples — without this, Web Audio routes cross-origin media as SILENCE.
+      a.crossOrigin = 'anonymous'
       a.src = url
       a.preload = 'auto'
+      a.preservesPitch = true // pitch lock on speed changes
+      a.addEventListener('loadeddata', (e) => applyPendingSeek(e.currentTarget as HTMLMediaElement))
+      a.addEventListener('canplay', (e) => applyPendingSeek(e.currentTarget as HTMLMediaElement))
       pool.set(mediaRef, a)
     }
     return a
+  }
+
+  /** Clamp a source time just inside the element's known duration (no-op when duration is unknown). */
+  function clampSeek(el: HTMLMediaElement, t: number): number {
+    return Number.isFinite(el.duration) ? Math.min(t, Math.max(0, el.duration - 0.05)) : Math.max(0, t)
+  }
+
+  /** Apply a deferred seek once the element is loaded (called from loadeddata/canplay), then resume
+   *  playback if we're playing — so we never play from 0 and jump. */
+  function applyPendingSeek(el: HTMLMediaElement): void {
+    const t = pendingSeekRef.current.get(el)
+    if (t === undefined) return
+    pendingSeekRef.current.delete(el)
+    el.currentTime = clampSeek(el, t)
+    if (playingRef.current && el.paused) void el.play().catch(() => {})
+  }
+
+  /** Seek `el` to source time `t`. If it isn't seekable yet (metadata not loaded), defer the seek until
+   *  it is (and DON'T play yet) so a freshly-shown angle never flashes/plays from frame 0. When already
+   *  seekable, seek now (unless a seek is already in flight) and resume if `play`. */
+  function requestSeekAndPlay(el: HTMLMediaElement, t: number, play: boolean): void {
+    if (el.readyState >= 1) {
+      if (!el.seeking) el.currentTime = clampSeek(el, t)
+      if (play && el.paused) void el.play().catch(() => {})
+    } else {
+      pendingSeekRef.current.set(el, t)
+    }
+  }
+
+  /** True once this <video> is paintable: it has a current frame (readyState>=2) OR produced one before
+   *  — so drawImage shows its LAST frame during a brief seek instead of us falling back to the poster. */
+  function videoDrawable(v: HTMLVideoElement): boolean {
+    if (v.videoWidth <= 0) return false
+    if (v.readyState >= 2) {
+      videoReadyRef.current.add(v)
+      return true
+    }
+    return videoReadyRef.current.has(v)
   }
 
   /** The decode-ready element to feed the WebGL grade: the video frame if ready, else the poster. */
   function gradeSourceFor(mediaType: string, mediaRef: string): TexImageSource | null {
     if (mediaType === 'video') {
       const v = videoFor(mediaRef)
-      if (v && v.readyState >= 2 && v.videoWidth > 0) return v
+      if (v && videoDrawable(v)) return v
     }
     return imageFor(mediaRef)
   }
@@ -159,7 +245,7 @@ export default function Preview(): React.JSX.Element {
     const sh = (ih: number) => Math.max(1, ih * (1 - crop.top - crop.bottom))
     if (mediaType === 'video') {
       const v = videoFor(mediaRef)
-      if (v && v.readyState >= 2 && v.videoWidth > 0) {
+      if (v && videoDrawable(v)) {
         ctx.drawImage(v, crop.left * v.videoWidth, crop.top * v.videoHeight, sw(v.videoWidth), sh(v.videoHeight), dx, dy, dw, dh)
         return true
       }
@@ -206,7 +292,11 @@ export default function Preview(): React.JSX.Element {
     // frame, so playback stays smooth even though the store only updates ~10×/s.
     const frame = playingRef.current ? playheadRef.current : currentFrame
     const composed = composeFrame(timeline, frame)
+    // Skip layers fully hidden behind an opaque full-frame clip above (pixel-identical result,
+    // and it avoids the WebGL grade pass for the occluded angle in a multicam stack). Text always draws.
+    const drawn = visibleLayerSet(composed.visual)
     for (const layer of composed.visual) {
+      if (layer.mediaType !== 'text' && !drawn.has(layer.mediaRef)) continue
       const t = layer.transform
       const w = t.width * timeline.width
       const h = t.height * timeline.height
@@ -279,6 +369,9 @@ export default function Preview(): React.JSX.Element {
   // Keep the refs the rAF/draw closures read in sync with React state.
   useEffect(() => {
     playingRef.current = playing
+    // Mirror into the store so the Timeline can auto-follow the playhead while playing (covers both
+    // togglePlay and the auto-stop at the end of the clock).
+    useEditorStore.getState().setPlaying(playing)
   }, [playing])
   useEffect(() => {
     if (!playing) playheadRef.current = currentFrame
@@ -305,7 +398,7 @@ export default function Preview(): React.JSX.Element {
     cvs.style.height = `${size.height}px`
     draw()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [size, timeline, currentFrame, thumbnails])
+  }, [size, timeline, currentFrame, thumbnails, manifest])
 
   // Keep pooled media aligned with the playhead: when paused, seek to the exact source time
   // (the 'seeked' event redraws the real frame); when playing, let it play (best-effort sync).
@@ -313,25 +406,48 @@ export default function Preview(): React.JSX.Element {
   // per-clip gain (volume × fades) and track mute. The FFmpeg export stays the exact reference.
   useEffect(() => {
     const composed = composeFrame(timeline, currentFrame)
+    // Only the angles that actually contribute pixels need to decode. A video fully occluded by an
+    // opaque full-frame clip above (e.g. the lower angle in a synced multicam stack) is paused, so
+    // sync verification decodes one stream instead of two. Re-evaluated per frame, so a cut that
+    // exposes the lower angle un-culls it automatically.
+    const drawnRefs = visibleLayerSet(composed.visual)
     const visibleVideos = new Set<string>()
     for (const layer of composed.visual) {
       if (layer.mediaType !== 'video') continue
-      visibleVideos.add(layer.mediaRef)
       const v = videoFor(layer.mediaRef)
       if (!v) continue
+      if (!drawnRefs.has(layer.mediaRef)) {
+        if (!v.paused) v.pause() // occluded — don't decode it (stays loaded for an instant un-cull)
+        continue
+      }
+      visibleVideos.add(layer.mediaRef)
       const track = timeline.tracks[layer.trackIndex]
       const clip = track?.clips.find((c) => c.id === layer.clipId)
       v.muted = track?.muted ?? false
       v.volume = clip ? Math.max(0, Math.min(1, volumeAt(clip, currentFrame))) : 1
+      // Play at the clip's speed (so a sped/slowed clip stays in sync with the timeline) with pitch
+      // preserved (preservesPitch set at creation). The master clock divides currentTime by speed.
+      const rate = Math.max(0.0625, Math.min(16, clip?.speed ?? 1))
+      if (v.playbackRate !== rate) v.playbackRate = rate
       const target = Math.max(0, layer.sourceSeconds)
       if (playing) {
-        if (v.paused) {
-          if (Number.isFinite(v.duration)) v.currentTime = Math.min(target, v.duration)
+        // Seek ONLY when the element (re)appears (was paused) or the active segment for this source
+        // CHANGED (a multicam jump). Then let it play its contiguous segment freely. The !v.seeking +
+        // alignRef guards mean exactly one seek per jump — we never restart an in-flight (slow proxy)
+        // seek, which is what made it "repeat the same shot / never advance". A seek before the element
+        // is loaded is deferred so it never plays from 0 ("always starts from the beginning").
+        const mustSeek = v.paused || alignRef.current.get(v) !== layer.clipId
+        if (mustSeek) {
+          if (!v.seeking) {
+            requestSeekAndPlay(v, target, true)
+            alignRef.current.set(v, layer.clipId)
+          }
+        } else if (v.paused && !v.seeking) {
           void v.play().catch(() => {})
         }
       } else {
         if (!v.paused) v.pause()
-        if (v.readyState >= 1 && Math.abs(v.currentTime - target) > 0.04) v.currentTime = target
+        if (Math.abs(v.currentTime - target) > 0.04) requestSeekAndPlay(v, target, false)
       }
     }
     // Pause any pooled video that isn't on screen this frame.
@@ -347,15 +463,29 @@ export default function Preview(): React.JSX.Element {
       const el = audioFor(a.mediaRef)
       if (!el) continue
       el.volume = Math.max(0, Math.min(1, a.gain))
+      const aClip = timeline.tracks[a.trackIndex]?.clips.find((c) => c.id === a.clipId)
+      const aSpeed = aClip?.speed ?? 1
+      const aRate = Math.max(0.0625, Math.min(16, aSpeed))
+      if (el.playbackRate !== aRate) el.playbackRate = aRate
+      // Non-destructive voice enhancement, audible live (EQ/compressor/limiter/gain). afftdn/gate/loudnorm
+      // are applied exactly on export; here we approximate so slider changes are heard during playback.
+      applyAudioEnhance(el, aClip?.audioEnhance)
       const target = Math.max(0, a.sourceSeconds)
       if (playing) {
-        if (el.paused) {
-          if (Number.isFinite(el.duration)) el.currentTime = Math.min(target, el.duration)
+        // Same policy as video: the synced audio is one continuous clip, so it seeks once (deferred
+        // until loaded → starts at its trimStart, not 0) and then plays freely with no per-tick re-seek.
+        const mustSeek = el.paused || alignRef.current.get(el) !== a.clipId
+        if (mustSeek) {
+          if (!el.seeking) {
+            requestSeekAndPlay(el, target, true)
+            alignRef.current.set(el, a.clipId)
+          }
+        } else if (el.paused && !el.seeking) {
           void el.play().catch(() => {})
         }
       } else {
         if (!el.paused) el.pause()
-        if (el.readyState >= 1 && Math.abs(el.currentTime - target) > 0.04) el.currentTime = target
+        if (Math.abs(el.currentTime - target) > 0.04) requestSeekAndPlay(el, target, false)
       }
     }
     for (const [ref, el] of audioPoolRef.current) {
@@ -381,39 +511,28 @@ export default function Preview(): React.JSX.Element {
         a.load()
       }
       apool.clear()
+      pendingSeekRef.current.clear()
+      alignRef.current.clear()
+      videoReadyRef.current.clear()
     }
   }, [])
 
-  // Playback clock — the lead on-screen VIDEO is the master clock: the playhead follows its real
-  // `currentTime`, so video, embedded audio, and the timecode stay locked across pause/resume (a
-  // free timer would race ahead while a 4K seek catches up). Falls back to a timer only when no
-  // video is playing (images / pure audio).
+  // Playback clock — a monotonic wall-clock timer ANCHORED at the frame where play (re)started. The
+  // playhead advances smoothly and can never snap back to 0 on resume (the anchor is the paused frame,
+  // not the video's currentTime). The pooled <video>/<audio> elements play freely (slaved by the sync
+  // effect), so audio↔video lip-sync comes straight from the media; this timer only drives the playhead,
+  // timecode, and which clips composite. draw() samples whatever frame the (culled to one) video decoded.
   useEffect(() => {
     if (!playing) return
     const c = getController()
-    let last = performance.now()
+    const startWall = performance.now()
+    const startFrame = playheadRef.current
     let lastSync = 0
     let raf = 0
-    const tick = (now: number) => {
-      const dt = (now - last) / 1000
-      last = now
-      const tl = c.getTimeline()
-      const cur = playheadRef.current
-      let frame: number | null = null
-      for (const layer of composeFrame(tl, cur).visual) {
-        if (layer.mediaType !== 'video') continue
-        const v = videoPoolRef.current.get(layer.mediaRef)
-        // Don't adopt the video clock while it's seeking: a mid-seek currentTime can read stale/0 and
-        // yank the playhead back to the start on resume. Advance by timer until the seek lands.
-        if (!v || v.paused || v.seeking || v.readyState < 2) continue
-        const clip = tl.tracks[layer.trackIndex]?.clips.find((cl) => cl.id === layer.clipId)
-        const f = clip ? timelineFrameForSourceSeconds(clip, v.currentTime, fps) : null
-        if (f !== null) {
-          frame = f
-          break
-        }
-      }
-      if (frame === null) frame = Math.round(cur + dt * fps)
+    let cancelled = false
+    const tick = (now: number): void => {
+      if (cancelled) return
+      const frame = startFrame + ((now - startWall) / 1000) * fps
       if (total > 0 && frame >= total) {
         playheadRef.current = total
         c.seek(total)
@@ -421,16 +540,19 @@ export default function Preview(): React.JSX.Element {
         return
       }
       playheadRef.current = frame
-      drawRef.current() // draw every frame from the live playhead (no React re-render in the hot path)
+      drawRef.current() // draw from the live playhead (no React re-render in the hot path)
       // Push to the store ~10×/s so the timecode + scrubber follow without a per-frame re-render.
       if (now - lastSync > 100) {
         lastSync = now
-        c.seek(frame)
+        c.seek(Math.round(frame))
       }
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(raf)
+    return () => {
+      cancelled = true
+      cancelAnimationFrame(raf)
+    }
   }, [playing, fps, total])
 
   const togglePlay = (): void => {
@@ -445,8 +567,8 @@ export default function Preview(): React.JSX.Element {
         <canvas ref={canvasRef} />
       </div>
       <div className="preview-transport">
-        <button className="play" onClick={togglePlay} disabled={total === 0} title={playing ? 'Pause' : 'Play'}>
-          {playing ? '❚❚' : '▶'}
+        <button className="play" onClick={togglePlay} disabled={total === 0} title={playing ? 'Pausa' : 'Reproducir'}>
+          <Icon name={playing ? 'pause' : 'play'} size={15} />
         </button>
         <span className="tc">
           {timecode(currentFrame, fps)} <span className="tc-dim">/ {timecode(total, fps)}</span>

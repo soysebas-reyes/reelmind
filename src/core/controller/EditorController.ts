@@ -16,6 +16,7 @@ import { type Patch, applyPatches, current, enablePatches, produceWithPatches } 
 import { Snap, newId, sround } from '../constants'
 import { type ClipType, isCompatible } from '../model/clipType'
 import { type Interpolation, lerpNumber, sampleTrack } from '../model/keyframe'
+import { type AudioEnhanceSettings, makeAudioEnhance, mergeAudioEnhance } from '../model/audioEnhance'
 import { type ColorAdjustments, IDENTITY_COLOR, mergeColor } from '../model/color'
 import {
   type Clip,
@@ -23,6 +24,7 @@ import {
   type TextStyle,
   type Timeline,
   type Track,
+  type TrackRole,
   type Transform,
   clampFadesToDuration,
   clampKeyframesToDuration,
@@ -114,6 +116,7 @@ export interface ClipPropertyEdit {
   transform?: Transform
   crop?: Crop
   color?: ColorAdjustments
+  audioEnhance?: AudioEnhanceSettings
   textContent?: string
   textStyle?: TextStyle
   /** Shared id linking clips edited as a unit (e.g. the two synced camera angles). */
@@ -131,6 +134,7 @@ const EDITABLE_KEYS: (keyof ClipPropertyEdit)[] = [
   'transform',
   'crop',
   'color',
+  'audioEnhance',
   'textContent',
   'textStyle',
   'linkGroupId'
@@ -342,6 +346,17 @@ export class EditorController {
     return trackIndexById(this.timeline, trackId)
   }
 
+  /** First track carrying the given multicam role, or null. */
+  getTrackByRole(role: TrackRole): Track | null {
+    return this.timeline.tracks.find((t) => t.role === role) ?? null
+  }
+
+  /** The track that owns clip `clipId`, or null. */
+  getTrackOfClip(clipId: string): Track | null {
+    const loc = locateClip(this.timeline, clipId)
+    return loc ? this.timeline.tracks[loc.trackIndex] : null
+  }
+
   totalFrames(): number {
     return totalFrames(this.timeline)
   }
@@ -507,6 +522,26 @@ export class EditorController {
 
   setTrackSyncLocked(trackId: string, value?: boolean): void {
     this.setTrackFlag(trackId, 'syncLocked', value, 'Sync Lock Track')
+  }
+
+  /** Set (or clear, with `undefined`) the multicam role of a track. */
+  setTrackRole(trackId: string, role: TrackRole | undefined): void {
+    this.run('Set Track Role', () =>
+      this.mutate((tl) => {
+        const i = trackIndexById(tl, trackId)
+        if (i < 0) return
+        tl.tracks[i].role = role
+      })
+    )
+  }
+
+  /** Cycle a track's role: undefined → frontal → lateral → broll → undefined. */
+  cycleTrackRole(trackId: string): void {
+    const t = this.getTrack(trackId)
+    if (!t) return
+    const order: (TrackRole | undefined)[] = ['frontal', 'lateral', 'broll', undefined]
+    const next = order[(order.indexOf(t.role) + 1) % order.length]
+    this.setTrackRole(trackId, next)
   }
 
   private setTrackFlag(
@@ -683,6 +718,36 @@ export class EditorController {
     )
   }
 
+  /** Set a clip's source in-point (`trimStartFrame`) and timeline `durationFrames` directly,
+   *  keeping its `startFrame`. Used by multicam sync to align two angles to a common window —
+   *  `setClipProperties` deliberately excludes structural fields, so this is their dedicated path. */
+  setClipSourceWindow(clipId: string, trimStartFrame: number, durationFrames: number): void {
+    this.run('Align Clip', () =>
+      this.mutate((tl) => {
+        const loc = locateClip(tl, clipId)
+        if (!loc) return
+        const c = tl.tracks[loc.trackIndex].clips[loc.clipIndex]
+        c.trimStartFrame = Math.max(0, Math.round(trimStartFrame))
+        setClipDuration(c, Math.max(1, Math.round(durationFrames)))
+        sortTrack(tl.tracks[loc.trackIndex])
+      })
+    )
+  }
+
+  /** Swap a clip's source media in place, keeping its position/trim/volume/fades/etc. Used by
+   *  "Realzar audio" to replace an audio clip with the enhanced render (same duration/timebase, so
+   *  the existing trim window stays valid). `setClipProperties` excludes `mediaRef` by design, so
+   *  this is its dedicated structural path. */
+  replaceClipMedia(clipId: string, mediaRef: string, label = 'Replace Media'): void {
+    this.run(label, () =>
+      this.mutate((tl) => {
+        const loc = locateClip(tl, clipId)
+        if (!loc) return
+        tl.tracks[loc.trackIndex].clips[loc.clipIndex].mediaRef = mediaRef
+      })
+    )
+  }
+
   trimClipStart(clipId: string, newTrimStartFrame: number): void {
     const c = this.getClip(clipId)
     if (!c) return
@@ -781,6 +846,27 @@ export class EditorController {
       for (const id of targets) {
         const r = this.splitClip(id, this.currentFrame)
         if (r) created.push(r)
+      }
+    })
+    return created
+  }
+
+  /** Razor: at the playhead, split the clip that COVERS that frame on each target track (all tracks if
+   *  no list). One undo step. Only tracks whose clip contains the frame (not at a boundary) are cut, so
+   *  "all tracks" cleanly slices a synced multicam (frontal + lateral + b-roll + shared audio) together —
+   *  the manual way to isolate a stutter/retake for a simultaneous ripple-delete. Returns new right-half ids. */
+  razorAtPlayhead(trackIds?: string[]): string[] {
+    const frame = this.currentFrame
+    const targets = trackIds ?? this.timeline.tracks.map((t) => t.id)
+    const created: string[] = []
+    this.run('Cortar en el playhead', () => {
+      for (const tid of targets) {
+        const track = this.getTrack(tid)
+        const clip = track?.clips.find((cl) => frame > cl.startFrame && frame < clipEndFrame(cl))
+        if (clip) {
+          const r = this.splitClip(clip.id, frame)
+          if (r) created.push(r)
+        }
       }
     })
     return created
@@ -900,6 +986,14 @@ export class EditorController {
     this.setClipProperties(clipId, { color: mergeColor(c.color ?? IDENTITY_COLOR, patch) }, label)
   }
 
+  /** Merge a partial audio-enhance patch onto a clip (non-destructive; applied live + on export) as one
+   *  undo step. Mirrors `setClipColor`. */
+  setClipAudioEnhance(clipId: string, patch: Partial<AudioEnhanceSettings>, label = 'Realzar audio'): void {
+    const c = this.getClip(clipId)
+    if (!c) return
+    this.setClipProperties(clipId, { audioEnhance: mergeAudioEnhance(c.audioEnhance ?? makeAudioEnhance(), patch) }, label)
+  }
+
   // MARK: Playhead / selection (not undoable)
 
   seek(frame: number): void {
@@ -933,6 +1027,21 @@ export class EditorController {
   clearSelection(): void {
     if (this.selected.size === 0) return
     this.selected.clear()
+    this.emit('view')
+  }
+
+  /** Select EVERY clip on a track as one unit (e.g. to drive angle-cuts over a whole multicam track that
+   *  was cut into many pieces). `additive` keeps the current selection (so you can grab a second track
+   *  with Shift). No-op if the track is missing. */
+  selectTrackClips(trackId: string, additive = false): void {
+    const track = this.timeline.tracks.find((t) => t.id === trackId)
+    if (!track) return
+    const ids = track.clips.map((c) => c.id)
+    if (additive) {
+      for (const id of ids) this.selected.add(id)
+    } else {
+      this.selected = new Set(ids)
+    }
     this.emit('view')
   }
 

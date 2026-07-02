@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { makeClip, makeTimeline, makeTrack } from '../model/timeline'
-import { clipSourceSecondsAt, composeFrame } from './compositor'
+import { clipSourceSecondsAt, composeFrame, layerFullyOccludes, visibleLayerSet } from './compositor'
 
 function videoTrack(id: string, clips = [] as ReturnType<typeof makeClip>[]) {
   return makeTrack({ id, type: 'video', clips })
@@ -68,5 +68,45 @@ describe('composeFrame', () => {
     expect(clipSourceSecondsAt(c, 45, 30)).toBeCloseTo(1.5, 6)
     const tl = makeTimeline({ fps: 30, tracks: [videoTrack('v', [c])] })
     expect(composeFrame(tl, 45).visual[0].sourceSeconds).toBeCloseTo(1.5, 6)
+  })
+})
+
+describe('visibleLayerSet (occlusion culling for playback)', () => {
+  const stack = (mutate?: (c: ReturnType<typeof makeClip>) => void) => {
+    const frontal = makeClip({ id: 'F', mediaRef: 'frontal', startFrame: 0, durationFrames: 100 })
+    const lateral = makeClip({ id: 'L', mediaRef: 'lateral', startFrame: 0, durationFrames: 100 })
+    mutate?.(frontal)
+    // top track (index 0) = frontal on top, lateral below — the synced multicam stack.
+    return makeTimeline({ tracks: [videoTrack('top', [frontal]), videoTrack('bot', [lateral])] })
+  }
+
+  it('keeps only the top angle when it fully covers the one below', () => {
+    const set = visibleLayerSet(composeFrame(stack(), 50).visual)
+    expect(set.has('frontal')).toBe(true)
+    expect(set.has('lateral')).toBe(false)
+  })
+
+  it('keeps both when the top layer is partially transparent (mid fade-in)', () => {
+    const tl = stack((c) => {
+      c.fadeInFrames = 20
+    })
+    const set = visibleLayerSet(composeFrame(tl, 5).visual) // opacity < 1
+    expect(set.has('frontal')).toBe(true)
+    expect(set.has('lateral')).toBe(true)
+  })
+
+  it('keeps both when the top layer is scaled to a PiP (not full-frame)', () => {
+    const tl = stack((c) => {
+      c.transform = { ...c.transform, width: 0.4, height: 0.4 }
+    })
+    const set = visibleLayerSet(composeFrame(tl, 50).visual)
+    expect(set.has('frontal')).toBe(true)
+    expect(set.has('lateral')).toBe(true)
+  })
+
+  it('layerFullyOccludes is true for a default full-frame opaque layer', () => {
+    const c = makeClip({ id: 'C', mediaRef: 'm', startFrame: 0, durationFrames: 100 })
+    const layer = composeFrame(makeTimeline({ tracks: [videoTrack('v', [c])] }), 50).visual[0]
+    expect(layerFullyOccludes(layer)).toBe(true)
   })
 })

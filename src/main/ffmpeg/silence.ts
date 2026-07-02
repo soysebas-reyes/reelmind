@@ -32,6 +32,8 @@ export interface DetectSilenceOptions {
   noiseDb?: number
   /** Minimum silence length to report, in seconds (default 0.5). */
   minDurationSec?: number
+  /** Optional sink for raw stderr lines (surfaced live in the progress modal). */
+  onLine?: (line: string) => void
 }
 
 /** Run silencedetect on `path` and return the silent spans (source seconds). Resolves to an empty
@@ -53,11 +55,22 @@ export async function detectSilences(path: string, opts: DetectSilenceOptions = 
   return new Promise<SilenceSeconds[]>((resolve, reject) => {
     const proc = spawn(ffmpegBinary(), args, { windowsHide: true })
     let stderr = ''
+    let lineBuf = ''
     proc.stderr?.on('data', (d: Buffer) => {
-      stderr += d.toString()
+      const chunk = d.toString()
+      stderr += chunk
       if (stderr.length > 1_000_000) stderr = stderr.slice(-1_000_000)
+      if (opts.onLine) {
+        lineBuf += chunk
+        const lines = lineBuf.split(/\r?\n/)
+        lineBuf = lines.pop() ?? ''
+        for (const ln of lines) if (ln.trim()) opts.onLine(ln)
+      }
     })
     proc.on('error', (e) => reject(e))
-    proc.on('close', () => resolve(parseSilenceLog(stderr)))
+    proc.on('close', () => {
+      if (opts.onLine && lineBuf.trim()) opts.onLine(lineBuf)
+      resolve(parseSilenceLog(stderr))
+    })
   })
 }

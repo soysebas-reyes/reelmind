@@ -8,8 +8,10 @@
 // (speed/atempo, volume, delay, mix). Not yet: rotation/flip, text rendering, per-track blend
 // modes — flagged for a later pass.
 
+import { audioEnhanceIsIdentity } from '../model/audioEnhance'
+import { buildEnhanceChain } from '../model/audioEnhanceChain'
 import { colorIsIdentity } from '../model/color'
-import { type Clip, type Timeline, clipEndFrame, colorAt, cropIsIdentity, totalFrames } from '../model/timeline'
+import { type Clip, type Timeline, clipEndFrame, colorAt, cropIsIdentity, sourceFramesConsumed, totalFrames } from '../model/timeline'
 import { buildColorFilterChain } from './colorFilters'
 
 export interface ExportOptions {
@@ -55,22 +57,6 @@ export function atempoFilters(speed: number): string[] {
   return out
 }
 
-function inputArgsForVisual(clip: Clip, path: string, fps: number): string[] {
-  if (clip.mediaType === 'image' || clip.mediaType === 'lottie') {
-    const durSec = clip.durationFrames / fps
-    return ['-loop', '1', '-framerate', String(fps), '-t', fmt(durSec), '-i', path]
-  }
-  const trimSec = clip.trimStartFrame / fps
-  const srcDurSec = (clip.durationFrames * clip.speed) / fps
-  return ['-ss', fmt(trimSec), '-t', fmt(srcDurSec), '-i', path]
-}
-
-function inputArgsForAudio(clip: Clip, path: string, fps: number): string[] {
-  const trimSec = clip.trimStartFrame / fps
-  const srcDurSec = (clip.durationFrames * clip.speed) / fps
-  return ['-ss', fmt(trimSec), '-t', fmt(srcDurSec), '-i', path]
-}
-
 /** Build the export command. Returns null if the timeline has no resolvable, renderable content. */
 export function buildExportGraph(
   timeline: Timeline,
@@ -113,23 +99,56 @@ export function buildExportGraph(
 
   if (visual.length === 0 && audio.length === 0) return null
 
+  // --- Inputs: DEDUP streamed sources (video/audio) to a single `-i` each; each clip's segment is then
+  // carved from the shared decoded stream with trim/atrim (+ split/asplit to fan a source out to its
+  // clips). A multicam timeline has dozens of clips but only 2-3 sources — one `-i` per clip previously
+  // spawned 20+ simultaneous H.264 decoders and OOM'd the export ("Cannot allocate memory" + filter
+  // reinit). Decoding from the start and trimming also avoids the "corrupt decoded frame" that input-side
+  // `-ss` caused on long-GOP 4K sources. Images/lottie keep a per-clip looped input (they need -loop/-t). */
   const inputArgs: string[] = []
   let idx = 0
-  const visualIdx = visual.map((v) => {
-    inputArgs.push(...inputArgsForVisual(v.clip, v.path, fps))
-    return idx++
+  const streamedInputIdx = new Map<string, number>()
+  const streamedInput = (path: string): number => {
+    let i = streamedInputIdx.get(path)
+    if (i === undefined) {
+      i = idx++
+      streamedInputIdx.set(path, i)
+      inputArgs.push('-i', path)
+    }
+    return i
+  }
+
+  const visualEntries = visual.map(({ clip, path }) => {
+    if (clip.mediaType === 'image' || clip.mediaType === 'lottie') {
+      const i = idx++
+      inputArgs.push('-loop', '1', '-framerate', String(fps), '-t', fmt(clip.durationFrames / fps), '-i', path)
+      return { clip, inputIdx: i, looped: true }
+    }
+    return { clip, inputIdx: streamedInput(path), looped: false }
   })
-  const audioIdx = audio.map((a) => {
-    inputArgs.push(...inputArgsForAudio(a.clip, a.path, fps))
-    return idx++
-  })
+  const audioEntries = audio.map(({ clip, path }) => ({ clip, inputIdx: streamedInput(path) }))
 
   const chains: string[] = [`color=c=black:s=${W}x${H}:r=${fps}:d=${fmt(totalSec)}[base]`]
 
+  // Fan each shared VIDEO input out to one branch per clip using it; single-consumer inputs are used
+  // directly. Branches are handed out in clip order via shift().
+  const videoConsumers = new Map<number, number>()
+  for (const e of visualEntries) if (!e.looped) videoConsumers.set(e.inputIdx, (videoConsumers.get(e.inputIdx) ?? 0) + 1)
+  const videoBranches = new Map<number, string[]>()
+  for (const [inIdx, n] of videoConsumers) {
+    if (n <= 1) {
+      videoBranches.set(inIdx, [`[${inIdx}:v]`])
+    } else {
+      const labels = Array.from({ length: n }, (_, j) => `[sv${inIdx}_${j}]`)
+      chains.push(`[${inIdx}:v]split=${n}${labels.join('')}`)
+      videoBranches.set(inIdx, labels)
+    }
+  }
+
   let prev = '[base]'
-  visual.forEach((v, i) => {
-    const k = visualIdx[i]
-    const c = v.clip
+  visualEntries.forEach((e, i) => {
+    const c = e.clip
+    const k = i // per-clip chain id
     const startSec = c.startFrame / fps
     const endSec = clipEndFrame(c) / fps
     const rw = evenRound(c.transform.width * W)
@@ -137,15 +156,22 @@ export function buildExportGraph(
     const rx = Math.round((c.transform.centerX - c.transform.width / 2) * W)
     const ry = Math.round((c.transform.centerY - c.transform.height / 2) * H)
     const sp = c.speed || 1
+    const src = e.looped ? `[${e.inputIdx}:v]` : (videoBranches.get(e.inputIdx)!.shift() as string)
 
-    // Head: geometry + timing + alpha-capable pixel format. Tail: opacity + fades (need the alpha).
+    // Head: carve source window (video) → geometry → timing → alpha-capable pixel format. setsar=1 keeps
+    // every overlay input uniform so the filtergraph never reinitializes on a source with a different SAR.
     const head: string[] = []
+    if (!e.looped) {
+      const srcStart = c.trimStartFrame / fps
+      const srcEnd = (c.trimStartFrame + sourceFramesConsumed(c)) / fps
+      head.push(`trim=start=${fmt(srcStart)}:end=${fmt(srcEnd)}`)
+    }
     if (!cropIsIdentity(c.crop)) {
       head.push(
         `crop=iw*${fmt(1 - c.crop.left - c.crop.right)}:ih*${fmt(1 - c.crop.top - c.crop.bottom)}:iw*${fmt(c.crop.left)}:ih*${fmt(c.crop.top)}`
       )
     }
-    head.push(`scale=${rw}:${rh}`)
+    head.push(`scale=${rw}:${rh}`, 'setsar=1')
     head.push(`setpts=(PTS-STARTPTS)/${fmt(sp)}+${fmt(startSec)}/TB`)
     head.push('format=yuva420p')
     const tail: string[] = []
@@ -159,12 +185,12 @@ export function buildExportGraph(
     // un-graded render). The LUT path comes from resolveLut; a missing LUT is skipped by the chain builder.
     const color = colorAt(c, c.startFrame)
     if (colorIsIdentity(color)) {
-      chains.push(`[${k}:v]${[...head, ...tail].join(',')}[v${k}]`)
+      chains.push(`${src}${[...head, ...tail].join(',')}[v${k}]`)
     } else {
       const lutPath = color.lutRef && resolveLut ? resolveLut(color.lutRef) : null
       const gin = `[gin${k}]`
       const gout = `[gout${k}]`
-      chains.push(`[${k}:v]${head.join(',')}${gin}`)
+      chains.push(`${src}${head.join(',')}${gin}`)
       chains.push(...buildColorFilterChain(color, lutPath, gin, gout))
       chains.push(`${gout}${tail.length > 0 ? tail.join(',') : 'null'}[v${k}]`)
     }
@@ -173,20 +199,42 @@ export function buildExportGraph(
   })
   chains.push(`${prev}null[vout]`)
 
-  audio.forEach((a, i) => {
-    const k = audioIdx[i]
-    const c = a.clip
+  // Audio: dedup sources too; carve each clip with atrim from a shared (asplit) stream.
+  const audioConsumers = new Map<number, number>()
+  for (const e of audioEntries) audioConsumers.set(e.inputIdx, (audioConsumers.get(e.inputIdx) ?? 0) + 1)
+  const audioBranches = new Map<number, string[]>()
+  for (const [inIdx, n] of audioConsumers) {
+    if (n <= 1) {
+      audioBranches.set(inIdx, [`[${inIdx}:a]`])
+    } else {
+      const labels = Array.from({ length: n }, (_, j) => `[sa${inIdx}_${j}]`)
+      chains.push(`[${inIdx}:a]asplit=${n}${labels.join('')}`)
+      audioBranches.set(inIdx, labels)
+    }
+  }
+
+  const audioOutLabels: string[] = []
+  audioEntries.forEach((e, i) => {
+    const c = e.clip
+    const k = i
     const startMs = Math.round((c.startFrame / fps) * 1000)
-    const filters: string[] = ['asetpts=PTS-STARTPTS', ...atempoFilters(c.speed || 1)]
+    const srcStart = c.trimStartFrame / fps
+    const srcEnd = (c.trimStartFrame + sourceFramesConsumed(c)) / fps
+    const src = audioBranches.get(e.inputIdx)!.shift() as string
+    const filters: string[] = [`atrim=start=${fmt(srcStart)}:end=${fmt(srcEnd)}`, 'asetpts=PTS-STARTPTS', ...atempoFilters(c.speed || 1)]
     if (c.volume !== 1) filters.push(`volume=${fmt(c.volume)}`)
+    // Non-destructive voice/loudness enhancement (the exact chain the live preview approximates). Skipped
+    // when disabled/identity so the render stays byte-identical to an un-enhanced one.
+    if (!audioEnhanceIsIdentity(c.audioEnhance)) filters.push(buildEnhanceChain(c.audioEnhance))
     if (startMs > 0) filters.push(`adelay=${startMs}:all=1`)
-    chains.push(`[${k}:a]${filters.join(',')}[a${k}]`)
+    chains.push(`${src}${filters.join(',')}[a${k}]`)
+    audioOutLabels.push(`[a${k}]`)
   })
-  const hasAudio = audio.length > 0
-  if (audio.length === 1) {
-    chains.push(`[a${audioIdx[0]}]anull[aout]`)
-  } else if (audio.length > 1) {
-    chains.push(`${audioIdx.map((k) => `[a${k}]`).join('')}amix=inputs=${audio.length}:normalize=0:dropout_transition=0[aout]`)
+  const hasAudio = audioOutLabels.length > 0
+  if (audioOutLabels.length === 1) {
+    chains.push(`${audioOutLabels[0]}anull[aout]`)
+  } else if (audioOutLabels.length > 1) {
+    chains.push(`${audioOutLabels.join('')}amix=inputs=${audioOutLabels.length}:normalize=0:dropout_transition=0[aout]`)
   }
 
   const maps = ['-map', '[vout]']

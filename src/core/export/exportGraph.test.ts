@@ -2,6 +2,7 @@
 // Export-graph builder: deterministic structure of the ffmpeg arg vector / filter_complex.
 
 import { describe, expect, it } from 'vitest'
+import { makeAudioEnhance } from '../model/audioEnhance'
 import { makeColorAdjustments } from '../model/color'
 import { makeClip, makeTimeline, makeTrack } from '../model/timeline'
 import { atempoFilters, buildExportGraph } from './exportGraph'
@@ -40,17 +41,25 @@ describe('buildExportGraph', () => {
     expect(g.args).not.toContain('[aout]')
   })
 
-  it('seeks video inputs by trim and scales source duration by speed', () => {
+  it('carves the source window with trim (start..end) and scales source duration by speed', () => {
     const clip = makeClip({ id: 'A', mediaRef: 'a', startFrame: 0, durationFrames: 60, trimStartFrame: 30, speed: 2 })
     const tl = makeTimeline({ fps: 30, tracks: [videoTrack('v', [clip])] })
     const g = buildExportGraph(tl, resolve, 'out.mp4')!
-    // -ss 1 (30/30), -t 4 (60*2/30)
-    const ss = g.args.indexOf('-ss')
-    expect(ss).toBeGreaterThan(-1)
-    expect(g.args[ss + 1]).toBe('1')
-    const t = g.args.indexOf('-t')
-    expect(g.args[t + 1]).toBe('4')
+    // One shared input (no per-clip -ss/-t); the window is a filter: trim start=1 (30/30) end=5 ((30+60*2)/30).
+    expect(g.args).not.toContain('-ss')
+    expect(g.filterComplex).toContain('trim=start=1:end=5')
     expect(g.filterComplex).toContain('setpts=(PTS-STARTPTS)/2+0/TB')
+  })
+
+  it('deduplicates inputs: many clips from the same source share ONE -i (split fan-out)', () => {
+    // Two segments of the same source (as multicam cuts produce) → a single input + a split=2.
+    const a1 = makeClip({ id: 'A1', mediaRef: 'cam', startFrame: 0, durationFrames: 30, trimStartFrame: 0 })
+    const a2 = makeClip({ id: 'A2', mediaRef: 'cam', startFrame: 30, durationFrames: 30, trimStartFrame: 30 })
+    const tl = makeTimeline({ fps: 30, tracks: [videoTrack('v', [a1, a2])] })
+    const g = buildExportGraph(tl, resolve, 'out.mp4')!
+    expect(g.inputCount).toBe(1)
+    expect((g.args.join(' ').match(/-i /g) ?? []).length).toBe(1)
+    expect(g.filterComplex).toContain('[0:v]split=2')
   })
 
   it('loops images for their on-timeline duration', () => {
@@ -109,6 +118,29 @@ describe('buildExportGraph', () => {
     const g = buildExportGraph(tl, resolve, 'out.mp4')!
     expect(g.inputCount).toBe(1)
   })
+
+  it('inserts the voice-enhance chain (FFmpeg) for an enabled audioEnhance clip', () => {
+    const v = makeClip({ id: 'V', mediaRef: 'v', startFrame: 0, durationFrames: 30 })
+    const a = makeClip({ id: 'A', mediaRef: 'a', mediaType: 'audio', startFrame: 0, durationFrames: 30 })
+    a.audioEnhance = makeAudioEnhance({ enabled: true, highpassHz: 90, denoise: true, limiter: true, targetLufs: -16 })
+    const tl = makeTimeline({ fps: 30, tracks: [videoTrack('v', [v]), audioTrack('a', [a])] })
+    const g = buildExportGraph(tl, resolve, 'out.mp4')!
+    expect(g.filterComplex).toContain('highpass=f=90')
+    expect(g.filterComplex).toContain('afftdn=')
+    expect(g.filterComplex).toContain('acompressor=')
+    expect(g.filterComplex).toContain('alimiter=')
+    expect(g.filterComplex).toContain('loudnorm=I=-16')
+  })
+
+  it('skips the enhance chain when audioEnhance is disabled (identity → byte-identical render)', () => {
+    const v = makeClip({ id: 'V', mediaRef: 'v', startFrame: 0, durationFrames: 30 })
+    const a = makeClip({ id: 'A', mediaRef: 'a', mediaType: 'audio', startFrame: 0, durationFrames: 30 })
+    a.audioEnhance = makeAudioEnhance({ enabled: false, highpassHz: 90 })
+    const tl = makeTimeline({ fps: 30, tracks: [videoTrack('v', [v]), audioTrack('a', [a])] })
+    const g = buildExportGraph(tl, resolve, 'out.mp4')!
+    expect(g.filterComplex).not.toContain('loudnorm')
+    expect(g.filterComplex).not.toContain('acompressor')
+  })
 })
 
 describe('buildExportGraph — color grading (P9.5)', () => {
@@ -130,7 +162,7 @@ describe('buildExportGraph — color grading (P9.5)', () => {
     expect(fc).not.toContain('lut3d')
     expect(fc).not.toContain('curves=')
     expect(fc).not.toContain('[gin0]')
-    expect(fc).toContain('[0:v]scale=1920:1080,setpts=(PTS-STARTPTS)/1+0/TB,format=yuva420p[v0]')
+    expect(fc).toContain('[0:v]trim=start=0:end=2,scale=1920:1080,setsar=1,setpts=(PTS-STARTPTS)/1+0/TB,format=yuva420p[v0]')
   })
 
   it('emits eq + colorbalance + curves for a no-LUT grade', () => {

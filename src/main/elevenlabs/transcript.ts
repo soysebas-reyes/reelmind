@@ -22,10 +22,16 @@ export interface TranscriptWord {
 export interface TranscribeOptions {
   languageCode?: string
   diarize?: boolean
+  /** Optional sink for progress lines (FFmpeg extraction stderr + coarse stage markers). */
+  onLine?: (line: string) => void
 }
 
 /** Extract audio at 16 kHz mono mp3 to `outDir`, return the temp file path. */
-async function extractAudio16k(videoPath: string, outDir: string): Promise<string> {
+async function extractAudio16k(
+  videoPath: string,
+  outDir: string,
+  onLine?: (line: string) => void
+): Promise<string> {
   const outPath = join(outDir, `transcript-${randomUUID()}.mp3`)
   await new Promise<void>((resolve, reject) => {
     const ff = spawn(ffmpegBinary(), [
@@ -38,6 +44,14 @@ async function extractAudio16k(videoPath: string, outDir: string): Promise<strin
       '-b:a', '48k',
       outPath
     ])
+    let lineBuf = ''
+    ff.stderr?.on('data', (d: Buffer) => {
+      if (!onLine) return
+      lineBuf += d.toString()
+      const lines = lineBuf.split(/\r?\n/)
+      lineBuf = lines.pop() ?? ''
+      for (const ln of lines) if (ln.trim()) onLine(ln)
+    })
     ff.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exit ${code}`))))
     ff.on('error', reject)
   })
@@ -51,7 +65,8 @@ export async function transcribeMedia(
   outDir: string,
   opts: TranscribeOptions = {}
 ): Promise<{ text: string; words: TranscriptWord[] }> {
-  const audioPath = await extractAudio16k(videoPath, outDir)
+  opts.onLine?.('Extrayendo audio 16 kHz mono para la transcripción…')
+  const audioPath = await extractAudio16k(videoPath, outDir, opts.onLine)
   try {
     const audioBuffer = await readFile(audioPath)
     const form = new FormData()
@@ -61,6 +76,7 @@ export async function transcribeMedia(
     if (opts.languageCode) form.append('language_code', opts.languageCode)
     if (opts.diarize) form.append('diarize', 'true')
 
+    opts.onLine?.('Subiendo audio a ElevenLabs Scribe (esto es lo que más tarda)…')
     const res = await fetch(ELEVENLABS_STT_URL, {
       method: 'POST',
       headers: { 'xi-api-key': apiKey },

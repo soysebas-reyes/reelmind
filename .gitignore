@@ -39,3 +39,8 @@ Thumbs.db
 
 # Project media/cache produced at runtime
 *.vproj/cache/
+
+# Local test footage + throwaway MCP probe scripts — never publish
+Guia-Cortes-Angulos/
+call_mcp.mjs
+mcp_import.mjs

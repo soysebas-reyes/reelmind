@@ -48,6 +48,81 @@ describe('EditorController — tracks', () => {
     c.setTrackHidden(v1, true)
     expect(c.getTrack(v1)?.hidden).toBe(true)
   })
+
+  it('sets, finds, and cycles multicam track roles', () => {
+    const { c, v1, v2 } = seeded()
+    expect(c.getTrack(v1)?.role).toBeUndefined()
+    c.setTrackRole(v1, 'frontal')
+    c.setTrackRole(v2, 'lateral')
+    expect(c.getTrackByRole('frontal')?.id).toBe(v1)
+    expect(c.getTrackByRole('lateral')?.id).toBe(v2)
+    // cycle: undefined → frontal → lateral → broll → undefined
+    const a1Track = c.getTimeline().tracks.find((t) => t.type === 'audio')!.id
+    c.cycleTrackRole(a1Track)
+    expect(c.getTrack(a1Track)?.role).toBe('frontal')
+    c.cycleTrackRole(a1Track)
+    expect(c.getTrack(a1Track)?.role).toBe('lateral')
+    c.cycleTrackRole(a1Track)
+    expect(c.getTrack(a1Track)?.role).toBe('broll')
+    c.cycleTrackRole(a1Track)
+    expect(c.getTrack(a1Track)?.role).toBeUndefined()
+  })
+
+  it('getTrackOfClip returns the owning track', () => {
+    const { c, v1 } = seeded()
+    c.addClip({ trackId: v1, mediaRef: 'm', startFrame: 0, durationFrames: 50, id: 'X' })
+    expect(c.getTrackOfClip('X')?.id).toBe(v1)
+    expect(c.getTrackOfClip('nope')).toBeNull()
+  })
+
+  it('setClipSourceWindow sets trim in-point and duration, keeping startFrame', () => {
+    const { c, v1 } = seeded()
+    c.addClip({ trackId: v1, mediaRef: 'm', startFrame: 0, durationFrames: 300, id: 'S' })
+    c.setClipSourceWindow('S', 24, 120)
+    const clip = c.getClip('S')!
+    expect(clip.startFrame).toBe(0)
+    expect(clip.trimStartFrame).toBe(24)
+    expect(clip.durationFrames).toBe(120)
+  })
+})
+
+describe('EditorController — razorAtPlayhead (manual simultaneous split)', () => {
+  it('splits the clip covering the playhead on every track in ONE undo step', () => {
+    const { c, v1, v2, a1 } = seeded()
+    // Aligned multicam: frontal + lateral + audio all spanning [0,300).
+    c.addClip({ trackId: v1, mediaRef: 'f', startFrame: 0, durationFrames: 300, id: 'F' })
+    c.addClip({ trackId: v2, mediaRef: 'l', startFrame: 0, durationFrames: 300, id: 'L' })
+    c.addClip({ trackId: a1, mediaRef: 'a', mediaType: 'audio', startFrame: 0, durationFrames: 300, id: 'A' })
+    c.reset(c.getTimeline())
+
+    c.seek(120)
+    const created = c.razorAtPlayhead()
+    expect(created).toHaveLength(3) // one new right-half per track
+    expect(clipsOf(c.getTimeline(), v1)).toHaveLength(2)
+    expect(clipsOf(c.getTimeline(), v2)).toHaveLength(2)
+    expect(clipsOf(c.getTimeline(), a1)).toHaveLength(2)
+    // The split is at frame 120 on every track.
+    for (const tid of [v1, v2, a1]) {
+      expect(clipsOf(c.getTimeline(), tid).some((cl) => cl.startFrame === 120)).toBe(true)
+    }
+    // One undo reverts the whole simultaneous cut.
+    c.undo()
+    expect(clipsOf(c.getTimeline(), v1)).toHaveLength(1)
+    expect(clipsOf(c.getTimeline(), v2)).toHaveLength(1)
+    expect(clipsOf(c.getTimeline(), a1)).toHaveLength(1)
+  })
+
+  it('does not split a track whose clip does not cover the playhead', () => {
+    const { c, v1, v2 } = seeded()
+    c.addClip({ trackId: v1, mediaRef: 'f', startFrame: 0, durationFrames: 300, id: 'F' })
+    c.addClip({ trackId: v2, mediaRef: 'l', startFrame: 200, durationFrames: 100, id: 'L' }) // [200,300)
+    c.reset(c.getTimeline())
+    c.seek(120) // inside F, before L
+    const created = c.razorAtPlayhead()
+    expect(created).toHaveLength(1)
+    expect(clipsOf(c.getTimeline(), v1)).toHaveLength(2)
+    expect(clipsOf(c.getTimeline(), v2)).toHaveLength(1)
+  })
 })
 
 describe('EditorController — addClip (overwrite)', () => {
