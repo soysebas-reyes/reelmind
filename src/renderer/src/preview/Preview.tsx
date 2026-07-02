@@ -89,7 +89,9 @@ export default function Preview(): React.JSX.Element {
   const playheadRef = useRef(0)
   const playingRef = useRef(false)
   const [size, setSize] = useState({ width: 0, height: 0 })
-  const [playing, setPlaying] = useState(false)
+  // Play/pause lives in the store (togglePlayback) so Space and other panels can drive it; this
+  // component keeps its refs/effect structure and just reads the flag.
+  const playing = useEditorStore((s) => s.isPlaying)
 
   const fps = timeline.fps
   const total = timelineTotalFrames(timeline)
@@ -369,9 +371,6 @@ export default function Preview(): React.JSX.Element {
   // Keep the refs the rAF/draw closures read in sync with React state.
   useEffect(() => {
     playingRef.current = playing
-    // Mirror into the store so the Timeline can auto-follow the playhead while playing (covers both
-    // togglePlay and the auto-stop at the end of the clock).
-    useEditorStore.getState().setPlaying(playing)
   }, [playing])
   useEffect(() => {
     if (!playing) playheadRef.current = currentFrame
@@ -536,7 +535,7 @@ export default function Preview(): React.JSX.Element {
       if (total > 0 && frame >= total) {
         playheadRef.current = total
         c.seek(total)
-        setPlaying(false)
+        useEditorStore.getState().setPlaying(false)
         return
       }
       playheadRef.current = frame
@@ -556,9 +555,7 @@ export default function Preview(): React.JSX.Element {
   }, [playing, fps, total])
 
   const togglePlay = (): void => {
-    const c = getController()
-    if (!playing && total > 0 && c.getCurrentFrame() >= total) c.seek(0)
-    setPlaying((p) => !p)
+    useEditorStore.getState().togglePlayback()
   }
 
   return (

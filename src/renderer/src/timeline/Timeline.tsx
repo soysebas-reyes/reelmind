@@ -522,6 +522,29 @@ export default function Timeline(): React.JSX.Element {
       } else if (e.key === 'ArrowRight') {
         e.preventDefault()
         c.seek(c.getCurrentFrame() + (e.shiftKey ? 10 : 1))
+      } else if (e.key === ' ' && !mod) {
+        e.preventDefault()
+        // A focused toolbar button would also activate on Space (click fires on keyup) — release it.
+        if (t && t.tagName === 'BUTTON') t.blur()
+        useEditorStore.getState().togglePlayback()
+      } else if (e.key === 'Home') {
+        e.preventDefault()
+        c.seek(0)
+      } else if (e.key === 'End') {
+        e.preventDefault()
+        c.seek(c.totalFrames())
+      } else if (e.key === '[') {
+        e.preventDefault()
+        c.trimStartToPlayhead()
+      } else if (e.key === ']') {
+        e.preventDefault()
+        c.trimEndToPlayhead()
+      } else if ((e.key === '+' || e.key === '=') && !mod) {
+        e.preventDefault()
+        setPixelsPerFrame((z) => clamp(z * 1.25, 0.5, 40))
+      } else if (e.key === '-' && !mod) {
+        e.preventDefault()
+        setPixelsPerFrame((z) => clamp(z * 0.8, 0.5, 40))
       }
     }
     window.addEventListener('keydown', onKey)

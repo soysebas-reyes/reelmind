@@ -8,12 +8,112 @@
 // EditorController commands. No transport, no network, no key — just validation + dispatch.
 
 import { z } from 'zod'
-import { clipEndFrame } from '../model/timeline'
-import { type EditorController } from '../controller/EditorController'
+import { clipEndFrame, makeCrop, makeTransform, type TextStyle } from '../model/timeline'
+import { trackIsActive } from '../model/keyframe'
+import { DOCUMENT_PRESETS, GENERIC_LOOKS, lookById, presetById } from '../color/presets'
+import { type ClipPropertyEdit, type EditorController } from '../controller/EditorController'
 import { cutRangeToAngle } from './angleCut'
 
 const clipType = z.enum(['video', 'audio', 'image', 'text', 'lottie'])
 const trackRole = z.enum(['frontal', 'lateral', 'broll'])
+const interpolation = z.enum(['linear', 'hold', 'smooth'])
+
+// ── Clip-property schema pieces (shared by set_clip_properties / set_clips_properties) ───────────
+// Transform/crop/textStyle arrive as PARTIAL patches and are merged onto the clip's current values
+// in the handler (EditorController.setClipProperties writes whole objects through).
+
+const transformPatch = z.object({
+  centerX: z.number().min(-1).max(2).optional(),
+  centerY: z.number().min(-1).max(2).optional(),
+  width: z.number().positive().max(10).optional(),
+  height: z.number().positive().max(10).optional(),
+  rotation: z.number().min(-360).max(360).optional(),
+  flipHorizontal: z.boolean().optional(),
+  flipVertical: z.boolean().optional()
+})
+
+const cropPatch = z.object({
+  left: z.number().min(0).max(1).optional(),
+  top: z.number().min(0).max(1).optional(),
+  right: z.number().min(0).max(1).optional(),
+  bottom: z.number().min(0).max(1).optional()
+})
+
+const textStylePatch = z.object({
+  fontName: z.string().min(1).optional(),
+  fontSize: z.number().positive().optional(),
+  color: z.string().min(1).optional(),
+  alignment: z.enum(['left', 'center', 'right']).optional()
+})
+
+const audioEnhancePatch = z.object({
+  enabled: z.boolean().optional(),
+  gate: z.boolean().optional(),
+  gateThresholdDb: z.number().min(-80).max(-20).optional(),
+  denoise: z.boolean().optional(),
+  denoiseAmount: z.number().min(0).max(40).optional(),
+  highpassHz: z.number().min(0).max(200).optional(),
+  lowpassHz: z.number().min(0).max(20000).optional(),
+  lowShelfDb: z.number().min(-12).max(12).optional(),
+  mudDb: z.number().min(-12).max(0).optional(),
+  presenceDb: z.number().min(-6).max(12).optional(),
+  airDb: z.number().min(-6).max(12).optional(),
+  deEss: z.boolean().optional(),
+  deEssAmount: z.number().min(0).max(1).optional(),
+  compThreshold: z.number().min(-40).max(0).optional(),
+  compRatio: z.number().min(1).max(10).optional(),
+  compAttack: z.number().min(1).max(100).optional(),
+  compRelease: z.number().min(20).max(1000).optional(),
+  compMakeupDb: z.number().min(0).max(12).optional(),
+  limiter: z.boolean().optional(),
+  limitDb: z.number().min(-3).max(0).optional(),
+  targetLufs: z.number().min(-24).max(-9).optional(),
+  outputGainDb: z.number().min(-12).max(12).optional()
+})
+
+const clipPropFields = {
+  volume: z.number().min(0).optional(),
+  opacity: z.number().min(0).max(1).optional(),
+  fadeInFrames: z.number().int().nonnegative().optional(),
+  fadeOutFrames: z.number().int().nonnegative().optional(),
+  fadeInInterpolation: interpolation.optional(),
+  fadeOutInterpolation: interpolation.optional(),
+  speed: z.number().positive().optional(),
+  textContent: z.string().optional(),
+  textStyle: textStylePatch.optional(),
+  transform: transformPatch.optional(),
+  crop: cropPatch.optional(),
+  audioEnhance: audioEnhancePatch.optional()
+}
+
+type ClipPropsInput = {
+  [K in keyof typeof clipPropFields]?: z.infer<(typeof clipPropFields)[K]>
+}
+
+const DEFAULT_TEXT_STYLE: TextStyle = { fontName: 'Segoe UI', fontSize: 48, color: '#ffffff', alignment: 'center' }
+
+const CLIP_PROPS_DESCRIPTION =
+  'volume (linear, 1=unity), opacity 0..1, fade in/out (frames) + interpolation (linear|hold|smooth), ' +
+  'speed (recomputes duration and ripples the following contiguous clips), textContent + textStyle ' +
+  '(fontName/fontSize/color/alignment) for text clips, transform (normalized 0..1 canvas space: ' +
+  'centerX/centerY/width/height, rotation in degrees, flips), crop (edge insets 0..1), and audioEnhance ' +
+  '(voice cleanup: gate/denoise/EQ/de-ess/compressor/limiter/loudness — see field names). ' +
+  'transform/crop/textStyle/audioEnhance are PARTIAL patches merged onto current values ' +
+  '(a rotation-only edit does not reset position).'
+
+/** Merge-aware property apply shared by set_clip_properties / set_clips_properties. One clip. */
+function applyClipProps(c: EditorController, clipId: string, input: ClipPropsInput): void {
+  const clip = c.getClip(clipId)
+  if (!clip) return
+  const { speed, transform, crop, textStyle, audioEnhance, ...direct } = input
+  const props: ClipPropertyEdit = { ...direct }
+  if (transform) props.transform = makeTransform({ ...clip.transform, ...transform })
+  if (crop) props.crop = makeCrop({ ...clip.crop, ...crop })
+  if (textStyle) props.textStyle = { ...(clip.textStyle ?? DEFAULT_TEXT_STYLE), ...textStyle }
+  if (Object.keys(props).length > 0) c.setClipProperties(clipId, props)
+  if (speed !== undefined && speed !== clip.speed) c.setClipSpeed(clipId, speed)
+  if (audioEnhance) c.setClipAudioEnhance(clipId, audioEnhance)
+}
 
 export interface ToolDef {
   name: string
@@ -64,7 +164,20 @@ export function summarizeTimeline(c: EditorController): unknown {
         volume: clip.volume,
         opacity: clip.opacity,
         color: clip.color,
-        linkGroupId: clip.linkGroupId
+        linkGroupId: clip.linkGroupId,
+        textContent:
+          clip.textContent === undefined
+            ? undefined
+            : clip.textContent.length > 40
+              ? clip.textContent.slice(0, 40) + '…'
+              : clip.textContent,
+        hasKeyframes:
+          trackIsActive(clip.opacityTrack) ||
+          trackIsActive(clip.positionTrack) ||
+          trackIsActive(clip.scaleTrack) ||
+          trackIsActive(clip.rotationTrack) ||
+          trackIsActive(clip.cropTrack) ||
+          trackIsActive(clip.volumeTrack)
       }))
     }))
   }
@@ -76,6 +189,33 @@ export const editorTools: ToolDef[] = [
     'Return the current project state: tracks, clips (with ids and frame positions), fps, resolution, playhead, and selection. Call this first to learn clip and track ids before editing.',
     z.object({}).strict(),
     (c) => summarizeTimeline(c)
+  ),
+  tool(
+    'inspect_clip',
+    'Read-only: return the FULL detail of one clip — transform, crop, color grade, audioEnhance, text content/style, fades + interpolations, speed, keyframe tracks, linkGroupId — plus its track context (id/index/type/role) and times in seconds. Creates no undo entry. Use after get_timeline when you need per-clip detail before fine-tuning.',
+    z.object({ clipId: z.string() }),
+    (c, input) => {
+      const tl = c.getTimeline()
+      for (let ti = 0; ti < tl.tracks.length; ti++) {
+        const t = tl.tracks[ti]
+        const clip = t.clips.find((x) => x.id === input.clipId)
+        if (!clip) continue
+        const linkedClipIds = clip.linkGroupId
+          ? tl.tracks.flatMap((tr) =>
+              tr.clips.filter((x) => x.linkGroupId === clip.linkGroupId && x.id !== clip.id).map((x) => x.id)
+            )
+          : []
+        return {
+          clip,
+          endFrame: clipEndFrame(clip),
+          startSeconds: clip.startFrame / tl.fps,
+          durationSeconds: clip.durationFrames / tl.fps,
+          track: { id: t.id, index: ti, type: t.type, role: t.role, muted: t.muted, hidden: t.hidden },
+          linkedClipIds
+        }
+      }
+      return { error: `Clip not found: ${input.clipId}` }
+    }
   ),
   tool(
     'add_track',
@@ -176,19 +316,28 @@ export const editorTools: ToolDef[] = [
   ),
   tool(
     'set_clip_properties',
-    'Edit appearance/behavior fields on a clip: volume, opacity, fade in/out (frames), speed.',
-    z.object({
-      clipId: z.string(),
-      volume: z.number().min(0).optional(),
-      opacity: z.number().min(0).max(1).optional(),
-      fadeInFrames: z.number().int().nonnegative().optional(),
-      fadeOutFrames: z.number().int().nonnegative().optional(),
-      speed: z.number().positive().optional()
-    }),
+    'Edit appearance/behavior fields on one clip (one undo step): ' + CLIP_PROPS_DESCRIPTION,
+    z.object({ clipId: z.string(), ...clipPropFields }),
     (c, input) => {
       const { clipId, ...props } = input
-      c.setClipProperties(clipId, props)
+      if (!c.getClip(clipId)) return { error: `Clip not found: ${clipId}` }
+      c.transact('Editar propiedades', () => applyClipProps(c, clipId, props))
       return { ok: true }
+    }
+  ),
+  tool(
+    'set_clips_properties',
+    'Apply the same property edit to SEVERAL clips at once as one undo step (e.g. mute five clips, or scale every angle to 0.8). Same fields as set_clip_properties: ' +
+      CLIP_PROPS_DESCRIPTION,
+    z.object({ clipIds: z.array(z.string()).min(1), ...clipPropFields }),
+    (c, input) => {
+      const { clipIds, ...props } = input
+      const missing = clipIds.filter((id) => !c.getClip(id))
+      if (missing.length > 0) return { error: `Clip not found: ${missing.join(', ')}` }
+      c.transact(`Editar propiedades (${clipIds.length} clips)`, () => {
+        for (const clipId of clipIds) applyClipProps(c, clipId, props)
+      })
+      return { ok: true, applied: clipIds.length }
     }
   ),
   tool(
@@ -212,8 +361,41 @@ export const editorTools: ToolDef[] = [
     }),
     (c, input) => {
       const { clipId, ...patch } = input
+      if (!c.getClip(clipId)) return { error: `Clip not found: ${clipId}` }
       c.setClipColor(clipId, patch)
       return { ok: true }
+    }
+  ),
+  tool(
+    'list_color_presets',
+    'List the built-in color looks and presets usable with apply_color_preset. Looks are partial grades that MERGE onto the current grade (warm, cool, teal-orange, vintage, bw, …); presets are complete grades that REPLACE it and may reference a LUT.',
+    z.object({}).strict(),
+    () => ({
+      looks: GENERIC_LOOKS.map((l) => ({ id: l.id, name: l.name, patch: l.patch })),
+      presets: DOCUMENT_PRESETS.map((p) => ({ id: p.id, name: p.name, group: p.group, cameraAngle: p.cameraAngle }))
+    })
+  ),
+  tool(
+    'apply_color_preset',
+    'Apply a built-in color look or preset to one or more clips as one undo step. Looks MERGE onto the current grade; presets REPLACE it. Preset LUTs are logical refs side-loaded from the user-configured LUT folder — if the .cube file is missing, the parametric grade still applies without the LUT. Get valid ids from list_color_presets.',
+    z.object({ clipIds: z.array(z.string()).min(1), presetId: z.string() }),
+    (c, input) => {
+      const preset = presetById.get(input.presetId)
+      const look = lookById.get(input.presetId)
+      if (!preset && !look) {
+        const valid = [...presetById.keys(), ...lookById.keys()].join(', ')
+        return { error: `Unknown preset: ${input.presetId}. Valid ids: ${valid}` }
+      }
+      const missing = input.clipIds.filter((id) => !c.getClip(id))
+      if (missing.length > 0) return { error: `Clip not found: ${missing.join(', ')}` }
+      const name = (preset ?? look)!.name
+      c.transact(`Color: ${name}`, () => {
+        for (const clipId of input.clipIds) {
+          if (preset) c.setClipProperties(clipId, { color: preset.color }, `Color: ${name}`)
+          else c.setClipColor(clipId, look!.patch, `Color: ${name}`)
+        }
+      })
+      return { ok: true, applied: input.clipIds.length, mode: preset ? 'preset' : 'look' }
     }
   ),
   tool(

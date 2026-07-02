@@ -541,6 +541,9 @@ export interface EditorState {
   dismissAnglePlan: () => void
   /** Set by the Preview transport when play/pause toggles (so the Timeline can auto-follow the playhead). */
   setPlaying: (playing: boolean) => void
+  /** Toggle playback from anywhere (Space, preview click, transport button). Restarts from 0 when the
+   *  playhead sits at the end; no-op on an empty timeline. */
+  togglePlayback: () => void
   /** One-shot (agente/MCP): analiza y aplica los cortes de inmediato, sin previsualización. */
   applyAutoAngles: (opts?: { destructive?: boolean }) => Promise<ToolCallResult>
   // Progress modal controls.
@@ -1320,6 +1323,15 @@ clearTranscript: () => set((s) => { s.transcript = null }),
     dismissAnglePlan: () => set((s) => { s.anglePlan = null }),
 
     setPlaying: (playing) => set((s) => { s.isPlaying = playing }),
+
+    togglePlayback: () => {
+      const c = getController()
+      const total = c.totalFrames()
+      if (total === 0) return
+      const playing = get().isPlaying
+      if (!playing && c.getCurrentFrame() >= total) c.seek(0)
+      set((s) => { s.isPlaying = !playing })
+    },
 
     applyAutoAngles: async (opts) => {
       // One-shot path (AI/MCP): analyze then apply immediately, no preview.
