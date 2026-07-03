@@ -11,8 +11,17 @@
 import { audioEnhanceIsIdentity } from '../model/audioEnhance'
 import { buildEnhanceChain } from '../model/audioEnhanceChain'
 import { colorIsIdentity } from '../model/color'
+import { trackIsActive } from '../model/keyframe'
 import { type Clip, type Timeline, clipEndFrame, colorAt, cropIsIdentity, sourceFramesConsumed, totalFrames } from '../model/timeline'
 import { buildColorFilterChain } from './colorFilters'
+
+/** A visual clip that can never contribute pixels — opacity pinned at 0 with no opacity keyframes to
+ *  lift it. Non-destructive multicam angle-cuts leave the HIDDEN angle's segments exactly like this
+ *  (opacity 0, still on the timeline). The preview already skips them (composeFrame); the export must
+ *  too, or every hidden segment wastes a decode + scale + lut3d + overlay and the filtergraph OOMs. */
+function isInvisible(c: Clip): boolean {
+  return c.opacity <= 0 && !trackIsActive(c.opacityTrack)
+}
 
 export interface ExportOptions {
   videoCodec?: string
@@ -84,6 +93,7 @@ export function buildExportGraph(
     const t = timeline.tracks[ti]
     if (t.type === 'audio' || t.hidden) continue
     for (const clip of t.clips) {
+      if (isInvisible(clip)) continue // hidden multicam angle (opacity 0) — skip so the graph doesn't OOM
       const p = resolve(clip.mediaRef)
       if (p) visual.push({ clip, path: p })
     }
@@ -130,17 +140,50 @@ export function buildExportGraph(
 
   const chains: string[] = [`color=c=black:s=${W}x${H}:r=${fps}:d=${fmt(totalSec)}[base]`]
 
+  // Shared colour grade per streamed input: when EVERY visible clip of one source carries the same
+  // non-identity grade (the multicam case — one preset per angle, applied to all its segments), grade
+  // the source ONCE before the split instead of once per segment. This collapses N lut3d/split+blend
+  // instances (each loading the .cube; the Guillermo presets use lutIntensity 0.5 → split+blend) down
+  // to one per source — the biggest memory win on a heavily-cut multicam timeline. Only kicks in with
+  // ≥2 segments of the source so single-clip renders keep their exact (golden-tested) per-clip chain.
+  const sharedGrade = new Map<number, { color: ReturnType<typeof colorAt>; lutPath: string | null }>()
+  {
+    const byInput = new Map<number, Clip[]>()
+    for (const e of visualEntries) {
+      if (e.looped) continue
+      const arr = byInput.get(e.inputIdx)
+      if (arr) arr.push(e.clip)
+      else byInput.set(e.inputIdx, [e.clip])
+    }
+    for (const [inIdx, clips] of byInput) {
+      if (clips.length < 2) continue
+      const first = colorAt(clips[0], clips[0].startFrame)
+      if (colorIsIdentity(first)) continue
+      const key = JSON.stringify(first)
+      if (!clips.every((c) => JSON.stringify(colorAt(c, c.startFrame)) === key)) continue
+      sharedGrade.set(inIdx, { color: first, lutPath: first.lutRef && resolveLut ? resolveLut(first.lutRef) : null })
+    }
+  }
+
   // Fan each shared VIDEO input out to one branch per clip using it; single-consumer inputs are used
-  // directly. Branches are handed out in clip order via shift().
+  // directly. When a source has a shared grade, grade it once here (before the split). Branches are
+  // handed out in clip order via shift().
   const videoConsumers = new Map<number, number>()
   for (const e of visualEntries) if (!e.looped) videoConsumers.set(e.inputIdx, (videoConsumers.get(e.inputIdx) ?? 0) + 1)
   const videoBranches = new Map<number, string[]>()
   for (const [inIdx, n] of videoConsumers) {
+    let base = `[${inIdx}:v]`
+    const sg = sharedGrade.get(inIdx)
+    if (sg) {
+      const gl = `[gsrc${inIdx}]`
+      chains.push(...buildColorFilterChain(sg.color, sg.lutPath, base, gl))
+      base = gl
+    }
     if (n <= 1) {
-      videoBranches.set(inIdx, [`[${inIdx}:v]`])
+      videoBranches.set(inIdx, [base])
     } else {
       const labels = Array.from({ length: n }, (_, j) => `[sv${inIdx}_${j}]`)
-      chains.push(`[${inIdx}:v]split=${n}${labels.join('')}`)
+      chains.push(`${base}split=${n}${labels.join('')}`)
       videoBranches.set(inIdx, labels)
     }
   }
@@ -195,8 +238,10 @@ export function buildExportGraph(
 
     // Color grade (Phase 9.5) sits between head and tail. Identity → emit nothing (byte-identical to an
     // un-graded render). The LUT path comes from resolveLut; a missing LUT is skipped by the chain builder.
+    // If this source was graded once before the split (sharedGrade), the branch is already graded → skip.
     const color = colorAt(c, c.startFrame)
-    if (colorIsIdentity(color)) {
+    const preGraded = !e.looped && sharedGrade.has(e.inputIdx)
+    if (preGraded || colorIsIdentity(color)) {
       chains.push(`${src}${[...head, ...tail].join(',')}[v${k}]`)
     } else {
       const lutPath = color.lutRef && resolveLut ? resolveLut(color.lutRef) : null
