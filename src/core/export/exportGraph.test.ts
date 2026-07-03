@@ -162,7 +162,7 @@ describe('buildExportGraph — color grading (P9.5)', () => {
     expect(fc).not.toContain('lut3d')
     expect(fc).not.toContain('curves=')
     expect(fc).not.toContain('[gin0]')
-    expect(fc).toContain('[0:v]trim=start=0:end=2,scale=1920:1080,setsar=1,setpts=(PTS-STARTPTS)/1+0/TB,format=yuva420p[v0]')
+    expect(fc).toContain('[0:v]trim=start=0:end=2,scale=1920:1080,setsar=1,setpts=(PTS-STARTPTS)/1+0/TB,format=yuv420p[v0]')
   })
 
   it('emits eq + colorbalance + curves for a no-LUT grade', () => {
@@ -196,6 +196,28 @@ describe('buildExportGraph — color grading (P9.5)', () => {
     expect(fc).not.toContain('lut3d')
     expect(fc).not.toContain('split')
     expect(fc).toContain('eq=saturation=0.88')
+  })
+
+  it('feeds the grade a NON-alpha stream (no yuva420p before [gin]) so lut3d never hits yuva420p→gbrap', () => {
+    // Regression: an opaque graded clip used to get format=yuva420p in its head, forcing an
+    // unaccelerated yuva420p→gbrap swscale path in lut3d → "Cannot allocate memory" on export.
+    const fc = gradedFc(makeColorAdjustments({ lutRef: 'preset:x', lutIntensity: 1, saturation: 0.9 }), lutResolver)
+    // head into the grade has no alpha format…
+    expect(fc).toContain('setpts=(PTS-STARTPTS)/1+0/TB[gin0]')
+    expect(fc).not.toContain('yuva420p') // opaque clip → no alpha channel anywhere
+    // …and the graded output is normalized to plain yuv420p for the overlay.
+    expect(fc).toContain('[gout0]format=yuv420p[v0]')
+  })
+
+  it('introduces alpha AFTER the grade for a graded clip with a fade (grade stays on yuv, then yuva)', () => {
+    const clip = makeClip({ id: 'A', mediaRef: 'a', startFrame: 0, durationFrames: 60 })
+    clip.color = makeColorAdjustments({ saturation: 0.9 })
+    clip.fadeInFrames = 15
+    const tl = makeTimeline({ fps: 30, width: 1920, height: 1080, tracks: [videoTrack('v', [clip])] })
+    const fc = buildExportGraph(tl, resolve, 'out.mp4', {}, lutResolver)!.filterComplex
+    // grade input has no alpha; alpha is added on the post-grade tail, before the fade.
+    expect(fc).toContain('setpts=(PTS-STARTPTS)/1+0/TB[gin0]')
+    expect(fc).toContain('[gout0]format=yuva420p,fade=t=in:st=0:d=0.5:alpha=1[v0]')
   })
 })
 

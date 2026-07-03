@@ -158,8 +158,12 @@ export function buildExportGraph(
     const sp = c.speed || 1
     const src = e.looped ? `[${e.inputIdx}:v]` : (videoBranches.get(e.inputIdx)!.shift() as string)
 
-    // Head: carve source window (video) → geometry → timing → alpha-capable pixel format. setsar=1 keeps
-    // every overlay input uniform so the filtergraph never reinitializes on a source with a different SAR.
+    // Head: carve source window (video) → geometry → timing. NO pixel-format conversion here: the colour
+    // grade (lut3d/curves/blend) runs next and, if handed an ALPHA channel, forces an UNACCELERATED
+    // `yuva420p→gbrap` swscale path that balloons memory and crashes the render ("Cannot allocate
+    // memory"). So alpha is introduced AFTER the grade, and ONLY for clips that actually need it
+    // (opacity/fades). setsar=1 keeps every overlay input uniform so the graph never reinitializes on a
+    // source with a different SAR.
     const head: string[] = []
     if (!e.looped) {
       const srcStart = c.trimStartFrame / fps
@@ -173,12 +177,20 @@ export function buildExportGraph(
     }
     head.push(`scale=${rw}:${rh}`, 'setsar=1')
     head.push(`setpts=(PTS-STARTPTS)/${fmt(sp)}+${fmt(startSec)}/TB`)
-    head.push('format=yuva420p')
+
+    // Tail: add the alpha channel (post-grade) only when the clip needs it; otherwise normalize to a
+    // plain yuv420p so overlay inputs stay uniform and no needless alpha buffers are allocated.
+    const needsAlpha = c.opacity < 1 || c.fadeInFrames > 0 || c.fadeOutFrames > 0
     const tail: string[] = []
-    if (c.opacity < 1) tail.push(`colorchannelmixer=aa=${fmt(c.opacity)}`)
-    if (c.fadeInFrames > 0) tail.push(`fade=t=in:st=${fmt(startSec)}:d=${fmt(c.fadeInFrames / fps)}:alpha=1`)
-    if (c.fadeOutFrames > 0) {
-      tail.push(`fade=t=out:st=${fmt(endSec - c.fadeOutFrames / fps)}:d=${fmt(c.fadeOutFrames / fps)}:alpha=1`)
+    if (needsAlpha) {
+      tail.push('format=yuva420p')
+      if (c.opacity < 1) tail.push(`colorchannelmixer=aa=${fmt(c.opacity)}`)
+      if (c.fadeInFrames > 0) tail.push(`fade=t=in:st=${fmt(startSec)}:d=${fmt(c.fadeInFrames / fps)}:alpha=1`)
+      if (c.fadeOutFrames > 0) {
+        tail.push(`fade=t=out:st=${fmt(endSec - c.fadeOutFrames / fps)}:d=${fmt(c.fadeOutFrames / fps)}:alpha=1`)
+      }
+    } else {
+      tail.push('format=yuv420p')
     }
 
     // Color grade (Phase 9.5) sits between head and tail. Identity → emit nothing (byte-identical to an
@@ -192,7 +204,7 @@ export function buildExportGraph(
       const gout = `[gout${k}]`
       chains.push(`${src}${head.join(',')}${gin}`)
       chains.push(...buildColorFilterChain(color, lutPath, gin, gout))
-      chains.push(`${gout}${tail.length > 0 ? tail.join(',') : 'null'}[v${k}]`)
+      chains.push(`${gout}${tail.join(',')}[v${k}]`)
     }
     chains.push(`${prev}[v${k}]overlay=x=${rx}:y=${ry}:enable='between(t,${fmt(startSec)},${fmt(endSec)})':eof_action=pass[ov${k}]`)
     prev = `[ov${k}]`
