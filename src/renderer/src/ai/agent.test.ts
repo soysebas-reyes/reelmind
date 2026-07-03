@@ -86,3 +86,33 @@ describe('anthropicTools', () => {
     expect((addClip.input_schema.properties as Record<string, unknown>).durationFrames).toBeDefined()
   })
 })
+
+describe('image-bearing tool results (get_frame_preview)', () => {
+  it('emits a real image block in the tool_result instead of base64-as-text', async () => {
+    const c = new EditorController()
+    let n = 0
+    const callModel: ModelCaller = async (req) => {
+      n += 1
+      if (n === 1) return toolUse('t1', 'get_frame_preview', {})
+      // Second call: the transcript must now contain the image block.
+      const toolResults = req.messages[req.messages.length - 1].content as {
+        type: string
+        content: unknown
+      }[]
+      const content = toolResults[0].content as { type: string; source?: { type: string; media_type: string } }[]
+      expect(Array.isArray(content)).toBe(true)
+      expect(content[0].type).toBe('image')
+      expect(content[0].source?.type).toBe('base64')
+      expect(content[0].source?.media_type).toBe('image/jpeg')
+      expect(content[1].type).toBe('text')
+      return say('I can see the frame.')
+    }
+    const execute = async (): Promise<{ ok: boolean; result?: unknown }> => ({
+      ok: true,
+      result: { frame: 30, width: 640, height: 360, image: { mimeType: 'image/jpeg', base64: 'aGVsbG8=' } }
+    })
+    const result = await runAgent(c, [{ role: 'user', content: 'muéstrame el frame' }], callModel, undefined, execute)
+    expect(result.text).toContain('see the frame')
+    expect(n).toBe(2)
+  })
+})

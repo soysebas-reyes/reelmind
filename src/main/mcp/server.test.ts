@@ -55,3 +55,39 @@ describe('embedded MCP HTTP server', () => {
     }
   }, 30_000)
 })
+
+describe('embedded MCP HTTP server — image content', () => {
+  it('surfaces image-bearing tool results as MCP image content blocks', async () => {
+    const controller = new EditorController()
+    // Injected executor: get_frame_preview answers with the image sentinel (as the renderer would).
+    const execute = (name: string, input: unknown): Promise<ToolCallResult> => {
+      if (name === 'get_frame_preview') {
+        return Promise.resolve({
+          ok: true,
+          result: { frame: 30, width: 640, height: 360, image: { mimeType: 'image/jpeg', base64: 'aGVsbG8=' } }
+        })
+      }
+      return Promise.resolve(executeTool(controller, name, input))
+    }
+
+    const handle = await createMcpHttpServer({ port: 0, enableDnsProtection: false, execute })
+    const client = new Client({ name: 'reelmind-test', version: '1.0.0' })
+    const transport = new StreamableHTTPClientTransport(new URL(handle.url))
+    try {
+      await client.connect(transport)
+      const r = (await client.callTool({ name: 'get_frame_preview', arguments: {} })) as {
+        content: { type: string; text?: string; data?: string; mimeType?: string }[]
+        isError?: boolean
+      }
+      expect(r.isError).toBeFalsy()
+      const img = r.content.find((c) => c.type === 'image')
+      expect(img?.data).toBe('aGVsbG8=')
+      expect(img?.mimeType).toBe('image/jpeg')
+      const rest = JSON.parse(r.content.find((c) => c.type === 'text')?.text ?? '{}') as { frame: number }
+      expect(rest.frame).toBe(30)
+    } finally {
+      await client.close().catch(() => {})
+      await handle.close()
+    }
+  }, 30_000)
+})

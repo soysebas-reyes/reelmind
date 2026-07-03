@@ -48,6 +48,29 @@ export function getController(): EditorController {
  *  `hasClipboard` mirrors its presence into the store so menus can enable "Pegar". */
 let clipboard: ClipboardPayload | null = null
 
+// ── Frame capturer (get_frame_preview) ───────────────────────────────────────────────────────────
+// The Preview component registers a function that captures its composited canvas (letterboxed
+// project region only) after in-flight seeks settle. Module-scoped: it's a live function, not state.
+
+export interface FrameCaptureOptions {
+  maxWidth: number
+  format: 'png' | 'jpeg'
+}
+export interface FrameCaptureResult {
+  dataUrl: string
+  width: number
+  height: number
+}
+export type FrameCapturer = (opts: FrameCaptureOptions) => Promise<FrameCaptureResult | null>
+
+let frameCapturer: FrameCapturer | null = null
+export function setFrameCapturer(fn: FrameCapturer | null): void {
+  frameCapturer = fn
+}
+export function getFrameCapturer(): FrameCapturer | null {
+  return frameCapturer
+}
+
 function baseName(p: string): string {
   const parts = p.split(/[\\/]/)
   return parts[parts.length - 1] || p

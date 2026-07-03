@@ -246,7 +246,7 @@ export function summarizeTimeline(c: EditorController): unknown {
 export const editorTools: ToolDef[] = [
   tool(
     'get_timeline',
-    'Return the current project state: tracks, clips (with ids and frame positions), fps, resolution, playhead, and selection. Call this first to learn clip and track ids before editing.',
+    'Return the current project state: tracks, clips (ids, frame positions, speed/volume/opacity/color summary, hasKeyframes), fps, resolution, playhead, and selection. Call this FIRST to learn clip and track ids. For the full detail of one clip (transform, crop, text, audioEnhance, keyframes) use inspect_clip; for the media bin use list_assets.',
     z.object({}).strict(),
     (c) => summarizeTimeline(c)
   ),
@@ -511,7 +511,7 @@ export const editorTools: ToolDef[] = [
   ),
   tool(
     'remove_silences',
-    'Detect and cut silent gaps from the clips on the track of the selected clip (or the clip given by `clipId`). Uses FFmpeg silence detection, then ripple-deletes the silent spans as a single undo step. Optional: noiseDb (silence threshold, default -30), minDurationSec (shortest silence to cut, default 0.5), paddingSec (audio kept around speech, default 0.1). NOTE: executed by the host app (FFmpeg + filesystem), not the timeline core.',
+    'Detect and cut silent gaps from the clips on one track: the track of `clipId` if given, else the selected clip\'s track, else — when exactly ONE track has audible clips — that track (otherwise it returns the candidate tracks so you can pass clipId). Uses FFmpeg silence detection, then ripple-deletes the silent spans as a single undo step. Optional: noiseDb (silence threshold, default -30), minDurationSec (shortest silence to cut, default 0.5), paddingSec (audio kept around speech, default 0.1). NOTE: executed by the host app (FFmpeg + filesystem), not the timeline core.',
     z.object({
       clipId: z.string().optional(),
       noiseDb: z.number().optional(),
@@ -532,7 +532,7 @@ export const editorTools: ToolDef[] = [
   ),
   tool(
     'sync_angles',
-    "Align two camera angles of the SAME take by their audio (cross-correlation): place them on two video tracks at the matching time offset, mute both videos, add the kept angle's audio on its own track (continuous audio for cutting between angles), and tag both clips with a shared linkGroupId. Pass `clipIds` (exactly 2 video clips already on the timeline) or use the current selection; `keepAudioOf` ('first'|'second', default 'first') chooses which angle's audio to keep; `autoColor` (default true) applies the Guillermo Frontal/Lateral LUT per angle. Returns offsetSeconds + confidence. NOTE: executed by the host app (FFmpeg + filesystem), not the timeline core.",
+    "Align two camera angles of the SAME take by their audio (cross-correlation): place them on two video tracks at the matching time offset, mute both videos, add the kept angle's audio on its own track (continuous audio for cutting between angles), and tag both clips with a shared linkGroupId. Pass `clipIds` (exactly 2 video clips already on the timeline) or use the current selection; `keepAudioOf` ('first'|'second', default 'first') chooses which angle's audio to keep; `autoColor` (default true) applies the Guillermo Frontal/Lateral LUT per angle. Returns offsetSeconds, offsetFrames, fps, and confidence. NOTE: executed by the host app (FFmpeg + filesystem), not the timeline core.",
     z.object({
       clipIds: z.array(z.string()).length(2).optional(),
       keepAudioOf: z.enum(['first', 'second']).optional(),
@@ -740,6 +740,18 @@ export const editorTools: ToolDef[] = [
       throw new Error('list_assets is executed by the host app, not the core executor')
     }
   ),
+  tool(
+    'get_frame_preview',
+    'SEE the composited preview at a frame (default: the current playhead) as an image — every visible layer with transform, crop, opacity, text, and the live color grade/LUT, exactly as the user sees it. Use it to VERIFY visual edits (color, framing, text placement) instead of guessing. `maxWidth` caps the image width (default 640); `format` png|jpeg (default jpeg). Requires the editor window to be open. NOTE: executed by the host app.',
+    z.object({
+      frame: z.number().int().nonnegative().optional(),
+      maxWidth: z.number().int().min(64).max(1920).optional(),
+      format: z.enum(['png', 'jpeg']).optional()
+    }),
+    () => {
+      throw new Error('get_frame_preview is executed by the host app, not the core executor')
+    }
+  ),
   tool('undo', 'Undo the last edit.', z.object({}).strict(), (c) => ({ done: c.undo() })),
   tool('redo', 'Redo the last undone edit.', z.object({}).strict(), (c) => ({ done: c.redo() })),
 
@@ -841,7 +853,8 @@ export const HOST_EXECUTED_TOOLS: ReadonlySet<string> = new Set([
   'apply_auto_angles',
   'transcribe_clip',
   'get_transcript',
-  'list_assets'
+  'list_assets',
+  'get_frame_preview'
 ])
 
 export const editorToolsByName: Map<string, ToolDef> = new Map(editorTools.map((t) => [t.name, t]))
@@ -867,6 +880,24 @@ export interface ToolCallResult {
   ok: boolean
   result?: unknown
   error?: string
+}
+
+export interface ToolResultImage {
+  mimeType: string
+  base64: string
+}
+
+/** If a tool result carries the image sentinel ({ image: { mimeType, base64 }, …rest }), split it
+ *  out so a transport can emit a real image block (MCP image content / Anthropic tool_result image)
+ *  instead of megabytes of base64-as-text. Returns null for ordinary results. */
+export function extractToolImage(result: unknown): { image: ToolResultImage; rest: Record<string, unknown> } | null {
+  if (typeof result !== 'object' || result === null) return null
+  const rec = result as Record<string, unknown>
+  const img = rec.image as { mimeType?: unknown; base64?: unknown } | undefined
+  if (!img || typeof img !== 'object' || typeof img.mimeType !== 'string' || typeof img.base64 !== 'string') return null
+  const rest: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(rec)) if (k !== 'image') rest[k] = v
+  return { image: { mimeType: img.mimeType, base64: img.base64 }, rest }
 }
 
 /** Validate `input` against the named tool's schema and dispatch to the EditorController.

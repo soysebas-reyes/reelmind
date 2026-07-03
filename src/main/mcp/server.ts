@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import type { ZodObject, ZodRawShape } from 'zod'
-import { type ToolCallResult, editorTools } from '@core'
+import { type ToolCallResult, editorTools, extractToolImage } from '@core'
 
 export interface McpServerHandle {
   url: string
@@ -32,6 +32,18 @@ function buildMcpServer(execute: CreateMcpServerOptions['execute']): McpServer {
     const shape = (t.input as ZodObject<ZodRawShape>).shape ?? {}
     mcp.registerTool(t.name, { description: t.description, inputSchema: shape }, async (args: unknown) => {
       const r = await execute(t.name, args)
+      // Image-bearing results (get_frame_preview) surface as real MCP image content, so the
+      // calling model can SEE the frame instead of receiving base64-as-text.
+      const img = r.ok ? extractToolImage(r.result) : null
+      if (img) {
+        return {
+          content: [
+            { type: 'image' as const, data: img.image.base64, mimeType: img.image.mimeType },
+            { type: 'text' as const, text: JSON.stringify(img.rest) }
+          ],
+          isError: false
+        }
+      }
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(r.ok ? (r.result ?? { ok: true }) : { error: r.error }) }],
         isError: !r.ok

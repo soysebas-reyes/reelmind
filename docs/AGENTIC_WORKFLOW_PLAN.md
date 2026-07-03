@@ -78,7 +78,16 @@ preview if you want; the only thing you must do is say what you want and, option
 ---
 
 ## 4. Implementation order
-1. **`import_folder` + `export`** (this pass — pure "expose what exists", no open decisions).
-2. **`remove_silences`** (after the threshold/scope decisions).
+1. **`import_folder` + `export`** ✅ shipped.
+2. **`remove_silences`** ✅ shipped (defaults -30 dB / 0.5 s / 0.1 s padding; targets `clipId` → selection → the only audible track, else lists candidates).
 3. **Recipes** (after silences; layers on top, ties to P9 color profiles).
 4. *(Later, optional)* headless CLI for no-GUI batch.
+
+## 5. P12 additions (CapCut-parity pass)
+
+The copilot surface grew far beyond the original four capabilities — see `PROJECT_PLAN.md` P12. The
+agent-facing highlights: `batch_operations` (N core edits = 1 IPC round-trip = 1 undo step),
+`inspect_clip` + `list_assets` (the agent can finally READ state cheaply), `get_frame_preview` (the
+agent SEES the composited frame — real image blocks in both the in-app chat and MCP),
+`apply_color_preset`, keyframe tools (`set_keyframe`/`remove_keyframe`/`get_keyframes`),
+`ripple_delete_range`, `add_text_clip`, and per-tool transport timeouts (export gets 30 min).

@@ -13,7 +13,8 @@ import {
   visibleLayerSet,
   volumeAt
 } from '@core'
-import { getController, timelineTotalFrames, useEditorStore } from '../store'
+import { getController, setFrameCapturer, timelineTotalFrames, useEditorStore } from '../store'
+import { frameRect } from './frameRect'
 import { applyAudioEnhance } from '../audio/audioGraph'
 import { Icon } from '../ui/Icon'
 import { type ColorGL, getColorGL } from './colorGL'
@@ -274,19 +275,8 @@ export default function Preview(): React.JSX.Element {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.clearRect(0, 0, width, height)
 
-    // Letterbox the project frame into the panel.
-    const pad = 14
-    const availW = width - pad * 2
-    const availH = height - pad * 2
-    const aspect = timeline.width / timeline.height
-    let fw = availW
-    let fh = availW / aspect
-    if (fh > availH) {
-      fh = availH
-      fw = availH * aspect
-    }
-    const fx = (width - fw) / 2
-    const fy = (height - fh) / 2
+    // Letterbox the project frame into the panel (shared with the get_frame_preview capturer).
+    const { fx, fy, fw, fh } = frameRect(width, height, timeline.width, timeline.height)
     const sx = fw / timeline.width
     const sy = fh / timeline.height
 
@@ -517,6 +507,50 @@ export default function Preview(): React.JSX.Element {
       alignRef.current.clear()
       videoReadyRef.current.clear()
     }
+  }, [])
+
+  // get_frame_preview capturer: waits for in-flight pooled-video seeks to settle (bounded), forces
+  // a fresh draw, then copies the letterboxed project region of the visible canvas (the WebGL LUT
+  // grade is already drawn INTO this 2D canvas, so the capture matches what the user sees).
+  useEffect(() => {
+    setFrameCapturer(async ({ maxWidth, format }) => {
+      const deadline = performance.now() + 1500
+      // Two extra rAF-ish ticks after seeking clears so the decoded frame lands in the canvas.
+      let settledTicks = 0
+      while (performance.now() < deadline && settledTicks < 2) {
+        let seeking = false
+        for (const v of videoPoolRef.current.values()) {
+          if (v.seeking) {
+            seeking = true
+            break
+          }
+        }
+        settledTicks = seeking ? 0 : settledTicks + 1
+        await new Promise((r) => setTimeout(r, 60))
+      }
+      drawRef.current()
+      const cvs = canvasRef.current
+      if (!cvs || cvs.clientWidth === 0) return null
+      const tl = useEditorStore.getState().timeline
+      const rect = frameRect(cvs.clientWidth, cvs.clientHeight, tl.width, tl.height)
+      if (rect.fw < 2 || rect.fh < 2) return null
+      const k = cvs.width / cvs.clientWidth // CSS px → device px (DPR)
+      const scale = Math.min(1, maxWidth / rect.fw)
+      const outW = Math.max(1, Math.round(rect.fw * scale))
+      const outH = Math.max(1, Math.round(rect.fh * scale))
+      const off = document.createElement('canvas')
+      off.width = outW
+      off.height = outH
+      const octx = off.getContext('2d')
+      if (!octx) return null
+      octx.drawImage(cvs, rect.fx * k, rect.fy * k, rect.fw * k, rect.fh * k, 0, 0, outW, outH)
+      return {
+        dataUrl: off.toDataURL(format === 'png' ? 'image/png' : 'image/jpeg', 0.85),
+        width: outW,
+        height: outH
+      }
+    })
+    return () => setFrameCapturer(null)
   }, [])
 
   // Playback clock — a monotonic wall-clock timer ANCHORED at the frame where play (re)started. The

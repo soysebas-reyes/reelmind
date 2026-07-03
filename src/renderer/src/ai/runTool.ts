@@ -15,7 +15,7 @@ import {
   pickDefaultSilenceTarget,
   silencesToCuts
 } from '@core'
-import { type SyncAnglesInput, getController, useEditorStore } from '../store'
+import { type SyncAnglesInput, getController, getFrameCapturer, useEditorStore } from '../store'
 
 /** Import sources (file paths, http(s) URLs, or folders) through the store and report asset ids. */
 async function importAndReport(sources: string[]): Promise<ToolCallResult> {
@@ -173,6 +173,24 @@ export async function runEditorTool(name: string, input: unknown): Promise<ToolC
     const target = clipId ?? getController().getSelectedClipIds()[0]
     if (!target) return { ok: false, error: 'transcribe_clip: selecciona un clip o pasa clipId.' }
     return useEditorStore.getState().transcribeClip(target, { languageCode, diarize })
+  }
+
+  if (name === 'get_frame_preview') {
+    const { frame, maxWidth, format } = (input ?? {}) as { frame?: number; maxWidth?: number; format?: 'png' | 'jpeg' }
+    const c = getController()
+    if (typeof frame === 'number') c.seek(Math.max(0, Math.round(frame)))
+    const capturer = getFrameCapturer()
+    if (!capturer) return { ok: false, error: 'get_frame_preview: preview not available (no editor window).' }
+    const shot = await capturer({ maxWidth: maxWidth ?? 640, format: format ?? 'jpeg' })
+    if (!shot) return { ok: false, error: 'get_frame_preview: nothing to capture (empty preview).' }
+    const comma = shot.dataUrl.indexOf(',')
+    const head = shot.dataUrl.slice(0, comma) // e.g. data:image/jpeg;base64
+    const base64 = shot.dataUrl.slice(comma + 1)
+    const mimeType = head.slice(head.indexOf(':') + 1, head.indexOf(';'))
+    return {
+      ok: true,
+      result: { frame: c.getCurrentFrame(), width: shot.width, height: shot.height, image: { mimeType, base64 } }
+    }
   }
 
   if (name === 'list_assets') {

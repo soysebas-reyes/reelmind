@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { EditorController } from '../controller/EditorController'
-import { HOST_EXECUTED_TOOLS, editorTools, executeTool, summarizeTimeline, toJsonSchemaTools } from './tools'
+import { HOST_EXECUTED_TOOLS, editorTools, executeTool, extractToolImage, summarizeTimeline, toJsonSchemaTools } from './tools'
 
 interface Rec {
   [k: string]: unknown
@@ -516,5 +516,25 @@ describe('add_text_clip', () => {
       executeTool(c, 'add_text_clip', { text: 'Mal', startFrame: 0, durationFrames: 30, trackId: videoTrack }).result
     )
     expect(bad.error).toMatch(/not "text"/)
+  })
+})
+
+describe('get_frame_preview declaration + extractToolImage', () => {
+  it('is host-only and the core executor refuses it', () => {
+    const c = new EditorController()
+    expect(HOST_EXECUTED_TOOLS.has('get_frame_preview')).toBe(true)
+    const r = executeTool(c, 'get_frame_preview', {})
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/host/i)
+  })
+
+  it('extractToolImage splits the sentinel and ignores ordinary results', () => {
+    const split = extractToolImage({ frame: 30, image: { mimeType: 'image/png', base64: 'QUJD' } })
+    expect(split?.image.mimeType).toBe('image/png')
+    expect(split?.rest).toEqual({ frame: 30 })
+    expect(extractToolImage({ ok: true })).toBeNull()
+    expect(extractToolImage(null)).toBeNull()
+    expect(extractToolImage({ image: 'not-an-object' })).toBeNull()
+    expect(extractToolImage({ image: { mimeType: 'image/png' } })).toBeNull() // missing base64
   })
 })
