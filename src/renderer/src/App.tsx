@@ -8,6 +8,7 @@ import Preview from './preview/Preview'
 import ChatPanel from './ai/ChatPanel'
 import ColorInspector from './color/ColorInspector'
 import AudioInspector from './audio/AudioInspector'
+import ClipInspector from './inspector/ClipInspector'
 import { Icon, type IconName } from './ui/Icon'
 
 const RESOLUTIONS: { label: string; w: number; h: number }[] = [
@@ -164,6 +165,8 @@ export default function App() {
   const setColorOpen = useEditorStore((s) => s.setColorInspectorOpen)
   const audioOpen = useEditorStore((s) => s.audioInspectorOpen)
   const setAudioOpen = useEditorStore((s) => s.setAudioInspectorOpen)
+  const rightTab = useEditorStore((s) => s.rightTab)
+  const setRightTab = useEditorStore((s) => s.setRightTab)
   const [transcriptOpen, setTranscriptOpen] = useState(false)
   // Sync confirmation modal options (frontal/lateral swap, which audio to keep, per-angle color).
   const [syncSwap, setSyncSwap] = useState(false)
@@ -402,7 +405,21 @@ export default function App() {
           <ResizeHandle axis="x" onResize={(d) => setLayout((l) => ({ ...l, binW: clampPx(l.binW + d, 200, 560) }))} />
           <Preview />
           <ResizeHandle axis="x" onResize={(d) => setLayout((l) => ({ ...l, chatW: clampPx(l.chatW - d, 240, 620) }))} />
-          <ChatPanel />
+          <div className="right-panel">
+            <div className="right-tabs">
+              <button className={rightTab === 'chat' ? 'active' : ''} onClick={() => setRightTab('chat')}>
+                Chat IA
+              </button>
+              <button className={rightTab === 'props' ? 'active' : ''} onClick={() => setRightTab('props')}>
+                Propiedades
+              </button>
+            </div>
+            {/* ChatPanel stays mounted (hidden) so the conversation survives tab switches. */}
+            <div className="right-slot" style={{ display: rightTab === 'chat' ? 'flex' : 'none' }}>
+              <ChatPanel />
+            </div>
+            {rightTab === 'props' && <ClipInspector />}
+          </div>
         </div>
 
         <ResizeHandle axis="y" onResize={(d) => setLayout((l) => ({ ...l, timelineH: clampPx(l.timelineH - d, 140, 760) }))} />

@@ -406,3 +406,115 @@ describe('list_assets (host-only declaration)', () => {
     expect(r.error).toMatch(/host/i)
   })
 })
+
+describe('keyframe tools', () => {
+  it('set_keyframe converts timeline→clip frames and get_keyframes reads both back', () => {
+    const c = new EditorController()
+    const trackId = rec(executeTool(c, 'add_track', { type: 'video' }).result).trackId as string
+    const clipId = rec(
+      executeTool(c, 'add_clip', { trackId, mediaRef: 'a', startFrame: 100, durationFrames: 60 }).result
+    ).clipId as string
+    const r = executeTool(c, 'set_keyframe', { clipId, property: 'opacity', atFrame: 130, value: 0.5 })
+    expect(rec(r.result).clipFrame).toBe(30)
+    const kf = rec(executeTool(c, 'get_keyframes', { clipId, property: 'opacity' }).result)
+    const list = (kf.keyframes as Rec).opacity as Rec[]
+    expect(list[0]).toMatchObject({ clipFrame: 30, timelineFrame: 130, value: 0.5, interpolation: 'smooth' })
+  })
+
+  it('rejects frames outside the clip and value-shape mismatches with precise errors', () => {
+    const { c, clipId } = withClip() // clip [0, 60)
+    const outside = rec(executeTool(c, 'set_keyframe', { clipId, property: 'opacity', atFrame: 90, value: 1 }).result)
+    expect(outside.error).toMatch(/outside the clip/)
+    const badShape = rec(
+      executeTool(c, 'set_keyframe', { clipId, property: 'position', atFrame: 10, value: 0.5 }).result
+    )
+    expect(badShape.error).toMatch(/\{x, y\}/)
+    const badVolume = rec(
+      executeTool(c, 'set_keyframe', { clipId, property: 'volume', atFrame: 10, value: 100 }).result
+    )
+    expect(badVolume.error).toMatch(/dB/)
+  })
+
+  it('position/scale/crop values map to the controller shapes', () => {
+    const { c, clipId } = withClip()
+    executeTool(c, 'set_keyframe', { clipId, property: 'position', atFrame: 0, value: { x: 0.1, y: 0.2 } })
+    executeTool(c, 'set_keyframe', { clipId, property: 'scale', atFrame: 30, value: { width: 0.5, height: 0.5 } })
+    executeTool(c, 'set_keyframe', { clipId, property: 'crop', atFrame: 30, value: { left: 0.25 } })
+    const clip = c.getClip(clipId)!
+    expect(clip.positionTrack!.keyframes[0].value).toEqual({ a: 0.1, b: 0.2 })
+    expect(clip.scaleTrack!.keyframes[0].value).toEqual({ a: 0.5, b: 0.5 })
+    expect(clip.cropTrack!.keyframes[0].value).toEqual({ left: 0.25, top: 0, right: 0, bottom: 0 })
+  })
+
+  it('remove_keyframe removes one frame or all, and is agent-tagged', () => {
+    const { c, clipId } = withClip()
+    executeTool(c, 'set_keyframe', { clipId, property: 'volume', atFrame: 0, value: 0 })
+    executeTool(c, 'set_keyframe', { clipId, property: 'volume', atFrame: 30, value: -12 })
+    executeTool(c, 'remove_keyframe', { clipId, property: 'volume', atFrame: 30 })
+    expect(c.getClip(clipId)!.volumeTrack!.keyframes).toHaveLength(1)
+    expect(c.snapshot().undoOrigin).toBe('agent')
+    executeTool(c, 'remove_keyframe', { clipId, property: 'volume', all: true })
+    expect(c.getClip(clipId)!.volumeTrack).toBeUndefined()
+  })
+})
+
+describe('ripple_delete_range tool', () => {
+  it('removes a mid-clip range and closes the gap', () => {
+    const { c, clipId, trackId } = withClip() // [0, 60)
+    void clipId
+    const r = rec(executeTool(c, 'ripple_delete_range', { startFrame: 20, endFrame: 40, trackIds: [trackId] }).result)
+    expect(r.ok).toBe(true)
+    expect(r.removedFrames).toBe(20)
+    const clips = c.getTimeline().tracks[0].clips
+    expect(clips.map((cl) => [cl.startFrame, cl.startFrame + cl.durationFrames])).toEqual([
+      [0, 20],
+      [20, 40]
+    ])
+  })
+
+  it('surfaces the refusal reason as a result (not a throw)', () => {
+    const c = new EditorController()
+    const r = executeTool(c, 'ripple_delete_range', { startFrame: 0, endFrame: 10 })
+    expect(r.ok).toBe(true)
+    expect(rec(r.result).ok).toBe(false)
+  })
+})
+
+describe('add_text_clip', () => {
+  it('creates a text track when none exists and applies defaults + overrides', () => {
+    const c = new EditorController()
+    const r = rec(
+      executeTool(c, 'add_text_clip', {
+        text: 'Hola mundo',
+        startFrame: 30,
+        durationFrames: 90,
+        style: { fontSize: 72 }
+      }).result
+    )
+    expect(r.clipId).toBeTruthy()
+    const clip = c.getClip(r.clipId as string)!
+    expect(clip.mediaType).toBe('text')
+    expect(clip.textContent).toBe('Hola mundo')
+    expect(clip.textStyle).toMatchObject({ fontName: 'Segoe UI', fontSize: 72, color: '#ffffff', alignment: 'center' })
+    expect(clip.mediaRef.startsWith('text-')).toBe(true)
+    const track = c.getTrackOfClip(clip.id)!
+    expect(track.type).toBe('text')
+    // One undo step total (track + clip + props).
+    c.undo()
+    expect(c.getTimeline().tracks).toHaveLength(0)
+    expect(c.canUndo()).toBe(false)
+  })
+
+  it('reuses an existing text track, gives unique mediaRefs, and validates a passed trackId', () => {
+    const c = new EditorController()
+    const r1 = rec(executeTool(c, 'add_text_clip', { text: 'Uno', startFrame: 0, durationFrames: 30 }).result)
+    const r2 = rec(executeTool(c, 'add_text_clip', { text: 'Dos', startFrame: 60, durationFrames: 30 }).result)
+    expect(r2.trackId).toBe(r1.trackId)
+    expect(c.getClip(r1.clipId as string)!.mediaRef).not.toBe(c.getClip(r2.clipId as string)!.mediaRef)
+    const videoTrack = c.addTrack('video')
+    const bad = rec(
+      executeTool(c, 'add_text_clip', { text: 'Mal', startFrame: 0, durationFrames: 30, trackId: videoTrack }).result
+    )
+    expect(bad.error).toMatch(/not "text"/)
+  })
+})

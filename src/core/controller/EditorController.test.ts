@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { makeSnapState } from '../engines/snapEngine'
-import { type Timeline, clipEndFrame } from '../model/timeline'
+import { type Timeline, clipEndFrame, opacityAt } from '../model/timeline'
 import { EditorController } from './EditorController'
 
 /** Build a controller seeded with one video and one audio track. */
@@ -659,6 +659,119 @@ describe('EditorController — undo coalescing (slider gestures)', () => {
     c.undo()
     expect(c.getClip('A')!.speed).toBe(1)
     expect(c.getClip('A')!.durationFrames).toBe(60)
+    expect(c.canUndo()).toBe(false)
+  })
+})
+
+describe('EditorController — keyframes', () => {
+  it('upserts keyframes sorted, replaces same-frame, and samples the ramp', () => {
+    const { c, v1 } = seeded()
+    c.addClip({ trackId: v1, mediaRef: 'm', startFrame: 0, durationFrames: 100, id: 'A' })
+    c.setClipKeyframe('A', 'opacity', 60, 0.2, 'linear')
+    c.setClipKeyframe('A', 'opacity', 0, 1, 'linear')
+    c.setClipKeyframe('A', 'opacity', 60, 0.5, 'linear') // replace
+    const track = c.getClip('A')!.opacityTrack!
+    expect(track.keyframes.map((k) => k.frame)).toEqual([0, 60])
+    expect(track.keyframes[1].value).toBe(0.5)
+    // sampleTrack semantics live in the model; opacityAt uses clip-relative frames.
+    // Halfway (frame 30) on a linear 1→0.5 ramp = 0.75.
+    expect(opacityAt(c.getClip('A')!, 30)).toBeCloseTo(0.75, 5)
+  })
+
+  it('clamps the frame to the clip duration and is one undo step per call', () => {
+    const { c, v1 } = seeded()
+    c.addClip({ trackId: v1, mediaRef: 'm', startFrame: 0, durationFrames: 50, id: 'A' })
+    c.reset(c.getTimeline())
+    c.setClipKeyframe('A', 'volume', 500, -6)
+    const track = c.getClip('A')!.volumeTrack!
+    expect(track.keyframes[0].frame).toBe(50) // clamped
+    expect(c.undo()).toBe(true)
+    expect(c.getClip('A')!.volumeTrack).toBeUndefined()
+    expect(c.canUndo()).toBe(false)
+  })
+
+  it('removeClipKeyframe drops the exact frame and deletes an emptied track', () => {
+    const { c, v1 } = seeded()
+    c.addClip({ trackId: v1, mediaRef: 'm', startFrame: 0, durationFrames: 100, id: 'A' })
+    c.setClipKeyframe('A', 'rotation', 0, 0)
+    c.setClipKeyframe('A', 'rotation', 50, 90)
+    c.removeClipKeyframe('A', 'rotation', 50)
+    expect(c.getClip('A')!.rotationTrack!.keyframes.map((k) => k.frame)).toEqual([0])
+    c.removeClipKeyframe('A', 'rotation', 0)
+    expect(c.getClip('A')!.rotationTrack).toBeUndefined()
+  })
+
+  it('clearClipKeyframes removes the whole track for one property only', () => {
+    const { c, v1 } = seeded()
+    c.addClip({ trackId: v1, mediaRef: 'm', startFrame: 0, durationFrames: 100, id: 'A' })
+    c.setClipKeyframe('A', 'position', 0, { a: 0, b: 0 })
+    c.setClipKeyframe('A', 'position', 50, { a: 0.5, b: 0.25 })
+    c.setClipKeyframe('A', 'opacity', 0, 1)
+    c.clearClipKeyframes('A', 'position')
+    expect(c.getClip('A')!.positionTrack).toBeUndefined()
+    expect(c.getClip('A')!.opacityTrack).toBeDefined()
+  })
+})
+
+describe('EditorController — rippleDeleteRange', () => {
+  it('splits boundaries, removes the range, and closes the gap (one undo step)', () => {
+    const { c, v1 } = seeded()
+    c.addClip({ trackId: v1, mediaRef: 'm', startFrame: 0, durationFrames: 300, id: 'A' })
+    c.reset(c.getTimeline())
+    const r = c.rippleDeleteRange([v1], 100, 200)
+    expect(r.ok).toBe(true)
+    expect(r.removedFrames).toBe(100)
+    const clips = clipsOf(c.getTimeline(), v1)
+    expect(clips).toHaveLength(2)
+    expect(clips[0].startFrame).toBe(0)
+    expect(clipEndFrame(clips[0])).toBe(100)
+    expect(clips[1].startFrame).toBe(100) // gap closed
+    expect(clipEndFrame(clips[1])).toBe(200)
+    expect(c.undo()).toBe(true)
+    expect(clipsOf(c.getTimeline(), v1)).toHaveLength(1)
+    expect(c.canUndo()).toBe(false)
+  })
+
+  it('spans clip boundaries across the default (all) tracks', () => {
+    const { c, v1, v2 } = seeded()
+    c.addClip({ trackId: v1, mediaRef: 'a', startFrame: 0, durationFrames: 150, id: 'A' })
+    c.addClip({ trackId: v1, mediaRef: 'b', startFrame: 150, durationFrames: 150, id: 'B' })
+    c.addClip({ trackId: v2, mediaRef: 'c', startFrame: 50, durationFrames: 100, id: 'C' })
+    const r = c.rippleDeleteRange(undefined, 100, 200)
+    expect(r.ok).toBe(true)
+    // v1: [0,100) kept + [200,300) shifted to 100.
+    const t1 = clipsOf(c.getTimeline(), v1)
+    expect(t1.map((cl) => [cl.startFrame, clipEndFrame(cl)])).toEqual([
+      [0, 100],
+      [100, 200]
+    ])
+    // v2: clip C [50,150) loses its tail beyond 100.
+    const t2 = clipsOf(c.getTimeline(), v2)
+    expect(t2.map((cl) => [cl.startFrame, clipEndFrame(cl)])).toEqual([[50, 100]])
+  })
+
+  it('refuses without mutating when a sync-locked follower cannot absorb the shift', () => {
+    const { c, v1, a1 } = seeded()
+    c.addClip({ trackId: v1, mediaRef: 'v', startFrame: 100, durationFrames: 200, id: 'V' })
+    // Sync-locked audio: S2 would shift left 100 into [100,200), colliding with S1 [50,150).
+    c.setTrackSyncLocked(a1, true)
+    c.addClip({ trackId: a1, mediaRef: 's1', startFrame: 50, durationFrames: 100, mediaType: 'audio', id: 'S1' })
+    c.addClip({ trackId: a1, mediaRef: 's2', startFrame: 200, durationFrames: 100, mediaType: 'audio', id: 'S2' })
+    c.reset(c.getTimeline())
+    const r = c.rippleDeleteRange([v1], 100, 200)
+    expect(r.ok).toBe(false)
+    expect(r.reason).toBeTruthy()
+    expect(clipsOf(c.getTimeline(), v1)).toHaveLength(1) // no phantom splits
+    expect(c.getClip('V')!.durationFrames).toBe(200)
+    expect(c.canUndo()).toBe(false)
+  })
+
+  it('reports an empty or clip-less range without touching history', () => {
+    const { c, v1 } = seeded()
+    c.addClip({ trackId: v1, mediaRef: 'm', startFrame: 0, durationFrames: 50, id: 'A' })
+    c.reset(c.getTimeline())
+    expect(c.rippleDeleteRange([v1], 200, 100).ok).toBe(false)
+    expect(c.rippleDeleteRange([v1], 100, 200).ok).toBe(false) // nothing there
     expect(c.canUndo()).toBe(false)
   })
 })

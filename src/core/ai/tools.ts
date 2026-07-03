@@ -8,8 +8,9 @@
 // EditorController commands. No transport, no network, no key — just validation + dispatch.
 
 import { z } from 'zod'
-import { clipEndFrame, makeCrop, makeTransform, type TextStyle } from '../model/timeline'
-import { trackIsActive } from '../model/keyframe'
+import { type Clip, type Crop, clipEndFrame, makeCrop, makeTransform, type TextStyle } from '../model/timeline'
+import { type AnimPair, type AnimatableProperty, type KeyframeTrack, trackIsActive } from '../model/keyframe'
+import { newId } from '../constants'
 import { DOCUMENT_PRESETS, GENERIC_LOOKS, lookById, presetById } from '../color/presets'
 import { type ClipPropertyEdit, type EditorController } from '../controller/EditorController'
 import { cutRangeToAngle } from './angleCut'
@@ -100,6 +101,63 @@ const CLIP_PROPS_DESCRIPTION =
   '(voice cleanup: gate/denoise/EQ/de-ess/compressor/limiter/loudness — see field names). ' +
   'transform/crop/textStyle/audioEnhance are PARTIAL patches merged onto current values ' +
   '(a rotation-only edit does not reset position).'
+
+// ── Keyframes: property → clip field, and value-shape validation ─────────────────────────────────
+
+const animatableProperty = z.enum(['opacity', 'position', 'scale', 'rotation', 'crop', 'volume'])
+
+const KF_FIELDS: Record<AnimatableProperty, keyof Clip> = {
+  opacity: 'opacityTrack',
+  position: 'positionTrack',
+  scale: 'scaleTrack',
+  rotation: 'rotationTrack',
+  crop: 'cropTrack',
+  volume: 'volumeTrack'
+}
+
+const keyframeValue = z.union([
+  z.number(),
+  z.object({ x: z.number(), y: z.number() }),
+  z.object({ width: z.number(), height: z.number() }),
+  z.object({
+    left: z.number().min(0).max(1).optional(),
+    top: z.number().min(0).max(1).optional(),
+    right: z.number().min(0).max(1).optional(),
+    bottom: z.number().min(0).max(1).optional()
+  })
+])
+
+/** Coerce/validate a tool-supplied keyframe value into the controller's shape for `property`. */
+function coerceKeyframeValue(
+  property: AnimatableProperty,
+  value: z.infer<typeof keyframeValue>
+): { ok: true; v: number | AnimPair | Crop } | { ok: false; err: string } {
+  const isNum = typeof value === 'number'
+  switch (property) {
+    case 'opacity':
+      if (!isNum || value < 0 || value > 1) return { ok: false, err: 'opacity keyframes take a number 0..1' }
+      return { ok: true, v: value }
+    case 'rotation':
+      if (!isNum) return { ok: false, err: 'rotation keyframes take a number (degrees)' }
+      return { ok: true, v: value }
+    case 'volume':
+      if (!isNum || value < -60 || value > 12) {
+        return { ok: false, err: 'volume keyframes take a number in dB (-60..12; 0 = unity)' }
+      }
+      return { ok: true, v: value }
+    case 'position':
+      if (isNum || !('x' in value)) return { ok: false, err: 'position keyframes take {x, y} (normalized top-left)' }
+      return { ok: true, v: { a: value.x, b: value.y } }
+    case 'scale':
+      if (isNum || !('width' in value)) return { ok: false, err: 'scale keyframes take {width, height} (normalized)' }
+      return { ok: true, v: { a: value.width, b: value.height } }
+    case 'crop':
+      if (isNum || 'x' in value || 'width' in value) {
+        return { ok: false, err: 'crop keyframes take {left, top, right, bottom} edge insets 0..1' }
+      }
+      return { ok: true, v: makeCrop(value) }
+  }
+}
 
 /** Merge-aware property apply shared by set_clip_properties / set_clips_properties. One clip. */
 function applyClipProps(c: EditorController, clipId: string, input: ClipPropsInput): void {
@@ -488,6 +546,134 @@ export const editorTools: ToolDef[] = [
     z.object({}).strict(),
     () => {
       throw new Error('apply_auto_angles is executed by the host app, not the core executor')
+    }
+  ),
+  tool(
+    'set_keyframe',
+    'Insert or replace an animation keyframe on a clip property (one undo step). `atFrame` is a TIMELINE frame (converted internally; must fall inside the clip). Value shapes: opacity → number 0..1 · rotation → degrees · volume → dB (0 = unity, e.g. -12 quieter) · position → {x,y} normalized TOP-LEFT (while any position keyframe exists it OVERRIDES the static transform position) · scale → {width,height} normalized · crop → {left,top,right,bottom} 0..1. Interpolation out of this keyframe: linear|hold|smooth (default smooth).',
+    z.object({
+      clipId: z.string(),
+      property: animatableProperty,
+      atFrame: z.number().int().nonnegative(),
+      value: keyframeValue,
+      interpolation: interpolation.optional()
+    }),
+    (c, input) => {
+      const clip = c.getClip(input.clipId)
+      if (!clip) return { error: `Clip not found: ${input.clipId}` }
+      const rel = input.atFrame - clip.startFrame
+      if (rel < 0 || rel > clip.durationFrames) {
+        return {
+          error: `atFrame ${input.atFrame} is outside the clip [${clip.startFrame}, ${clipEndFrame(clip)}]`
+        }
+      }
+      const coerced = coerceKeyframeValue(input.property, input.value)
+      if (!coerced.ok) return { error: coerced.err }
+      c.setClipKeyframe(input.clipId, input.property, rel, coerced.v, input.interpolation ?? 'smooth')
+      return { ok: true, clipFrame: rel }
+    }
+  ),
+  tool(
+    'remove_keyframe',
+    'Remove one keyframe (`atFrame`, a TIMELINE frame, exact match) or ALL keyframes of a property (`all: true`) from a clip. When the last keyframe goes, the static value takes over again.',
+    z.object({
+      clipId: z.string(),
+      property: animatableProperty,
+      atFrame: z.number().int().nonnegative().optional(),
+      all: z.boolean().optional()
+    }),
+    (c, input) => {
+      const clip = c.getClip(input.clipId)
+      if (!clip) return { error: `Clip not found: ${input.clipId}` }
+      if (input.all) {
+        c.clearClipKeyframes(input.clipId, input.property)
+        return { ok: true }
+      }
+      if (input.atFrame === undefined) return { error: 'Pass atFrame (timeline frame) or all: true' }
+      c.removeClipKeyframe(input.clipId, input.property, input.atFrame - clip.startFrame)
+      return { ok: true }
+    }
+  ),
+  tool(
+    'get_keyframes',
+    'Read-only: list a clip\'s keyframes (optionally one property). Frames come back both clip-relative and as timeline frames. Values follow set_keyframe shapes (volume in dB, position as top-left {a:x,b:y} pair).',
+    z.object({ clipId: z.string(), property: animatableProperty.optional() }),
+    (c, input) => {
+      const clip = c.getClip(input.clipId)
+      if (!clip) return { error: `Clip not found: ${input.clipId}` }
+      const props = input.property ? [input.property] : (Object.keys(KF_FIELDS) as AnimatableProperty[])
+      const out: Record<string, unknown> = {}
+      for (const p of props) {
+        const track = clip[KF_FIELDS[p]] as KeyframeTrack<unknown> | undefined
+        if (!track || track.keyframes.length === 0) continue
+        out[p] = track.keyframes.map((k) => ({
+          clipFrame: k.frame,
+          timelineFrame: clip.startFrame + k.frame,
+          value: k.value,
+          interpolation: k.interpolationOut
+        }))
+      }
+      return { clipId: input.clipId, keyframes: out }
+    }
+  ),
+  tool(
+    'ripple_delete_range',
+    'CapCut-style segment delete: remove the time range [startFrame, endFrame) from the given tracks (default: ALL tracks) and close the gap. Clips straddling a boundary are split automatically. Sync-locked tracks shift to stay aligned; refuses (nothing changes) if one cannot absorb the shift. One undo step.',
+    z.object({
+      startFrame: z.number().int().nonnegative(),
+      endFrame: z.number().int().positive(),
+      trackIds: z.array(z.string()).min(1).optional()
+    }),
+    (c, input) => c.rippleDeleteRange(input.trackIds, input.startFrame, input.endFrame)
+  ),
+  tool(
+    'add_text_clip',
+    'Place a text clip: resolves the target text track (given id → validated; else first text track; else creates one) and sets content + style in one undo step. Defaults: Segoe UI 48px white centered. NOTE: text shows in the live preview but is NOT yet burned into the FFmpeg export, and the preview currently renders a default style (custom fontName/size/color are stored, only partially honored). Returns { clipId, trackId }.',
+    z.object({
+      text: z.string().min(1),
+      startFrame: z.number().int().nonnegative(),
+      durationFrames: z.number().int().positive(),
+      trackId: z.string().optional(),
+      style: textStylePatch.optional(),
+      transform: transformPatch.optional()
+    }),
+    (c, input) => {
+      let result: { clipId: string; trackId: string } | { error: string } = { error: 'Failed to place text clip' }
+      c.transact('Añadir texto', () => {
+        let trackId = input.trackId
+        if (trackId !== undefined) {
+          const t = c.getTrack(trackId)
+          if (!t) {
+            result = { error: `Track not found: ${trackId}` }
+            return
+          }
+          if (t.type !== 'text') {
+            result = { error: `Track ${trackId} is type "${t.type}", not "text"` }
+            return
+          }
+        } else {
+          trackId = c.getTimeline().tracks.find((t) => t.type === 'text')?.id ?? c.addTrack('text')
+        }
+        const clipId = c.addClip({
+          trackId,
+          mediaRef: `text-${newId()}`,
+          mediaType: 'text',
+          startFrame: input.startFrame,
+          durationFrames: input.durationFrames
+        })
+        if (!clipId) return
+        c.setClipProperties(
+          clipId,
+          {
+            textContent: input.text,
+            textStyle: { ...DEFAULT_TEXT_STYLE, ...(input.style ?? {}) },
+            ...(input.transform ? { transform: makeTransform(input.transform) } : {})
+          },
+          'Añadir texto'
+        )
+        result = { clipId, trackId }
+      })
+      return result
     }
   ),
   tool(

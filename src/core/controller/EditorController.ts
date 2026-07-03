@@ -15,7 +15,18 @@
 import { type Patch, applyPatches, current, enablePatches, produceWithPatches } from 'immer'
 import { Snap, newId, sround } from '../constants'
 import { type ClipType, isCompatible } from '../model/clipType'
-import { type Interpolation, lerpNumber, sampleTrack } from '../model/keyframe'
+import {
+  type AnimPair,
+  type AnimatableProperty,
+  type Interpolation,
+  type KeyframeTrack,
+  emptyTrack,
+  keyframe,
+  kfRemove,
+  kfUpsert,
+  lerpNumber,
+  sampleTrack
+} from '../model/keyframe'
 import { type AudioEnhanceSettings, makeAudioEnhance, mergeAudioEnhance } from '../model/audioEnhance'
 import { type ColorAdjustments, IDENTITY_COLOR, mergeColor } from '../model/color'
 import {
@@ -152,6 +163,16 @@ const EDITABLE_KEYS: (keyof ClipPropertyEdit)[] = [
 ]
 
 // MARK: - Module helpers (operate on a draft or plain timeline)
+
+/** Clip field that stores each animatable property's keyframe track. */
+const KF_FIELD: Record<AnimatableProperty, string> = {
+  opacity: 'opacityTrack',
+  position: 'positionTrack',
+  scale: 'scaleTrack',
+  rotation: 'rotationTrack',
+  crop: 'cropTrack',
+  volume: 'volumeTrack'
+}
 
 interface ClipLoc {
   trackIndex: number
@@ -1017,6 +1038,64 @@ export class EditorController {
     return { ok: true, removedFrames, shiftedClips }
   }
 
+  /** CapCut-style segment delete: remove `[startFrame, endFrame)` from the given tracks (default:
+   *  all) and close the gap. Clips straddling a boundary are split first; then every clip fully
+   *  inside the range is ripple-deleted in ONE call. Sync-locked follower tracks are validated
+   *  BEFORE any mutation, so a refusal leaves the timeline untouched (no phantom splits). */
+  rippleDeleteRange(trackIds: string[] | undefined, startFrame: number, endFrame: number): RippleOutcome {
+    const start = Math.max(0, Math.round(startFrame))
+    const end = Math.round(endFrame)
+    if (end <= start) return { ok: false, reason: 'Empty range', removedFrames: 0, shiftedClips: 0 }
+    const tl = this.timeline
+    const targets = trackIds ?? tl.tracks.map((t) => t.id)
+    const targetSet = new Set(targets)
+
+    // The ranges that will disappear = each target clip's overlap with [start, end) — exactly the
+    // fully-inside clips after the boundary splits. Lets us pre-validate sync-locked followers.
+    const removedRanges: FrameRange[] = []
+    for (const tid of targets) {
+      const track = tl.tracks.find((t) => t.id === tid)
+      if (!track) continue
+      for (const cl of track.clips) {
+        const s = Math.max(cl.startFrame, start)
+        const e = Math.min(clipEndFrame(cl), end)
+        if (e > s) removedRanges.push({ start: s, end: e })
+      }
+    }
+    if (removedRanges.length === 0) {
+      return { ok: false, reason: 'No clips in range', removedFrames: 0, shiftedClips: 0 }
+    }
+    for (let ti = 0; ti < tl.tracks.length; ti++) {
+      const track = tl.tracks[ti]
+      const hasOwnRemoval = targetSet.has(track.id) && track.clips.some((cl) => cl.startFrame < end && clipEndFrame(cl) > start)
+      if (!hasOwnRemoval && track.syncLocked) {
+        const shifts = computeRippleShiftsForRanges(track.clips, removedRanges)
+        const reason = validateShifts(track, `track ${ti + 1}`, shifts)
+        if (reason) return { ok: false, reason, removedFrames: 0, shiftedClips: 0 }
+      }
+    }
+
+    return this.transact('Eliminar rango', () => {
+      // Split any clip straddling a boundary (end first, so the start split sees stable ids).
+      for (const boundary of [end, start]) {
+        for (const tid of targets) {
+          const track = this.getTrack(tid)
+          const clip = track?.clips.find((cl) => boundary > cl.startFrame && boundary < clipEndFrame(cl))
+          if (clip) this.splitClip(clip.id, boundary)
+        }
+      }
+      const ids: string[] = []
+      for (const tid of targets) {
+        const track = this.getTrack(tid)
+        if (!track) continue
+        for (const cl of track.clips) {
+          if (cl.startFrame >= start && clipEndFrame(cl) <= end) ids.push(cl.id)
+        }
+      }
+      return this.rippleDelete(ids)
+    })
+  }
+
   // MARK: Speed / properties
 
   setClipSpeed(clipId: string, newSpeed: number, coalesceKey?: string): void {
@@ -1081,6 +1160,69 @@ export class EditorController {
     const c = this.getClip(clipId)
     if (!c) return
     this.setClipProperties(clipId, { audioEnhance: mergeAudioEnhance(c.audioEnhance ?? makeAudioEnhance(), patch) }, label)
+  }
+
+  // MARK: Keyframes
+  // Value semantics per property (matching the sampling in model/timeline.ts):
+  //   opacity  → number 0..1
+  //   position → AnimPair {a:x, b:y} — TOP-LEFT corner, normalized; while active it OVERRIDES the
+  //              static transform's position entirely (see topLeftAt)
+  //   scale    → AnimPair {a:width, b:height} (normalized canvas fractions)
+  //   rotation → number, degrees
+  //   crop     → Crop edge insets 0..1
+  //   volume   → number in dB (0 = unity; VolumeScale.linearFromDb applies it)
+
+  /** Insert or replace a keyframe at clip-relative `clipFrame` (clamped to the clip's duration). */
+  setClipKeyframe(
+    clipId: string,
+    property: AnimatableProperty,
+    clipFrame: number,
+    value: number | AnimPair | Crop,
+    interpolationOut: Interpolation = 'smooth'
+  ): void {
+    this.run('Keyframe', () =>
+      this.mutate((tl) => {
+        const loc = locateClip(tl, clipId)
+        if (!loc) return
+        const c = tl.tracks[loc.trackIndex].clips[loc.clipIndex]
+        const frame = Math.max(0, Math.min(Math.round(clipFrame), c.durationFrames))
+        const field = KF_FIELD[property]
+        const rec = c as unknown as Record<string, KeyframeTrack<unknown> | undefined>
+        const track = rec[field] ?? emptyTrack()
+        kfUpsert(track, keyframe<unknown>(frame, value, interpolationOut))
+        rec[field] = track
+      })
+    )
+  }
+
+  /** Remove the keyframe at clip-relative `clipFrame` (exact match). Empty tracks are dropped. */
+  removeClipKeyframe(clipId: string, property: AnimatableProperty, clipFrame: number): void {
+    this.run('Quitar keyframe', () =>
+      this.mutate((tl) => {
+        const loc = locateClip(tl, clipId)
+        if (!loc) return
+        const c = tl.tracks[loc.trackIndex].clips[loc.clipIndex]
+        const field = KF_FIELD[property]
+        const rec = c as unknown as Record<string, KeyframeTrack<unknown> | undefined>
+        const track = rec[field]
+        if (!track) return
+        kfRemove(track, Math.round(clipFrame))
+        if (track.keyframes.length === 0) delete rec[field]
+      })
+    )
+  }
+
+  /** Clear every keyframe of one property on a clip (the static value takes over again). */
+  clearClipKeyframes(clipId: string, property: AnimatableProperty): void {
+    this.run('Quitar keyframes', () =>
+      this.mutate((tl) => {
+        const loc = locateClip(tl, clipId)
+        if (!loc) return
+        const c = tl.tracks[loc.trackIndex].clips[loc.clipIndex]
+        const rec = c as unknown as Record<string, KeyframeTrack<unknown> | undefined>
+        if (rec[KF_FIELD[property]] !== undefined) delete rec[KF_FIELD[property]]
+      })
+    )
   }
 
   // MARK: Playhead / selection (not undoable)

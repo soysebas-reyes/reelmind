@@ -786,6 +786,18 @@ export default function Timeline(): React.JSX.Element {
     drawRef.current()
   }
 
+  // --- Double-click → clip properties inspector ---
+
+  function onDoubleClick(e: React.MouseEvent<HTMLCanvasElement>): void {
+    const r = (e.target as HTMLCanvasElement).getBoundingClientRect()
+    const hit = hitClip(e.clientX - r.left, e.clientY - r.top)
+    if (hit && 'clip' in hit) {
+      const clip = hit.clip as Clip
+      getController().selectOnly(clip.id)
+      useEditorStore.getState().setRightTab('props')
+    }
+  }
+
   // --- Right-click context menu ---
 
   function onContextMenu(e: React.MouseEvent<HTMLCanvasElement>): void {
@@ -880,6 +892,13 @@ export default function Timeline(): React.JSX.Element {
         'separator',
         { label: 'Velocidad', submenu: [speedEntry(0.5), speedEntry(1), speedEntry(1.5), speedEntry(2)] },
         'separator',
+        {
+          label: 'Propiedades…',
+          onClick: () => {
+            c.selectOnly(clip.id)
+            store.setRightTab('props')
+          }
+        },
         { label: 'Colorizar…', onClick: () => store.setColorInspectorOpen(true) },
         { label: 'Realzar audio…', onClick: () => store.setAudioInspectorOpen(true) }
       ]
@@ -1007,6 +1026,7 @@ export default function Timeline(): React.JSX.Element {
           onPointerCancel={onPointerUp}
           onWheel={onWheel}
           onContextMenu={onContextMenu}
+          onDoubleClick={onDoubleClick}
         />
       </div>
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}

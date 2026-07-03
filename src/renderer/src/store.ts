@@ -504,6 +504,8 @@ export interface EditorState {
   colorInspectorOpen: boolean
   /** Audio enhance modal visibility (same reason). */
   audioInspectorOpen: boolean
+  /** Active tab of the right column: the AI chat or the clip properties inspector. */
+  rightTab: 'chat' | 'props'
 
   init: () => Promise<void>
   newProject: () => void
@@ -567,6 +569,7 @@ export interface EditorState {
   duplicateSelection: () => void
   setColorInspectorOpen: (open: boolean) => void
   setAudioInspectorOpen: (open: boolean) => void
+  setRightTab: (tab: 'chat' | 'props') => void
   /** One-shot (agente/MCP): analiza y aplica los cortes de inmediato, sin previsualización. */
   applyAutoAngles: (opts?: { destructive?: boolean }) => Promise<ToolCallResult>
   // Progress modal controls.
@@ -609,6 +612,7 @@ export const useEditorStore = create<EditorState>()(
     hasClipboard: false,
     colorInspectorOpen: false,
     audioInspectorOpen: false,
+    rightTab: 'chat' as const,
 
     init: async () => {
       window.editorBridge.onExportProgress((fraction) =>
@@ -1403,6 +1407,7 @@ clearTranscript: () => set((s) => { s.transcript = null }),
 
     setColorInspectorOpen: (open) => set((s) => { s.colorInspectorOpen = open }),
     setAudioInspectorOpen: (open) => set((s) => { s.audioInspectorOpen = open }),
+    setRightTab: (tab) => set((s) => { s.rightTab = tab }),
 
     applyAutoAngles: async (opts) => {
       // One-shot path (AI/MCP): analyze then apply immediately, no preview.
