@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { describe, expect, it } from 'vitest'
 import { makeClip } from '../model/timeline'
-import { silencesToCuts } from './silence'
+import { fxAudioTrack, fxClip, fxTimeline, fxVideoTrack } from '../testing/fixtures'
+import { pickDefaultSilenceTarget, silencesToCuts } from './silence'
 
 describe('silencesToCuts', () => {
   it('maps a source silence to a timeline cut (no trim, speed 1, 30fps)', () => {
@@ -41,5 +42,27 @@ describe('silencesToCuts', () => {
     const clip = makeClip({ mediaRef: 'm', startFrame: 0, durationFrames: 600 })
     const cuts = silencesToCuts(clip, [{ start: 1, end: 2 }, { start: 8, end: 9 }], 30, { paddingSec: 0, minSilenceSec: 0 })
     expect(cuts.map((c) => c.startFrame)).toEqual([240, 30])
+  })
+})
+
+describe('pickDefaultSilenceTarget', () => {
+  it('returns the single audible track first clip when unambiguous', () => {
+    const tl = fxTimeline({
+      tracks: [fxVideoTrack({ id: 'V', clips: [fxClip({ id: 'A', start: 0, duration: 30 })] })]
+    })
+    expect(pickDefaultSilenceTarget(tl)).toEqual({ clipId: 'A' })
+  })
+
+  it('lists candidates when several tracks are audible or none are', () => {
+    const tl = fxTimeline({
+      tracks: [
+        fxVideoTrack({ id: 'V1', clips: [fxClip({ id: 'A', start: 0, duration: 30 })] }),
+        fxAudioTrack({ id: 'A1', clips: [fxClip({ id: 'B', mediaType: 'audio', start: 0, duration: 30 })] })
+      ]
+    })
+    const r = pickDefaultSilenceTarget(tl)
+    expect('candidates' in r && r.candidates).toHaveLength(2)
+    const empty = pickDefaultSilenceTarget(fxTimeline({ tracks: [] }))
+    expect('candidates' in empty && empty.candidates).toHaveLength(0)
   })
 })

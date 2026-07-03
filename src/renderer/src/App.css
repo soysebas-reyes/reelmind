@@ -1816,3 +1816,48 @@ button.primary:hover:not(:disabled) {
 .insp-link:hover {
   background: var(--fill-2);
 }
+
+/* ---- Transport upgrades: prominent play, frame-step, preview-rate ---- */
+.preview-transport .play {
+  width: 42px;
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.preview-transport .play:hover:not(:disabled) {
+  background: var(--accent-press);
+}
+.preview-transport .play:disabled {
+  background: var(--fill-2);
+}
+.preview-transport .step {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-pill);
+  background: var(--fill-2);
+}
+.preview-transport .step:hover:not(:disabled) {
+  background: var(--surface-3);
+}
+.preview-transport .rate {
+  min-width: 40px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  background: var(--fill-2);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+.preview-transport .rate:hover {
+  background: var(--surface-3);
+}
+.preview-stage {
+  cursor: pointer;
+}

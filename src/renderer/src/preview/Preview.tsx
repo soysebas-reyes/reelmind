@@ -92,6 +92,9 @@ export default function Preview(): React.JSX.Element {
   // Play/pause lives in the store (togglePlayback) so Space and other panels can drive it; this
   // component keeps its refs/effect structure and just reads the flag.
   const playing = useEditorStore((s) => s.isPlaying)
+  // Preview-only playback rate (0.5×/1×/2×). Multiplies the clock AND every media playbackRate; the
+  // export is untouched. Changing it re-anchors the clock (it's in the clock effect's deps).
+  const [previewRate, setPreviewRate] = useState(1)
 
   const fps = timeline.fps
   const total = timelineTotalFrames(timeline)
@@ -426,7 +429,7 @@ export default function Preview(): React.JSX.Element {
       v.volume = clip ? Math.max(0, Math.min(1, volumeAt(clip, currentFrame))) : 1
       // Play at the clip's speed (so a sped/slowed clip stays in sync with the timeline) with pitch
       // preserved (preservesPitch set at creation). The master clock divides currentTime by speed.
-      const rate = Math.max(0.0625, Math.min(16, clip?.speed ?? 1))
+      const rate = Math.max(0.0625, Math.min(16, (clip?.speed ?? 1) * previewRate))
       if (v.playbackRate !== rate) v.playbackRate = rate
       const target = Math.max(0, layer.sourceSeconds)
       if (playing) {
@@ -464,7 +467,7 @@ export default function Preview(): React.JSX.Element {
       el.volume = Math.max(0, Math.min(1, a.gain))
       const aClip = timeline.tracks[a.trackIndex]?.clips.find((c) => c.id === a.clipId)
       const aSpeed = aClip?.speed ?? 1
-      const aRate = Math.max(0.0625, Math.min(16, aSpeed))
+      const aRate = Math.max(0.0625, Math.min(16, aSpeed * previewRate))
       if (el.playbackRate !== aRate) el.playbackRate = aRate
       // Non-destructive voice enhancement, audible live (EQ/compressor/limiter/gain). afftdn/gate/loudnorm
       // are applied exactly on export; here we approximate so slider changes are heard during playback.
@@ -491,7 +494,7 @@ export default function Preview(): React.JSX.Element {
       if (!audibleAudio.has(ref) && !el.paused) el.pause()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentFrame, playing, timeline])
+  }, [currentFrame, playing, timeline, previewRate])
 
   // Release pooled media on unmount.
   useEffect(() => {
@@ -531,7 +534,7 @@ export default function Preview(): React.JSX.Element {
     let cancelled = false
     const tick = (now: number): void => {
       if (cancelled) return
-      const frame = startFrame + ((now - startWall) / 1000) * fps
+      const frame = startFrame + ((now - startWall) / 1000) * fps * previewRate
       if (total > 0 && frame >= total) {
         playheadRef.current = total
         c.seek(total)
@@ -552,20 +555,39 @@ export default function Preview(): React.JSX.Element {
       cancelled = true
       cancelAnimationFrame(raf)
     }
-  }, [playing, fps, total])
+  }, [playing, fps, total, previewRate])
 
   const togglePlay = (): void => {
     useEditorStore.getState().togglePlayback()
   }
 
+  const stepFrame = (delta: number): void => {
+    if (playing) useEditorStore.getState().setPlaying(false)
+    const c = getController()
+    c.seek(c.getCurrentFrame() + delta)
+  }
+
   return (
     <div className="preview">
-      <div className="preview-stage" ref={wrapRef}>
+      <div className="preview-stage" ref={wrapRef} onClick={() => total > 0 && togglePlay()}>
         <canvas ref={canvasRef} />
       </div>
       <div className="preview-transport">
-        <button className="play" onClick={togglePlay} disabled={total === 0} title={playing ? 'Pausa' : 'Reproducir'}>
-          <Icon name={playing ? 'pause' : 'play'} size={15} />
+        <button className="step" onClick={() => stepFrame(-1)} disabled={total === 0} title="Frame anterior (←)">
+          <Icon name="play" size={11} style={{ transform: 'rotate(180deg)' }} />
+        </button>
+        <button className="play" onClick={togglePlay} disabled={total === 0} title={playing ? 'Pausa' : 'Reproducir (Espacio)'}>
+          <Icon name={playing ? 'pause' : 'play'} size={17} />
+        </button>
+        <button className="step" onClick={() => stepFrame(1)} disabled={total === 0} title="Frame siguiente (→)">
+          <Icon name="play" size={11} />
+        </button>
+        <button
+          className="rate"
+          onClick={() => setPreviewRate((r) => (r === 1 ? 2 : r === 2 ? 0.5 : 1))}
+          title="Velocidad de reproducción del preview (no afecta la exportación)"
+        >
+          {previewRate}×
         </button>
         <span className="tc">
           {timecode(currentFrame, fps)} <span className="tc-dim">/ {timecode(total, fps)}</span>

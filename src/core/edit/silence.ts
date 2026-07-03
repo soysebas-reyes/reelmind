@@ -60,3 +60,26 @@ export function silencesToCuts(
   cuts.sort((a, b) => b.startFrame - a.startFrame)
   return cuts
 }
+
+/** Resolve which clip `remove_silences` should target when the agent passes no clipId and nothing
+ *  useful is selected. If exactly ONE track carries audible (video/audio) clips, its first clip is
+ *  an unambiguous default; otherwise return the candidates so the agent can self-correct. Pure. */
+export function pickDefaultSilenceTarget(
+  tl: import('../model/timeline').Timeline
+): { clipId: string } | { candidates: { trackId: string; trackIndex: number; firstClipId: string; clips: number }[] } {
+  const audible = tl.tracks
+    .map((t, trackIndex) => ({ t, trackIndex }))
+    .filter(({ t }) => t.clips.some((cl) => cl.mediaType === 'video' || cl.mediaType === 'audio'))
+  if (audible.length === 1) {
+    const first = audible[0].t.clips.find((cl) => cl.mediaType === 'video' || cl.mediaType === 'audio')!
+    return { clipId: first.id }
+  }
+  return {
+    candidates: audible.map(({ t, trackIndex }) => ({
+      trackId: t.id,
+      trackIndex,
+      firstClipId: t.clips.find((cl) => cl.mediaType === 'video' || cl.mediaType === 'audio')!.id,
+      clips: t.clips.length
+    }))
+  }
+}

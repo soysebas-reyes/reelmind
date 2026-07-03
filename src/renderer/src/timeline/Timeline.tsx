@@ -111,6 +111,13 @@ function trackLabelFor(types: ClipType[], index: number): string {
   return `${TRACK_LABEL_PREFIX[type]}${n}`
 }
 
+interface MoveMember {
+  clipId: string
+  trackIndex: number
+  startFrame: number
+  durationFrames: number
+}
+
 type Interaction =
   | { kind: 'seek' }
   | {
@@ -118,7 +125,12 @@ type Interaction =
       clipId: string
       fromTrackIndex: number
       grabFrames: number
+      grabStartFrame: number
       durationFrames: number
+      /** Every clip travelling with this drag (the whole selection when the grabbed clip is in it). */
+      members: MoveMember[]
+      deltaFrames: number
+      deltaTracks: number
       ghostStart: number
       ghostTrackIndex: number
       snapX: number | null
@@ -130,6 +142,12 @@ type Interaction =
       ghostStart: number
       ghostDuration: number
       snapX: number | null
+    }
+  | {
+      kind: 'fadeIn' | 'fadeOut'
+      clipId: string
+      trackIndex: number
+      ghostFadeFrames: number
     }
 
 export default function Timeline(): React.JSX.Element {
@@ -237,15 +255,19 @@ export default function Timeline(): React.JSX.Element {
       }
     }
 
-    // Ghost (active drag).
+    // Ghost (active drag) — one per travelling member.
     const it = interactionRef.current
     if (it && it.kind === 'move') {
-      const box = clipBoxAt(it.ghostStart, it.durationFrames, it.ghostTrackIndex, l, scrollX)
       ctx.save()
       ctx.globalAlpha = 0.55
       ctx.fillStyle = ACCENT
-      roundRect(ctx, box.x, box.y, box.w, box.h, 6)
-      ctx.fill()
+      for (const m of it.members) {
+        const mi = m.trackIndex + it.deltaTracks
+        if (mi < 0 || mi >= tracks.length) continue
+        const box = clipBoxAt(m.startFrame + it.deltaFrames, m.durationFrames, mi, l, scrollX)
+        roundRect(ctx, box.x, box.y, box.w, box.h, 6)
+        ctx.fill()
+      }
       ctx.restore()
       if (it.snapX !== null) drawSnap(ctx, it.snapX, l, height)
     } else if (it && (it.kind === 'trimStart' || it.kind === 'trimEnd')) {
@@ -257,6 +279,25 @@ export default function Timeline(): React.JSX.Element {
       ctx.stroke()
       ctx.restore()
       if (it.snapX !== null) drawSnap(ctx, it.snapX, l, height)
+    } else if (it && (it.kind === 'fadeIn' || it.kind === 'fadeOut')) {
+      const clip = tracks[it.trackIndex]?.clips.find((cl) => cl.id === it.clipId)
+      if (clip) {
+        const box = clipBox(clip, it.trackIndex, l, scrollX)
+        const fw = Math.min(it.ghostFadeFrames * l.pixelsPerFrame, box.w)
+        ctx.save()
+        ctx.strokeStyle = ACCENT
+        ctx.lineWidth = 2
+        ctx.beginPath()
+        if (it.kind === 'fadeIn') {
+          ctx.moveTo(box.x, box.y + box.h)
+          ctx.lineTo(box.x + fw, box.y)
+        } else {
+          ctx.moveTo(box.x + box.w, box.y + box.h)
+          ctx.lineTo(box.x + box.w - fw, box.y)
+        }
+        ctx.stroke()
+        ctx.restore()
+      }
     }
 
     // Header column.
@@ -423,6 +464,48 @@ export default function Timeline(): React.JSX.Element {
     ctx.lineWidth = isSelected ? 2 : 1
     ctx.stroke()
 
+    // Fade ramps (visible whenever a fade exists) + corner handles when selected — CapCut-style.
+    const ppf = layout.pixelsPerFrame
+    const fadeInW = Math.min(clip.fadeInFrames * ppf, box.w)
+    const fadeOutW = Math.min(clip.fadeOutFrames * ppf, box.w)
+    if (fadeInW > 1 || fadeOutW > 1) {
+      ctx.save()
+      roundRect(ctx, box.x, box.y, box.w, box.h, 6)
+      ctx.clip()
+      ctx.strokeStyle = 'rgba(255,255,255,0.75)'
+      ctx.fillStyle = 'rgba(255,255,255,0.14)'
+      ctx.lineWidth = 1
+      if (fadeInW > 1) {
+        ctx.beginPath()
+        ctx.moveTo(box.x, box.y + box.h)
+        ctx.lineTo(box.x + fadeInW, box.y)
+        ctx.lineTo(box.x, box.y)
+        ctx.closePath()
+        ctx.fill()
+        ctx.beginPath()
+        ctx.moveTo(box.x, box.y + box.h)
+        ctx.lineTo(box.x + fadeInW, box.y)
+        ctx.stroke()
+      }
+      if (fadeOutW > 1) {
+        ctx.beginPath()
+        ctx.moveTo(box.x + box.w, box.y + box.h)
+        ctx.lineTo(box.x + box.w - fadeOutW, box.y)
+        ctx.lineTo(box.x + box.w, box.y)
+        ctx.closePath()
+        ctx.fill()
+        ctx.beginPath()
+        ctx.moveTo(box.x + box.w, box.y + box.h)
+        ctx.lineTo(box.x + box.w - fadeOutW, box.y)
+        ctx.stroke()
+      }
+      ctx.restore()
+    }
+    if (isSelected && box.w > 40) {
+      drawFadeHandle(ctx, box.x + Math.min(fadeInW, box.w / 2 - 8), box.y + 7)
+      drawFadeHandle(ctx, box.x + box.w - Math.min(fadeOutW, box.w / 2 - 8), box.y + 7)
+    }
+
     // Name.
     if (box.w > 28) {
       const name = nameFor(clip)
@@ -580,6 +663,17 @@ export default function Timeline(): React.JSX.Element {
     return { x: e.clientX - r.left, y: e.clientY - r.top }
   }
 
+  /** Fade handles live in the top ~14px of a SELECTED clip, anchored at each fade's end. */
+  function hitFadeHandle(clip: Clip, box: ClipBox, x: number, y: number): 'fadeIn' | 'fadeOut' | null {
+    if (box.w <= 40 || y > box.y + 14) return null
+    const ppf = layout.pixelsPerFrame
+    const inX = box.x + Math.min(clip.fadeInFrames * ppf, box.w / 2 - 8)
+    const outX = box.x + box.w - Math.min(clip.fadeOutFrames * ppf, box.w / 2 - 8)
+    if (Math.abs(x - inX) <= 7) return 'fadeIn'
+    if (Math.abs(x - outX) <= 7) return 'fadeOut'
+    return null
+  }
+
   function hitClip(x: number, y: number): { clip: Clip; trackIndex: number; box: ClipBox } | { trackIndex: number } | null {
     const ti = trackIndexForY(y, layout, timeline.tracks.length)
     if (ti < 0 || ti >= timeline.tracks.length) return null
@@ -642,10 +736,23 @@ export default function Timeline(): React.JSX.Element {
     const hit = hitClip(x, y)
     if (hit && 'clip' in hit) {
       const { clip, trackIndex, box } = hit
+      const wasSelected = selected.has(clip.id)
       if (e.shiftKey) c.toggleSelection(clip.id)
-      else if (!selected.has(clip.id)) c.selectOnly(clip.id)
+      else if (!wasSelected) c.selectOnly(clip.id)
       ;(e.target as HTMLCanvasElement).setPointerCapture(e.pointerId)
       snapStateRef.current = makeSnapState()
+
+      // Fade handles only respond on an already-selected clip (they're only drawn then).
+      const fadeKind = wasSelected ? hitFadeHandle(clip, box, x, y) : null
+      if (fadeKind) {
+        interactionRef.current = {
+          kind: fadeKind,
+          clipId: clip.id,
+          trackIndex,
+          ghostFadeFrames: fadeKind === 'fadeIn' ? clip.fadeInFrames : clip.fadeOutFrames
+        }
+        return
+      }
 
       if (x <= box.x + TRIM_HANDLE_PX) {
         interactionRef.current = {
@@ -666,12 +773,26 @@ export default function Timeline(): React.JSX.Element {
           snapX: null
         }
       } else {
+        // Group drag: when the grabbed clip is part of the selection, the whole selection travels.
+        const c2 = getController()
+        const selIds = selected.has(clip.id) ? c2.getSelectedClipIds() : [clip.id]
+        const members: MoveMember[] = []
+        timeline.tracks.forEach((tr, ti) => {
+          for (const cl of tr.clips) {
+            if (!selIds.includes(cl.id)) continue
+            members.push({ clipId: cl.id, trackIndex: ti, startFrame: cl.startFrame, durationFrames: cl.durationFrames })
+          }
+        })
         interactionRef.current = {
           kind: 'move',
           clipId: clip.id,
           fromTrackIndex: trackIndex,
           grabFrames: frameForX(x, layout, scrollX) - clip.startFrame,
+          grabStartFrame: clip.startFrame,
           durationFrames: clip.durationFrames,
+          members,
+          deltaFrames: 0,
+          deltaTracks: 0,
           ghostStart: clip.startFrame,
           ghostTrackIndex: trackIndex,
           snapX: null
@@ -699,6 +820,17 @@ export default function Timeline(): React.JSX.Element {
       return
     }
 
+    if (it.kind === 'fadeIn' || it.kind === 'fadeOut') {
+      const clip = c.getClip(it.clipId)
+      if (!clip) return
+      it.ghostFadeFrames =
+        it.kind === 'fadeIn'
+          ? clamp(frame - clip.startFrame, 0, clip.durationFrames)
+          : clamp(clipEndFrame(clip) - frame, 0, clip.durationFrames)
+      drawRef.current()
+      return
+    }
+
     if (it.kind === 'move') {
       const proposed = Math.max(0, frame - it.grabFrames)
       let targetIndex = trackIndexForY(y, layout, timeline.tracks.length)
@@ -712,18 +844,42 @@ export default function Timeline(): React.JSX.Element {
         durationFrames: it.durationFrames,
         pixelsPerFrame: layout.pixelsPerFrame,
         state: snapStateRef.current,
-        excludeClipIds: new Set([it.clipId]),
+        // The whole group must not snap to itself.
+        excludeClipIds: new Set(it.members.map((m) => m.clipId)),
         includePlayhead: true
       })
       const ghostStart = snap ? Math.max(0, snap.frame - snap.probeOffset) : proposed
-      it.ghostStart = ghostStart
-      it.ghostTrackIndex = targetIndex
+
+      // Common horizontal delta, clamped so the leftmost member never crosses frame 0.
+      let deltaFrames = ghostStart - it.grabStartFrame
+      const minStart = Math.min(...it.members.map((m) => m.startFrame))
+      if (minStart + deltaFrames < 0) deltaFrames = -minStart
+
+      // Vertical group move only when EVERY member lands on an existing, type-compatible track.
+      let deltaTracks = targetIndex - it.fromTrackIndex
+      if (deltaTracks !== 0) {
+        const ok = it.members.every((m) => {
+          const mi = m.trackIndex + deltaTracks
+          return (
+            mi >= 0 &&
+            mi < timeline.tracks.length &&
+            isCompatible(timeline.tracks[mi].type, timeline.tracks[m.trackIndex].type)
+          )
+        })
+        if (!ok) deltaTracks = 0
+      }
+
+      it.deltaFrames = deltaFrames
+      it.deltaTracks = deltaTracks
+      it.ghostStart = it.grabStartFrame + deltaFrames
+      it.ghostTrackIndex = it.fromTrackIndex + deltaTracks
       it.snapX = snap ? xForFrame(snap.frame, layout, scrollX) : null
       drawRef.current()
       return
     }
 
-    // Trim.
+    // Trim. (Explicit guard so TS discriminates the multi-literal `kind` members.)
+    if (it.kind !== 'trimStart' && it.kind !== 'trimEnd') return
     const clip = c.getClip(it.clipId)
     if (!clip) return
     const leftRoom = Math.floor(clip.trimStartFrame / clip.speed)
@@ -767,8 +923,15 @@ export default function Timeline(): React.JSX.Element {
     }
 
     if (it.kind === 'move') {
-      const toTrackId = timeline.tracks[it.ghostTrackIndex]?.id
-      if (toTrackId) c.moveClip(it.clipId, toTrackId, it.ghostStart)
+      // Plain click (no movement) must not create a no-op undo entry.
+      if (it.deltaFrames !== 0 || it.deltaTracks !== 0) {
+        c.moveClips(
+          it.members.flatMap((m) => {
+            const toTrackId = timeline.tracks[m.trackIndex + it.deltaTracks]?.id
+            return toTrackId ? [{ clipId: m.clipId, toTrackId, toFrame: m.startFrame + it.deltaFrames }] : []
+          })
+        )
+      }
     } else if (it.kind === 'trimStart') {
       const clip = c.getClip(it.clipId)
       if (clip) {
@@ -782,6 +945,13 @@ export default function Timeline(): React.JSX.Element {
         const deltaTimeline = clipEndFrame(clip) - proposedEnd
         c.trimClipEnd(it.clipId, Math.max(0, clip.trimEndFrame + sround(deltaTimeline * clip.speed)))
       }
+    } else if (it.kind === 'fadeIn' || it.kind === 'fadeOut') {
+      // One commit per gesture (the controller clamps fades to the clip duration).
+      c.setClipProperties(
+        it.clipId,
+        it.kind === 'fadeIn' ? { fadeInFrames: it.ghostFadeFrames } : { fadeOutFrames: it.ghostFadeFrames },
+        'Fundido'
+      )
     }
     drawRef.current()
   }
@@ -919,15 +1089,55 @@ export default function Timeline(): React.JSX.Element {
   // --- Drag from media bin ---
 
   function onDragOver(e: React.DragEvent<HTMLDivElement>): void {
-    if (e.dataTransfer.types.includes('application/x-reelmind-asset')) {
+    if (e.dataTransfer.types.includes('application/x-reelmind-asset') || e.dataTransfer.types.includes('Files')) {
       e.preventDefault()
       e.dataTransfer.dropEffect = 'copy'
     }
   }
 
+  /** OS Explorer drop: import the files, then place the first imported asset at the drop point. */
+  async function placeOsDrop(paths: string[], x: number, y: number): Promise<void> {
+    const imported = await useEditorStore.getState().importFromSources(paths)
+    const entry = imported[0]?.entry
+    if (!entry) return
+    const c = getController()
+    const tl = c.getTimeline() // fresh — the import may have adopted project settings
+    const frame = Math.max(0, frameForX(Math.max(layout.headerWidth, x), layout, scrollX))
+    const durationFrames = defaultFramesFor(entry.type, entry.duration, tl.fps)
+    const ti = trackIndexForY(y, layout, tl.tracks.length)
+    const desiredType: ClipType = entry.type === 'audio' ? 'audio' : 'video'
+    let trackId: string
+    if (ti < 0 || ti >= tl.tracks.length || !isCompatible(tl.tracks[ti].type, desiredType)) {
+      trackId = c.addTrack(desiredType)
+    } else {
+      trackId = tl.tracks[ti].id
+    }
+    c.transact('Add Clip', () => {
+      const id = c.addClip({
+        trackId,
+        mediaRef: entry.id,
+        mediaType: entry.type,
+        sourceClipType: entry.type,
+        startFrame: frame,
+        durationFrames
+      })
+      if (id) c.selectOnly(id)
+    })
+  }
+
   function onDrop(e: React.DragEvent<HTMLDivElement>): void {
     const assetId = e.dataTransfer.getData('application/x-reelmind-asset')
-    if (!assetId) return
+    if (!assetId) {
+      if (e.dataTransfer.files.length > 0) {
+        e.preventDefault()
+        const rect = (canvasRef.current as HTMLCanvasElement).getBoundingClientRect()
+        const paths = Array.from(e.dataTransfer.files)
+          .map((f) => window.editorBridge.getPathForFile(f))
+          .filter((p): p is string => !!p)
+        if (paths.length > 0) void placeOsDrop(paths, e.clientX - rect.left, e.clientY - rect.top)
+      }
+      return
+    }
     e.preventDefault()
     const entry = useEditorStore.getState().manifest.entries.find((x) => x.id === assetId)
     if (!entry) return
@@ -1049,6 +1259,19 @@ function clipBoxAt(start: number, duration: number, trackIndex: number, l: Timel
     w: Math.max(1, duration * l.pixelsPerFrame),
     h: l.trackHeight - 6
   }
+}
+
+/** Small round fade handle at the top edge of a selected clip. */
+function drawFadeHandle(ctx: CanvasRenderingContext2D, x: number, y: number): void {
+  ctx.save()
+  ctx.beginPath()
+  ctx.arc(x, y, 4.5, 0, Math.PI * 2)
+  ctx.fillStyle = '#ffffff'
+  ctx.fill()
+  ctx.strokeStyle = ACCENT
+  ctx.lineWidth = 1.5
+  ctx.stroke()
+  ctx.restore()
 }
 
 function drawSnap(ctx: CanvasRenderingContext2D, x: number, l: TimelineLayout, height: number): void {

@@ -12,6 +12,7 @@ import {
   executeTool,
   expectedPath,
   manifestToAssetList,
+  pickDefaultSilenceTarget,
   silencesToCuts
 } from '@core'
 import { type SyncAnglesInput, getController, useEditorStore } from '../store'
@@ -49,8 +50,25 @@ async function removeSilences(input: RemoveSilencesInput): Promise<ToolCallResul
   const c = getController()
   const { manifest, projectDir } = useEditorStore.getState()
   const tl = c.getTimeline()
-  const targetClipId = input.clipId ?? c.getSelectedClipIds()[0]
-  if (!targetClipId) return { ok: false, error: 'remove_silences: select a clip first, or pass clipId.' }
+  let targetClipId = input.clipId ?? c.getSelectedClipIds()[0]
+  if (!targetClipId) {
+    // No clipId and no selection: unambiguous only when a single track carries audible clips.
+    const picked = pickDefaultSilenceTarget(tl)
+    if ('clipId' in picked) {
+      targetClipId = picked.clipId
+    } else {
+      const list = picked.candidates
+        .map((cand) => `track ${cand.trackIndex + 1} (${cand.trackId}, firstClipId ${cand.firstClipId})`)
+        .join('; ')
+      return {
+        ok: false,
+        error:
+          picked.candidates.length === 0
+            ? 'remove_silences: no audible clips on the timeline.'
+            : `remove_silences: several tracks have audible clips — pass clipId. Candidates: ${list}`
+      }
+    }
+  }
   const track = tl.tracks.find((t) => t.clips.some((cl) => cl.id === targetClipId))
   if (!track) return { ok: false, error: 'remove_silences: clip not found on any track.' }
 

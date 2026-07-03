@@ -4,6 +4,7 @@ import { app, BrowserWindow } from 'electron'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { autoUpdater } from 'electron-updater'
+import { editorToolsByName } from '@core'
 import { registerIpc } from './ipc'
 import { handleMediaProtocol, registerMediaScheme } from './media/mediaProtocol'
 import { executeToolInRenderer } from './mcp/bridge'
@@ -75,8 +76,12 @@ app.whenReady().then(() => {
   })
 
   // Embedded MCP server (localhost) so external agents drive the same editor commands.
+  // Per-tool timeout overrides (export/transcribe/…) come from the tool contract itself.
   if (!process.env.REELMIND_NO_MCP) {
-    createMcpHttpServer({ port: MCP_PORT, execute: executeToolInRenderer })
+    createMcpHttpServer({
+      port: MCP_PORT,
+      execute: (name, input) => executeToolInRenderer(name, input, editorToolsByName.get(name)?.timeoutMs ?? 300_000)
+    })
       .then((h) => console.log(`[reelmind] MCP server listening at ${h.url}`))
       .catch((e) => console.error('[reelmind] MCP server failed to start:', e))
   }

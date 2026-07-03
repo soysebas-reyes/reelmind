@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-import { type CSSProperties, useEffect, useState } from 'react'
+import { type CSSProperties, type DragEvent, useEffect, useState } from 'react'
 import { type ClipType, type MediaManifestEntry, type TrackRole } from '@core'
 import type { ExportQuality } from '../../shared/ipc'
 import { getController, useEditorStore } from './store'
@@ -189,6 +189,22 @@ export default function App() {
 
   const ffmpegOk = ffmpeg?.ffmpeg && ffmpeg?.ffprobe
 
+  // OS Explorer → media bin drop (works alongside the Importar button; folders expand in main).
+  const binDragOver = (e: DragEvent): void => {
+    if (e.dataTransfer.types.includes('Files')) {
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'copy'
+    }
+  }
+  const binDrop = (e: DragEvent): void => {
+    if (e.dataTransfer.files.length === 0) return
+    e.preventDefault()
+    const paths = Array.from(e.dataTransfer.files)
+      .map((f) => window.editorBridge.getPathForFile(f))
+      .filter((p): p is string => !!p)
+    if (paths.length > 0) void useEditorStore.getState().importFromSources(paths)
+  }
+
   // Multicam actions key off how many *video* clips are selected.
   const selectedVideoIds = selectedClipIds.filter((id) => getController().getClip(id)?.mediaType === 'video')
   const canExtractAudio = selectedVideoIds.length === 1
@@ -377,7 +393,7 @@ export default function App() {
 
       <div className="workspace" style={{ '--timeline-h': `${layout.timelineH}px` } as CSSProperties}>
         <div className="stage" style={{ '--bin-w': `${layout.binW}px`, '--chat-w': `${layout.chatW}px` } as CSSProperties}>
-          <section className="bin">
+          <section className="bin" onDragOver={binDragOver} onDrop={binDrop}>
             <div className="bin-head">
               <h2>Medios</h2>
               <button className="primary" onClick={() => void importFiles()} disabled={!!busy}>

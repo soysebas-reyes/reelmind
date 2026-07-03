@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   AiCompleteRequest,
   AiCompleteResponse,
@@ -46,6 +46,9 @@ const editorBridge = {
   checkFfmpeg: (): Promise<FfmpegStatus> => ipcRenderer.invoke('ffmpeg:check'),
 
   pickMediaFiles: (): Promise<string[]> => ipcRenderer.invoke('media:pick'),
+  /** OS drag-and-drop: resolve a dropped File to its absolute path (sandbox-safe replacement for
+   *  the removed File.path). Must run in the preload context. */
+  getPathForFile: (file: File): string => webUtils.getPathForFile(file),
   importMedia: (paths: string[]): Promise<ImportedAsset[]> => ipcRenderer.invoke('media:import', paths),
   importSources: (sources: string[]): Promise<ImportedAsset[]> => ipcRenderer.invoke('media:importSources', sources),
   loadThumbnails: (items: ThumbnailRequest[]): Promise<ThumbnailResult[]> =>

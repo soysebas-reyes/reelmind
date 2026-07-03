@@ -1159,7 +1159,10 @@ export const useEditorStore = create<EditorState>()(
         })
       )
       alert('¡Sincronización completada!')
-      return { ok: true, result: { offsetSeconds: opts.offsetSeconds, linkGroupId, audioAssetId } }
+      return {
+        ok: true,
+        result: { offsetSeconds: opts.offsetSeconds, offsetFrames, fps, linkGroupId, audioAssetId }
+      }
     },
 
     syncAnglesTool: async (input) => {
@@ -1187,9 +1190,16 @@ export const useEditorStore = create<EditorState>()(
         'agent'
       )
       if (!applied.ok) return applied
+      const fps = c.getTimeline().fps
       return {
         ok: true,
-        result: { offsetSeconds: r.offsetSeconds, confidence: r.confidence, lowConfidence: !r.reliable }
+        result: {
+          offsetSeconds: r.offsetSeconds,
+          offsetFrames: Math.round(r.offsetSeconds * fps),
+          fps,
+          confidence: r.confidence,
+          lowConfidence: !r.reliable
+        }
       }
     },
 

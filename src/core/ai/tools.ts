@@ -178,6 +178,8 @@ export interface ToolDef {
   description: string
   input: z.ZodType
   handler: (c: EditorController, input: unknown) => unknown
+  /** Transport timeout override for long host operations (export, transcribe, …). Default 300s. */
+  timeoutMs?: number
 }
 
 function tool<S extends z.ZodType>(
@@ -843,6 +845,23 @@ export const HOST_EXECUTED_TOOLS: ReadonlySet<string> = new Set([
 ])
 
 export const editorToolsByName: Map<string, ToolDef> = new Map(editorTools.map((t) => [t.name, t]))
+
+// Long host operations get generous transport timeouts (the MCP bridge default is 300s, too short
+// for a long export or a slow transcription upload).
+const TOOL_TIMEOUTS: Record<string, number> = {
+  export: 1_800_000, // 30 min — long timelines render slower than real time
+  transcribe_clip: 900_000, // 15 min — audio extract + upload + STT
+  sync_angles: 600_000,
+  apply_auto_angles: 600_000,
+  remove_silences: 600_000,
+  import_media: 600_000, // may download URLs
+  import_folder: 600_000,
+  extract_audio: 600_000
+}
+for (const [name, ms] of Object.entries(TOOL_TIMEOUTS)) {
+  const def = editorToolsByName.get(name)
+  if (def) def.timeoutMs = ms
+}
 
 export interface ToolCallResult {
   ok: boolean
