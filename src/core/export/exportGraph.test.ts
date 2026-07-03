@@ -64,6 +64,7 @@ describe('buildExportGraph', () => {
     expect(g.filterComplex).toContain('[psc0]split=2[sv0_0][sv0_1]') // then fanned to the 2 segments
     expect(g.filterComplex).toContain('concat=n=2:v=1:a=0[vout]') // stitched, not overlaid
     expect(g.filterComplex).not.toContain('overlay') // no overlay chain → no O(N²) framesync OOM
+    expect(g.videoMode).toBe('concat')
   })
 
   it('loops images for their on-timeline duration', () => {
@@ -99,6 +100,7 @@ describe('buildExportGraph', () => {
     const fgOverlay = fc.indexOf('[ov0][v1]overlay')
     expect(bgOverlay).toBeGreaterThan(-1)
     expect(fgOverlay).toBeGreaterThan(bgOverlay)
+    expect(g.videoMode).toBe('overlay') // two clips overlapping in time → real compositing
   })
 
   it('mixes audio with delay and volume, and maps an audio output', () => {

@@ -4,6 +4,7 @@
 // run the process.
 
 import { spawn } from 'node:child_process'
+import { writeFile } from 'node:fs/promises'
 import { type ExportOptions, type MediaManifest, type Timeline, buildExportGraph, expectedPath } from '@core'
 import { ffmpegBinary } from './binary'
 
@@ -45,6 +46,27 @@ export async function exportTimeline(req: ExportTimelineRequest, hooks: ExportHo
   args.splice(args.length - 1, 0, '-movflags', '+faststart', '-progress', 'pipe:1', '-nostats')
   const dur = graph.durationSeconds
 
+  // Diagnostics sidecar: the exact graph this render will run, written BEFORE spawning so an OOM/crash
+  // still leaves the evidence. `videoMode: concat` = the memory-safe sequential path; `overlay` on a
+  // many-clip timeline is the known OOM shape. If this file is missing after an export, the running
+  // build predates the concat fast path (stale main process / old installed build).
+  const debugPath = `${req.outputPath}.ffdebug.txt`
+  const debugBody = [
+    `videoMode=${graph.videoMode}  visualClips=${graph.visualClipCount}  audioClips=${graph.audioClipCount}`,
+    `inputs=${graph.inputCount}  frames=${graph.totalFrames}  duration=${graph.durationSeconds.toFixed(2)}s  filterComplexChars=${graph.filterComplex.length}`,
+    '',
+    '--- args ---',
+    args.join(' ')
+  ].join('\n')
+  try {
+    await writeFile(debugPath, debugBody, 'utf8')
+  } catch {
+    /* diagnostics only — never block the render */
+  }
+  console.log(
+    `[reelmind] export: videoMode=${graph.videoMode} visualClips=${graph.visualClipCount} audioClips=${graph.audioClipCount} inputs=${graph.inputCount} → ${debugPath}`
+  )
+
   return new Promise<ExportTimelineResult>((done) => {
     const proc = spawn(ffmpegBinary(), args, { windowsHide: true })
     let stderr = ''
@@ -65,7 +87,13 @@ export async function exportTimeline(req: ExportTimelineRequest, hooks: ExportHo
     proc.on('error', (e) => done({ ok: false, error: e.message }))
     proc.on('close', (code) => {
       if (code === 0) done({ ok: true, outputPath: req.outputPath, durationSeconds: graph.durationSeconds })
-      else done({ ok: false, error: lastLines(stderr, 14) || `ffmpeg exited with code ${code}` })
+      else {
+        const tail = lastLines(stderr, 14) || `ffmpeg exited with code ${code}`
+        done({
+          ok: false,
+          error: `${tail}\n[modo=${graph.videoMode} · clips=${graph.visualClipCount}v/${graph.audioClipCount}a · diagnóstico: ${debugPath}]`
+        })
+      }
     })
   })
 }

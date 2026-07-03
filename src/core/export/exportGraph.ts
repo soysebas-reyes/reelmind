@@ -39,6 +39,12 @@ export interface ExportGraph {
   hasAudio: boolean
   totalFrames: number
   durationSeconds: number
+  /** How the visual stack was assembled: 'concat' = memory-safe sequential fast path;
+   *  'overlay' = general compositing (per-clip overlay chain). Surfaced for export diagnostics. */
+  videoMode: 'concat' | 'overlay' | 'none'
+  /** Visible visual/audio clip counts that made it into the graph (post invisible-skip). */
+  visualClipCount: number
+  audioClipCount: number
 }
 
 function fmt(n: number): string {
@@ -410,5 +416,15 @@ export function buildExportGraph(
   const filterComplex = chains.join(';')
   const args = ['-y', ...inputArgs, '-filter_complex', filterComplex, ...maps, ...enc, outputPath]
 
-  return { args, filterComplex, inputCount: idx, hasAudio, totalFrames: tf, durationSeconds: totalSec }
+  return {
+    args,
+    filterComplex,
+    inputCount: idx,
+    hasAudio,
+    totalFrames: tf,
+    durationSeconds: totalSec,
+    videoMode: visualEntries.length === 0 ? 'none' : pureSequence ? 'concat' : 'overlay',
+    visualClipCount: visualEntries.length,
+    audioClipCount: audioEntries.length
+  }
 }
