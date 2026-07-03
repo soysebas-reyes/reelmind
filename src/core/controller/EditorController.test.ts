@@ -775,3 +775,80 @@ describe('EditorController — rippleDeleteRange', () => {
     expect(c.canUndo()).toBe(false)
   })
 })
+
+describe('EditorController — closeGaps (compactar timeline)', () => {
+  it('closes internal gaps on one track, making clips contiguous', () => {
+    const { c, v1 } = seeded()
+    c.addClip({ trackId: v1, mediaRef: 'a', startFrame: 0, durationFrames: 60, id: 'A' })
+    c.addClip({ trackId: v1, mediaRef: 'b', startFrame: 150, durationFrames: 60, id: 'B' }) // gap [60,150)
+    c.addClip({ trackId: v1, mediaRef: 'd', startFrame: 300, durationFrames: 60, id: 'D' }) // gap [210,300)
+    c.reset(c.getTimeline())
+    const r = c.closeGaps()
+    expect(r.ok).toBe(true)
+    expect(r.removedFrames).toBe(90 + 90)
+    const clips = clipsOf(c.getTimeline(), v1)
+    expect(clips.map((cl) => [cl.id, cl.startFrame, clipEndFrame(cl)])).toEqual([
+      ['A', 0, 60],
+      ['B', 60, 120],
+      ['D', 120, 180]
+    ])
+    expect(c.undo()).toBe(true) // one step
+    expect(clipsOf(c.getTimeline(), v1).map((cl) => cl.startFrame)).toEqual([0, 150, 300])
+    expect(c.canUndo()).toBe(false)
+  })
+
+  it('pulls the first clip to frame 0 (leading gap)', () => {
+    const { c, v1 } = seeded()
+    c.addClip({ trackId: v1, mediaRef: 'a', startFrame: 90, durationFrames: 60, id: 'A' })
+    c.reset(c.getTimeline())
+    const r = c.closeGaps()
+    expect(r.ok).toBe(true)
+    expect(r.removedFrames).toBe(90)
+    expect(c.getClip('A')!.startFrame).toBe(0)
+  })
+
+  it('is sync-preserving: only closes columns empty across ALL tracks, keeping alignment', () => {
+    const { c, v1, a1 } = seeded()
+    // Video: [0,60), [150,210). Aligned audio: [0,60), [150,210). Gap [60,150) is empty on BOTH.
+    c.addClip({ trackId: v1, mediaRef: 'v1', startFrame: 0, durationFrames: 60, id: 'V1' })
+    c.addClip({ trackId: v1, mediaRef: 'v2', startFrame: 150, durationFrames: 60, id: 'V2' })
+    c.addClip({ trackId: a1, mediaRef: 'a1', mediaType: 'audio', startFrame: 0, durationFrames: 60, id: 'A1' })
+    c.addClip({ trackId: a1, mediaRef: 'a2', mediaType: 'audio', startFrame: 150, durationFrames: 60, id: 'A2' })
+    c.reset(c.getTimeline())
+    const r = c.closeGaps()
+    expect(r.ok).toBe(true)
+    expect(r.removedFrames).toBe(90) // the single shared gap, counted ONCE
+    // Both tracks shift identically → V2 and A2 stay aligned at 60.
+    expect(c.getClip('V2')!.startFrame).toBe(60)
+    expect(c.getClip('A2')!.startFrame).toBe(60)
+    expect(c.getClip('V1')!.startFrame).toBe(0)
+    expect(c.getClip('A1')!.startFrame).toBe(0)
+  })
+
+  it('does NOT close a video gap that another track covers (would desync)', () => {
+    const { c, v1, a1 } = seeded()
+    // Video gap [60,150); a music clip on the audio track plays THROUGH it → not empty across all tracks.
+    c.addClip({ trackId: v1, mediaRef: 'v1', startFrame: 0, durationFrames: 60, id: 'V1' })
+    c.addClip({ trackId: v1, mediaRef: 'v2', startFrame: 150, durationFrames: 60, id: 'V2' })
+    c.addClip({ trackId: a1, mediaRef: 'music', mediaType: 'audio', startFrame: 0, durationFrames: 210, id: 'MUS' })
+    c.reset(c.getTimeline())
+    const r = c.closeGaps()
+    expect(r.ok).toBe(false) // no column is empty across ALL tracks
+    expect(c.getClip('V2')!.startFrame).toBe(150) // untouched
+    expect(c.canUndo()).toBe(false)
+  })
+
+  it('reports no gaps when the timeline is already contiguous, without mutating', () => {
+    const { c, v1 } = seeded()
+    c.addClip({ trackId: v1, mediaRef: 'a', startFrame: 0, durationFrames: 60, id: 'A' })
+    c.addClip({ trackId: v1, mediaRef: 'b', startFrame: 60, durationFrames: 60, id: 'B' })
+    c.reset(c.getTimeline())
+    expect(c.closeGaps().ok).toBe(false)
+    expect(c.canUndo()).toBe(false)
+  })
+
+  it('reports nothing to compact on an empty timeline', () => {
+    const { c } = seeded()
+    expect(c.closeGaps().ok).toBe(false)
+  })
+})

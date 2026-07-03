@@ -1215,6 +1215,21 @@ export default function Timeline(): React.JSX.Element {
           Delete
         </button>
         <span className="tl-sep" />
+        <button
+          disabled={noTracks}
+          onClick={() => {
+            const r = c.closeGaps()
+            flashNotice(
+              r.ok
+                ? `Huecos cerrados · ${(r.removedFrames / timeline.fps).toFixed(1)} s recuperados`
+                : (r.reason ?? 'No hay huecos que cerrar')
+            )
+          }}
+          title="Cerrar huecos: junta todos los clips (quita los espacios vacíos) para un video continuo"
+        >
+          Cerrar huecos
+        </button>
+        <span className="tl-sep" />
         <button onClick={() => setPixelsPerFrame((z) => clamp(z * 0.8, 0.5, 40))} title="Zoom out">
           −
         </button>

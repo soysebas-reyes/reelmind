@@ -366,6 +366,12 @@ export const editorTools: ToolDef[] = [
     (c, input) => c.rippleDelete(input.clipIds)
   ),
   tool(
+    'close_gaps',
+    'Close ALL gaps and compact the timeline into a continuous video (CapCut "delete gaps"): removes every span that is empty across ALL tracks — including the leading gap before the first clip — and slides everything left together, so audio/video alignment is preserved. A gap covered by a clip on any track is left untouched. One undo step. Handy after cutting sections (e.g. after remove_silences or manual deletes leave blanks). Returns { ok, removedFrames, shiftedClips }.',
+    z.object({}).strict(),
+    (c) => c.closeGaps()
+  ),
+  tool(
     'set_clip_speed',
     'Change a clip’s playback speed (recomputes its duration and ripples the contiguous chain after it).',
     z.object({ clipId: z.string(), speed: z.number().positive() }),

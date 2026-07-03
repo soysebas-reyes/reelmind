@@ -1038,6 +1038,40 @@ export class EditorController {
     return { ok: true, removedFrames, shiftedClips }
   }
 
+  /** Close all gaps and compact the timeline into a continuous video (CapCut "delete gaps"):
+   *  removes every span that is EMPTY across ALL tracks — including the leading gap before the first
+   *  clip — and slides everything left by the same amount, so cross-track A/V alignment is preserved.
+   *  A gap covered by a clip on any track is left untouched. One undo step. Safe by construction:
+   *  each clip lands at exactly the occupied duration before it, so it can never go negative or
+   *  collide (the removed spans are empty on every track). */
+  closeGaps(): RippleOutcome {
+    const tl = this.timeline
+    const occupied: FrameRange[] = []
+    for (const t of tl.tracks) for (const c of t.clips) occupied.push({ start: c.startFrame, end: clipEndFrame(c) })
+    const spans = mergeRanges(occupied)
+    if (spans.length === 0) return { ok: false, reason: 'No hay clips que compactar', removedFrames: 0, shiftedClips: 0 }
+
+    // Gaps = the leading gap (pull to frame 0) + the empty spans between occupied spans.
+    const gaps: FrameRange[] = []
+    if (spans[0].start > 0) gaps.push({ start: 0, end: spans[0].start })
+    for (let i = 1; i < spans.length; i++) {
+      if (spans[i].start > spans[i - 1].end) gaps.push({ start: spans[i - 1].end, end: spans[i].start })
+    }
+    if (gaps.length === 0) return { ok: false, reason: 'No hay huecos que cerrar', removedFrames: 0, shiftedClips: 0 }
+
+    const removedFrames = gaps.reduce((acc, g) => acc + frameRangeLength(g), 0)
+    let shiftedClips = 0
+    this.run('Cerrar huecos', () =>
+      this.mutate((draft) => {
+        for (const t of draft.tracks) {
+          shiftedClips += applyShifts(draft, computeRippleShiftsForRanges(t.clips, gaps))
+        }
+        for (const t of draft.tracks) sortTrack(t)
+      })
+    )
+    return { ok: true, removedFrames, shiftedClips }
+  }
+
   /** CapCut-style segment delete: remove `[startFrame, endFrame)` from the given tracks (default:
    *  all) and close the gap. Clips straddling a boundary are split first; then every clip fully
    *  inside the range is ripple-deleted in ONE call. Sync-locked follower tracks are validated

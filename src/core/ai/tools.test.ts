@@ -538,3 +538,25 @@ describe('get_frame_preview declaration + extractToolImage', () => {
     expect(extractToolImage({ image: { mimeType: 'image/png' } })).toBeNull() // missing base64
   })
 })
+
+describe('close_gaps tool', () => {
+  it('compacts the timeline and reports frames recovered (agent-tagged)', () => {
+    const c = new EditorController()
+    const trackId = rec(executeTool(c, 'add_track', { type: 'video' }).result).trackId as string
+    executeTool(c, 'add_clip', { trackId, mediaRef: 'a', startFrame: 0, durationFrames: 60 })
+    executeTool(c, 'add_clip', { trackId, mediaRef: 'b', startFrame: 150, durationFrames: 60 })
+    const r = rec(executeTool(c, 'close_gaps', {}).result)
+    expect(r.ok).toBe(true)
+    expect(r.removedFrames).toBe(90)
+    const clips = c.getTimeline().tracks[0].clips
+    expect(clips.map((cl) => cl.startFrame)).toEqual([0, 60])
+    expect(c.snapshot().undoOrigin).toBe('agent')
+  })
+
+  it('reports ok:false when there are no gaps', () => {
+    const c = new EditorController()
+    const trackId = rec(executeTool(c, 'add_track', { type: 'video' }).result).trackId as string
+    executeTool(c, 'add_clip', { trackId, mediaRef: 'a', startFrame: 0, durationFrames: 60 })
+    expect(rec(executeTool(c, 'close_gaps', {}).result).ok).toBe(false)
+  })
+})
