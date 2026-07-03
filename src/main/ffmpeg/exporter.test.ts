@@ -87,6 +87,28 @@ describe.skipIf(!haveFfmpeg)('timeline export (integration, requires ffmpeg)', (
     expect(kinds).toContain('audio')
   }, 120_000)
 
+  it('renders a many-cut sequential timeline via the concat fast path (the multicam OOM case)', async () => {
+    const manifest = project()
+    // 8 full-frame segments carved from one source, back-to-back — the shape an angle-cut multicam
+    // timeline takes. This hits the concat fast path (scale-once + concat), NOT the overlay chain
+    // that OOMs at scale. Each segment 8 frames → 64 frames total.
+    const clips = Array.from({ length: 8 }, (_, i) =>
+      makeClip({ id: `S${i}`, mediaRef: 'vid', startFrame: i * 8, durationFrames: 8, trimStartFrame: (i * 8) % 50 })
+    )
+    const timeline = makeTimeline({ fps: 30, width: 320, height: 240, tracks: [makeTrack({ type: 'video', clips })] })
+
+    const outputPath = join(dir, 'seq.mp4')
+    const res = await exportTimeline({ timeline, manifest, projectDir: null, outputPath })
+    expect(res.ok, res.error).toBe(true)
+
+    const probe = (await runFfprobeJson([
+      '-v', 'quiet', '-print_format', 'json', '-show_format', outputPath
+    ])) as { format?: { duration?: string } }
+    const duration = Number(probe.format?.duration ?? 0)
+    expect(duration).toBeGreaterThan(1.9) // 64 frames @30fps ≈ 2.13s
+    expect(duration).toBeLessThan(2.5)
+  }, 120_000)
+
   it('refuses an empty timeline', async () => {
     const res = await exportTimeline({
       timeline: makeTimeline(),

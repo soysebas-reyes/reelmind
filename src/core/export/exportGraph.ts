@@ -138,14 +138,14 @@ export function buildExportGraph(
   })
   const audioEntries = audio.map(({ clip, path }) => ({ clip, inputIdx: streamedInput(path) }))
 
-  const chains: string[] = [`color=c=black:s=${W}x${H}:r=${fps}:d=${fmt(totalSec)}[base]`]
+  const chains: string[] = []
 
   // Shared colour grade per streamed input: when EVERY visible clip of one source carries the same
   // non-identity grade (the multicam case — one preset per angle, applied to all its segments), grade
   // the source ONCE before the split instead of once per segment. This collapses N lut3d/split+blend
   // instances (each loading the .cube; the Guillermo presets use lutIntensity 0.5 → split+blend) down
-  // to one per source — the biggest memory win on a heavily-cut multicam timeline. Only kicks in with
-  // ≥2 segments of the source so single-clip renders keep their exact (golden-tested) per-clip chain.
+  // to one per source — a big memory win on a heavily-cut multicam timeline. Only kicks in with ≥2
+  // segments of the source so single-clip renders keep their exact (golden-tested) per-clip chain.
   const sharedGrade = new Map<number, { color: ReturnType<typeof colorAt>; lutPath: string | null }>()
   {
     const byInput = new Map<number, Clip[]>()
@@ -165,96 +165,202 @@ export function buildExportGraph(
     }
   }
 
-  // Fan each shared VIDEO input out to one branch per clip using it; single-consumer inputs are used
-  // directly. When a source has a shared grade, grade it once here (before the split). Branches are
-  // handed out in clip order via shift().
-  const videoConsumers = new Map<number, number>()
-  for (const e of visualEntries) if (!e.looped) videoConsumers.set(e.inputIdx, (videoConsumers.get(e.inputIdx) ?? 0) + 1)
-  const videoBranches = new Map<number, string[]>()
-  for (const [inIdx, n] of videoConsumers) {
-    let base = `[${inIdx}:v]`
-    const sg = sharedGrade.get(inIdx)
-    if (sg) {
-      const gl = `[gsrc${inIdx}]`
-      chains.push(...buildColorFilterChain(sg.color, sg.lutPath, base, gl))
-      base = gl
-    }
-    if (n <= 1) {
-      videoBranches.set(inIdx, [base])
-    } else {
-      const labels = Array.from({ length: n }, (_, j) => `[sv${inIdx}_${j}]`)
-      chains.push(`${base}split=${n}${labels.join('')}`)
-      videoBranches.set(inIdx, labels)
-    }
-  }
+  // A clip that fills the whole frame with the default transform → can be scaled once at the source and
+  // stitched into a flat `concat` sequence instead of positioned with `overlay`.
+  const isFullFrame = (c: Clip): boolean =>
+    cropIsIdentity(c.crop) &&
+    c.transform.width === 1 &&
+    c.transform.height === 1 &&
+    c.transform.centerX === 0.5 &&
+    c.transform.centerY === 0.5 &&
+    c.transform.rotation === 0 &&
+    !c.transform.flipHorizontal &&
+    !c.transform.flipVertical
 
-  let prev = '[base]'
-  visualEntries.forEach((e, i) => {
-    const c = e.clip
-    const k = i // per-clip chain id
-    const startSec = c.startFrame / fps
-    const endSec = clipEndFrame(c) / fps
-    const rw = evenRound(c.transform.width * W)
-    const rh = evenRound(c.transform.height * H)
-    const rx = Math.round((c.transform.centerX - c.transform.width / 2) * W)
-    const ry = Math.round((c.transform.centerY - c.transform.height / 2) * H)
-    const sp = c.speed || 1
-    const src = e.looped ? `[${e.inputIdx}:v]` : (videoBranches.get(e.inputIdx)!.shift() as string)
+  // FAST PATH — a pure sequence: every visible clip is full-frame + fully opaque and no two overlap in
+  // time (the multicam result after angle-cuts + "Cerrar huecos"). A base+overlay chain here is fatal:
+  // each time-shifted overlay input stalls framesync so the graph buffers O(N²) frames and dies with
+  // "Cannot allocate memory" at frame 0 (reproduced at ~60 clips @1080p), and one scale per segment
+  // compounds it. Instead scale each SOURCE once, carve each segment with trim, and stitch with `concat`
+  // (+ black gaps) → linear memory even for hundreds of cuts. Fades become fade-to-black (nothing sits
+  // beneath a single sequence). Anything with overlap / PIP / partial opacity falls to the overlay path.
+  const sortedVisual = [...visualEntries].sort((a, b) => a.clip.startFrame - b.clip.startFrame)
+  const noOverlap = sortedVisual.every((e, i) => i === 0 || clipEndFrame(sortedVisual[i - 1].clip) <= e.clip.startFrame)
+  const pureSequence =
+    visualEntries.length >= 2 && // a single clip never OOMs; keep it on the (simpler) overlay path
+    noOverlap &&
+    visualEntries.every((e) => isFullFrame(e.clip) && e.clip.opacity === 1 && !trackIsActive(e.clip.opacityTrack))
 
-    // Head: carve source window (video) → geometry → timing. NO pixel-format conversion here: the colour
-    // grade (lut3d/curves/blend) runs next and, if handed an ALPHA channel, forces an UNACCELERATED
-    // `yuva420p→gbrap` swscale path that balloons memory and crashes the render ("Cannot allocate
-    // memory"). So alpha is introduced AFTER the grade, and ONLY for clips that actually need it
-    // (opacity/fades). setsar=1 keeps every overlay input uniform so the graph never reinitializes on a
-    // source with a different SAR.
-    const head: string[] = []
-    if (!e.looped) {
-      const srcStart = c.trimStartFrame / fps
-      const srcEnd = (c.trimStartFrame + sourceFramesConsumed(c)) / fps
-      head.push(`trim=start=${fmt(srcStart)}:end=${fmt(srcEnd)}`)
-    }
-    if (!cropIsIdentity(c.crop)) {
-      head.push(
-        `crop=iw*${fmt(1 - c.crop.left - c.crop.right)}:ih*${fmt(1 - c.crop.top - c.crop.bottom)}:iw*${fmt(c.crop.left)}:ih*${fmt(c.crop.top)}`
-      )
-    }
-    head.push(`scale=${rw}:${rh}`, 'setsar=1')
-    head.push(`setpts=(PTS-STARTPTS)/${fmt(sp)}+${fmt(startSec)}/TB`)
-
-    // Tail: add the alpha channel (post-grade) only when the clip needs it; otherwise normalize to a
-    // plain yuv420p so overlay inputs stay uniform and no needless alpha buffers are allocated.
-    const needsAlpha = c.opacity < 1 || c.fadeInFrames > 0 || c.fadeOutFrames > 0
-    const tail: string[] = []
-    if (needsAlpha) {
-      tail.push('format=yuva420p')
-      if (c.opacity < 1) tail.push(`colorchannelmixer=aa=${fmt(c.opacity)}`)
-      if (c.fadeInFrames > 0) tail.push(`fade=t=in:st=${fmt(startSec)}:d=${fmt(c.fadeInFrames / fps)}:alpha=1`)
-      if (c.fadeOutFrames > 0) {
-        tail.push(`fade=t=out:st=${fmt(endSec - c.fadeOutFrames / fps)}:d=${fmt(c.fadeOutFrames / fps)}:alpha=1`)
+  if (pureSequence) {
+    // Scale (+ shared-grade) each streamed source ONCE, then fan out one trim branch per segment.
+    const consumers = new Map<number, number>()
+    for (const e of visualEntries) if (!e.looped) consumers.set(e.inputIdx, (consumers.get(e.inputIdx) ?? 0) + 1)
+    const branches = new Map<number, string[]>()
+    const preGradedInputs = new Set<number>()
+    for (const [inIdx, n] of consumers) {
+      let base = `[psc${inIdx}]`
+      chains.push(`[${inIdx}:v]scale=${W}:${H},setsar=1${base}`)
+      const sg = sharedGrade.get(inIdx)
+      if (sg) {
+        const gl = `[pg${inIdx}]`
+        chains.push(...buildColorFilterChain(sg.color, sg.lutPath, base, gl))
+        const gf = `[pgf${inIdx}]`
+        chains.push(`${gl}format=yuv420p${gf}`) // back to plain yuv after the grade (no alpha in a flat sequence)
+        base = gf
+        preGradedInputs.add(inIdx)
       }
-    } else {
-      tail.push('format=yuv420p')
+      if (n <= 1) {
+        branches.set(inIdx, [base])
+      } else {
+        const labels = Array.from({ length: n }, (_, j) => `[sv${inIdx}_${j}]`)
+        chains.push(`${base}split=${n}${labels.join('')}`)
+        branches.set(inIdx, labels)
+      }
     }
 
-    // Color grade (Phase 9.5) sits between head and tail. Identity → emit nothing (byte-identical to an
-    // un-graded render). The LUT path comes from resolveLut; a missing LUT is skipped by the chain builder.
-    // If this source was graded once before the split (sharedGrade), the branch is already graded → skip.
-    const color = colorAt(c, c.startFrame)
-    const preGraded = !e.looped && sharedGrade.has(e.inputIdx)
-    if (preGraded || colorIsIdentity(color)) {
-      chains.push(`${src}${[...head, ...tail].join(',')}[v${k}]`)
-    } else {
-      const lutPath = color.lutRef && resolveLut ? resolveLut(color.lutRef) : null
-      const gin = `[gin${k}]`
-      const gout = `[gout${k}]`
-      chains.push(`${src}${head.join(',')}${gin}`)
-      chains.push(...buildColorFilterChain(color, lutPath, gin, gout))
-      chains.push(`${gout}${tail.join(',')}[v${k}]`)
+    const pieces: string[] = []
+    let cursor = 0
+    let gapId = 0
+    let k = 0
+    for (const e of sortedVisual) {
+      const c = e.clip
+      if (c.startFrame > cursor) {
+        const gl = `[gap${gapId++}]`
+        chains.push(`color=c=black:s=${W}x${H}:r=${fps}:d=${fmt((c.startFrame - cursor) / fps)},setsar=1,format=yuv420p${gl}`)
+        pieces.push(gl)
+      }
+      const sp = c.speed || 1
+      const segDur = c.durationFrames / fps
+      const src = e.looped ? `[${e.inputIdx}:v]` : (branches.get(e.inputIdx)!.shift() as string)
+
+      // Head resets the segment to PTS 0 (concat sequences segments back-to-back). Sources are already
+      // scaled at the branch; looped images/lottie carry their own -loop/-t input, so scale them here.
+      const head: string[] = []
+      if (!e.looped) {
+        const srcStart = c.trimStartFrame / fps
+        const srcEnd = (c.trimStartFrame + sourceFramesConsumed(c)) / fps
+        head.push(`trim=start=${fmt(srcStart)}:end=${fmt(srcEnd)}`)
+      } else {
+        head.push(`scale=${W}:${H}`, 'setsar=1')
+      }
+      head.push(`setpts=(PTS-STARTPTS)/${fmt(sp)}`)
+
+      // Fades collapse to fade-to-black (no layer beneath a single sequence). Timing is segment-relative.
+      const tail: string[] = []
+      if (c.fadeInFrames > 0) tail.push(`fade=t=in:st=0:d=${fmt(c.fadeInFrames / fps)}`)
+      if (c.fadeOutFrames > 0) tail.push(`fade=t=out:st=${fmt(segDur - c.fadeOutFrames / fps)}:d=${fmt(c.fadeOutFrames / fps)}`)
+      tail.push('format=yuv420p')
+
+      const color = colorAt(c, c.startFrame)
+      const preGraded = !e.looped && preGradedInputs.has(e.inputIdx)
+      const seg = `[seg${k}]`
+      if (preGraded || colorIsIdentity(color)) {
+        chains.push(`${src}${[...head, ...tail].join(',')}${seg}`)
+      } else {
+        const lutPath = color.lutRef && resolveLut ? resolveLut(color.lutRef) : null
+        const gin = `[cin${k}]`
+        const gout = `[cout${k}]`
+        chains.push(`${src}${head.join(',')}${gin}`)
+        chains.push(...buildColorFilterChain(color, lutPath, gin, gout))
+        chains.push(`${gout}${tail.join(',')}${seg}`)
+      }
+      pieces.push(seg)
+      cursor = c.startFrame + c.durationFrames
+      k++
     }
-    chains.push(`${prev}[v${k}]overlay=x=${rx}:y=${ry}:enable='between(t,${fmt(startSec)},${fmt(endSec)})':eof_action=pass[ov${k}]`)
-    prev = `[ov${k}]`
-  })
-  chains.push(`${prev}null[vout]`)
+    if (cursor < tf) {
+      const gl = `[gap${gapId++}]`
+      chains.push(`color=c=black:s=${W}x${H}:r=${fps}:d=${fmt((tf - cursor) / fps)},setsar=1,format=yuv420p${gl}`)
+      pieces.push(gl)
+    }
+    chains.push(`${pieces.join('')}concat=n=${pieces.length}:v=1:a=0[vout]`)
+  } else {
+    // OVERLAY PATH — general compositing for overlaps / PIP / partial opacity. Base black + one overlay
+    // per clip, each positioned and time-windowed. (Bounded clip counts; the fast path above handles the
+    // large sequential-multicam case that would otherwise OOM here.)
+    chains.push(`color=c=black:s=${W}x${H}:r=${fps}:d=${fmt(totalSec)}[base]`)
+
+    const videoConsumers = new Map<number, number>()
+    for (const e of visualEntries) if (!e.looped) videoConsumers.set(e.inputIdx, (videoConsumers.get(e.inputIdx) ?? 0) + 1)
+    const videoBranches = new Map<number, string[]>()
+    for (const [inIdx, n] of videoConsumers) {
+      let base = `[${inIdx}:v]`
+      const sg = sharedGrade.get(inIdx)
+      if (sg) {
+        const gl = `[gsrc${inIdx}]`
+        chains.push(...buildColorFilterChain(sg.color, sg.lutPath, base, gl))
+        base = gl
+      }
+      if (n <= 1) {
+        videoBranches.set(inIdx, [base])
+      } else {
+        const labels = Array.from({ length: n }, (_, j) => `[sv${inIdx}_${j}]`)
+        chains.push(`${base}split=${n}${labels.join('')}`)
+        videoBranches.set(inIdx, labels)
+      }
+    }
+
+    let prev = '[base]'
+    visualEntries.forEach((e, i) => {
+      const c = e.clip
+      const k = i // per-clip chain id
+      const startSec = c.startFrame / fps
+      const endSec = clipEndFrame(c) / fps
+      const rw = evenRound(c.transform.width * W)
+      const rh = evenRound(c.transform.height * H)
+      const rx = Math.round((c.transform.centerX - c.transform.width / 2) * W)
+      const ry = Math.round((c.transform.centerY - c.transform.height / 2) * H)
+      const sp = c.speed || 1
+      const src = e.looped ? `[${e.inputIdx}:v]` : (videoBranches.get(e.inputIdx)!.shift() as string)
+
+      // Head: carve source window (video) → geometry → timing. NO pixel-format conversion here: the colour
+      // grade (lut3d/curves/blend) runs next and, if handed an ALPHA channel, forces an UNACCELERATED
+      // `yuva420p→gbrap` swscale path that balloons memory. So alpha is introduced AFTER the grade, and
+      // ONLY for clips that need it (opacity/fades). setsar=1 keeps overlay inputs uniform.
+      const head: string[] = []
+      if (!e.looped) {
+        const srcStart = c.trimStartFrame / fps
+        const srcEnd = (c.trimStartFrame + sourceFramesConsumed(c)) / fps
+        head.push(`trim=start=${fmt(srcStart)}:end=${fmt(srcEnd)}`)
+      }
+      if (!cropIsIdentity(c.crop)) {
+        head.push(
+          `crop=iw*${fmt(1 - c.crop.left - c.crop.right)}:ih*${fmt(1 - c.crop.top - c.crop.bottom)}:iw*${fmt(c.crop.left)}:ih*${fmt(c.crop.top)}`
+        )
+      }
+      head.push(`scale=${rw}:${rh}`, 'setsar=1')
+      head.push(`setpts=(PTS-STARTPTS)/${fmt(sp)}+${fmt(startSec)}/TB`)
+
+      const needsAlpha = c.opacity < 1 || c.fadeInFrames > 0 || c.fadeOutFrames > 0
+      const tail: string[] = []
+      if (needsAlpha) {
+        tail.push('format=yuva420p')
+        if (c.opacity < 1) tail.push(`colorchannelmixer=aa=${fmt(c.opacity)}`)
+        if (c.fadeInFrames > 0) tail.push(`fade=t=in:st=${fmt(startSec)}:d=${fmt(c.fadeInFrames / fps)}:alpha=1`)
+        if (c.fadeOutFrames > 0) {
+          tail.push(`fade=t=out:st=${fmt(endSec - c.fadeOutFrames / fps)}:d=${fmt(c.fadeOutFrames / fps)}:alpha=1`)
+        }
+      } else {
+        tail.push('format=yuv420p')
+      }
+
+      const color = colorAt(c, c.startFrame)
+      const preGraded = !e.looped && sharedGrade.has(e.inputIdx)
+      if (preGraded || colorIsIdentity(color)) {
+        chains.push(`${src}${[...head, ...tail].join(',')}[v${k}]`)
+      } else {
+        const lutPath = color.lutRef && resolveLut ? resolveLut(color.lutRef) : null
+        const gin = `[gin${k}]`
+        const gout = `[gout${k}]`
+        chains.push(`${src}${head.join(',')}${gin}`)
+        chains.push(...buildColorFilterChain(color, lutPath, gin, gout))
+        chains.push(`${gout}${tail.join(',')}[v${k}]`)
+      }
+      chains.push(`${prev}[v${k}]overlay=x=${rx}:y=${ry}:enable='between(t,${fmt(startSec)},${fmt(endSec)})':eof_action=pass[ov${k}]`)
+      prev = `[ov${k}]`
+    })
+    chains.push(`${prev}null[vout]`)
+  }
 
   // Audio: dedup sources too; carve each clip with atrim from a shared (asplit) stream.
   const audioConsumers = new Map<number, number>()

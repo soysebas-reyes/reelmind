@@ -51,15 +51,19 @@ describe('buildExportGraph', () => {
     expect(g.filterComplex).toContain('setpts=(PTS-STARTPTS)/2+0/TB')
   })
 
-  it('deduplicates inputs: many clips from the same source share ONE -i (split fan-out)', () => {
-    // Two segments of the same source (as multicam cuts produce) → a single input + a split=2.
+  it('deduplicates inputs: many clips from the same source share ONE -i (scale-once + split fan-out)', () => {
+    // Two full-frame segments of the same source (as multicam cuts produce) → a single input, scaled
+    // ONCE, then split=2 and concatenated (the memory-safe fast path). One `-i`.
     const a1 = makeClip({ id: 'A1', mediaRef: 'cam', startFrame: 0, durationFrames: 30, trimStartFrame: 0 })
     const a2 = makeClip({ id: 'A2', mediaRef: 'cam', startFrame: 30, durationFrames: 30, trimStartFrame: 30 })
-    const tl = makeTimeline({ fps: 30, tracks: [videoTrack('v', [a1, a2])] })
+    const tl = makeTimeline({ fps: 30, width: 1920, height: 1080, tracks: [videoTrack('v', [a1, a2])] })
     const g = buildExportGraph(tl, resolve, 'out.mp4')!
     expect(g.inputCount).toBe(1)
     expect((g.args.join(' ').match(/-i /g) ?? []).length).toBe(1)
-    expect(g.filterComplex).toContain('[0:v]split=2')
+    expect(g.filterComplex).toContain('[0:v]scale=1920:1080,setsar=1[psc0]') // scaled once at the source
+    expect(g.filterComplex).toContain('[psc0]split=2[sv0_0][sv0_1]') // then fanned to the 2 segments
+    expect(g.filterComplex).toContain('concat=n=2:v=1:a=0[vout]') // stitched, not overlaid
+    expect(g.filterComplex).not.toContain('overlay') // no overlay chain → no O(N²) framesync OOM
   })
 
   it('loops images for their on-timeline duration', () => {
@@ -220,8 +224,8 @@ describe('buildExportGraph — color grading (P9.5)', () => {
     expect(fc).toContain('[gout0]format=yuva420p,fade=t=in:st=0:d=0.5:alpha=1[v0]')
   })
 
-  it('grades a source ONCE before the split when all its segments share the same grade', () => {
-    // Two segments of the SAME source (one file), same non-identity grade — the multicam pattern.
+  it('grades a source ONCE (scaled once) then concats the segments when they share one grade', () => {
+    // Two full-frame segments of the SAME source, same non-identity grade — the multicam pattern.
     const s1 = makeClip({ id: 'S1', mediaRef: 'a', startFrame: 0, durationFrames: 60 })
     const s2 = makeClip({ id: 'S2', mediaRef: 'a', startFrame: 60, durationFrames: 60 })
     const grade = makeColorAdjustments({ lutRef: 'preset:x', lutIntensity: 0.5, saturation: 0.88 })
@@ -229,25 +233,28 @@ describe('buildExportGraph — color grading (P9.5)', () => {
     s2.color = { ...grade }
     const tl = makeTimeline({ fps: 30, width: 1920, height: 1080, tracks: [videoTrack('v', [s1, s2])] })
     const fc = buildExportGraph(tl, resolve, 'out.mp4', {}, lutResolver)!.filterComplex
-    // One shared grade on the source, THEN the split — not one grade per segment.
-    expect(fc).toContain('[0:v]split[gsrc0_a][gsrc0_b]') // partial-LUT split runs on the source
-    expect(fc).toContain("[gsrc0_b]lut3d=file='C\\:/luts/look.cube':interp=tetrahedral[gsrc0_l]")
-    expect(fc).toContain('[gsrc0]split=2[sv0_0][sv0_1]') // graded source fanned to the 2 segments
-    expect(fc).not.toContain('[gin0]') // no per-segment grade
-    // Exactly one lut3d instance for the whole source.
-    expect(fc.match(/lut3d=/g)?.length).toBe(1)
+    // Source scaled once, graded once (partial-LUT split+blend on the source), then fanned + concatenated.
+    expect(fc).toContain('[0:v]scale=1920:1080,setsar=1[psc0]')
+    expect(fc).toContain('[psc0]split[pg0_a][pg0_b]')
+    expect(fc).toContain("[pg0_b]lut3d=file='C\\:/luts/look.cube':interp=tetrahedral[pg0_l]")
+    expect(fc).toContain('[pgf0]split=2[sv0_0][sv0_1]') // graded+scaled source fanned to the 2 segments
+    expect(fc).toContain('concat=n=2:v=1:a=0[vout]')
+    expect(fc).not.toContain('[cin0]') // no per-segment grade
+    expect(fc.match(/lut3d=/g)?.length).toBe(1) // exactly one lut3d for the whole source
   })
 
-  it('falls back to per-segment grading when segments of a source differ in colour', () => {
+  it('falls back to per-segment grading when segments of a source differ in colour (still concat)', () => {
     const s1 = makeClip({ id: 'S1', mediaRef: 'a', startFrame: 0, durationFrames: 60 })
     const s2 = makeClip({ id: 'S2', mediaRef: 'a', startFrame: 60, durationFrames: 60 })
     s1.color = makeColorAdjustments({ saturation: 0.8 })
     s2.color = makeColorAdjustments({ saturation: 1.2 })
     const tl = makeTimeline({ fps: 30, width: 1920, height: 1080, tracks: [videoTrack('v', [s1, s2])] })
     const fc = buildExportGraph(tl, resolve, 'out.mp4')!.filterComplex
-    expect(fc).not.toContain('[gsrc0]')
-    expect(fc).toContain('[gin0]')
-    expect(fc).toContain('[gin1]')
+    expect(fc).toContain('[0:v]scale=1920:1080,setsar=1[psc0]') // still scaled once
+    expect(fc).not.toContain('[pgf0]') // no shared grade
+    expect(fc).toContain('[cin0]') // per-segment grade instead
+    expect(fc).toContain('[cin1]')
+    expect(fc).toContain('concat=n=2:v=1:a=0[vout]')
   })
 
   it('skips fully-invisible (opacity 0) clips so hidden multicam angles do not bloat the graph', () => {
