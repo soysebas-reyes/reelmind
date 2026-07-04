@@ -8,8 +8,11 @@ import type {
   MediaManifest,
   MediaManifestEntry,
   SilenceSeconds,
+  TakesPlanResult,
   Timeline
 } from '../core'
+
+export type { TakesPlanResult }
 
 export type { SilenceSeconds }
 
@@ -82,6 +85,9 @@ export interface AiCompleteRequest {
   tools: unknown[]
   model?: string
   maxTokens?: number
+  /** Anthropic `tool_choice` (e.g. `{ type: 'tool', name: 'emitir_plan' }`) to force a structured
+   *  single-tool response. Omitted by the chat agent, so its behavior is unchanged. */
+  toolChoice?: unknown
 }
 
 export interface AiCompleteResponse {
@@ -213,6 +219,26 @@ export interface TranscribeResult {
   ok: boolean
   text?: string
   words?: TranscriptWord[]
+  error?: string
+}
+
+/** Request for `ai:analyzeTakes` — segment a raw clip's transcript into takes + cuts via the LLM.
+ *  We pass the already-fetched `words` (not a path) so main never re-transcribes. */
+export interface AnalyzeTakesRequest {
+  words: TranscriptWord[]
+  /** ISO 639-1 language of the content (e.g. "es"). Informational; the analysis is language-agnostic. */
+  languageCode?: string
+  /** Optional: the actual scripts (guiones) the user recorded, pasted as text (one per block). When
+   *  provided, the LLM aligns each script to its span in the transcript instead of inferring boundaries. */
+  scripts?: string
+  /** Cut fillers/repeats/silences inside each take. Default false → bring each guión's WHOLE fragment
+   *  uncut (repeats and all). The intelligent-cut path is opt-in until it's improved. */
+  cleanCuts?: boolean
+}
+
+export interface AnalyzeTakesResult {
+  ok: boolean
+  plan?: TakesPlanResult
   error?: string
 }
 

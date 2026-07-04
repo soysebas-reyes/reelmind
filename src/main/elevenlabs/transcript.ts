@@ -26,6 +26,38 @@ export interface TranscribeOptions {
   onLine?: (line: string) => void
 }
 
+/** Raw word object as Scribe v1 returns it: `start`/`end` in SECONDS. Older builds of this file read
+ *  `start_time`/`end_time` (fields the API never had), which turned every timestamp into NaN. */
+export interface ScribeWord {
+  text: string
+  start?: number
+  end?: number
+  start_time?: number
+  end_time?: number
+  type?: string
+  speaker_id?: string
+}
+
+/** Map Scribe words to app TranscriptWords (seconds → ms). Throws if the response carries no usable
+ *  per-word timestamps — NaN times poison everything downstream (SRT, cortes, plan de tomas). */
+export function parseScribeWords(words: ScribeWord[] | undefined): TranscriptWord[] {
+  const secs = (a: number | undefined, b: number | undefined): number =>
+    typeof a === 'number' ? a : typeof b === 'number' ? b : NaN
+  const mapped = (words ?? []).map((w) => ({
+    text: w.text,
+    startMs: Math.round(secs(w.start, w.start_time) * 1000),
+    endMs: Math.round(secs(w.end, w.end_time) * 1000),
+    type: (w.type ?? 'word') as TranscriptWord['type'],
+    speakerId: w.speaker_id ?? null
+  }))
+  const timed = (w: TranscriptWord): boolean => Number.isFinite(w.startMs) && Number.isFinite(w.endMs)
+  if (mapped.some((w) => w.type === 'word' && !timed(w))) {
+    throw new Error('ElevenLabs no devolvió timestamps por palabra (campos start/end ausentes).')
+  }
+  // Non-word tokens (spacing/audio_event) without usable times are auxiliary — drop, don't poison.
+  return mapped.filter(timed)
+}
+
 /** Extract audio at 16 kHz mono mp3 to `outDir`, return the temp file path. */
 async function extractAudio16k(
   videoPath: string,
@@ -86,20 +118,8 @@ export async function transcribeMedia(
       const body = await res.text().catch(() => '')
       throw new Error(`ElevenLabs ${res.status}: ${body}`)
     }
-    const data = (await res.json()) as {
-      text: string
-      words: { text: string; start_time: number; end_time: number; type: string; speaker_id?: string }[]
-    }
-    return {
-      text: data.text,
-      words: (data.words ?? []).map((w) => ({
-        text: w.text,
-        startMs: Math.round(w.start_time * 1000),
-        endMs: Math.round(w.end_time * 1000),
-        type: (w.type ?? 'word') as TranscriptWord['type'],
-        speakerId: w.speaker_id ?? null
-      }))
-    }
+    const data = (await res.json()) as { text: string; words: ScribeWord[] }
+    return { text: data.text, words: parseScribeWords(data.words) }
   } finally {
     await rm(audioPath, { force: true })
   }

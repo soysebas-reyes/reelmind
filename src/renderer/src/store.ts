@@ -20,7 +20,10 @@ import {
   type ToolCallResult,
   type Track,
   type TrackRole,
+  type PlannedCut,
+  type PlannedTake,
   alignByTranscript,
+  buildTakeTimeline,
   clipEndFrame,
   clipSourceSecondsAt,
   cutRangeToAnglesByTrack,
@@ -31,17 +34,79 @@ import {
   presetById,
   resolvePasteTargets,
   serializeSelection,
+  splitScriptBlocks,
   totalFrames
 } from '@core'
 import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
 import { PROJECT_SCHEMA_VERSION, type ExportQuality, type FfmpegStatus, type ImportedAsset, type TranscriptWord } from '../../shared/ipc'
 
-const controller = new EditorController()
+// ── Sessions (tabs) ───────────────────────────────────────────────────────────────────────────
+// Each open project is a Session with its own EditorController. The reactive store below ALWAYS
+// mirrors the ACTIVE session; switching tabs saves the outgoing session's per-project fields and
+// loads the incoming one's. React components read the store unchanged (they see the active session).
+interface Session {
+  id: string
+  /** Short tab label (e.g. the take title). */
+  name: string
+  controller: EditorController
+  projectDir: string | null
+  projectName: string
+  createdAt: string
+  manifest: MediaManifest
+  thumbnails: Record<string, string | null>
+  transcript: TranscriptWord[] | null
+  exportQuality: ExportQuality
+  dirty: boolean
+}
 
-/** The shared editing brain. UI components call commands on this directly. */
+function makeSession(init: {
+  name?: string
+  timeline?: Timeline
+  projectDir?: string | null
+  projectName?: string
+  createdAt?: string
+  manifest?: MediaManifest
+  exportQuality?: ExportQuality
+} = {}): Session {
+  return {
+    id: newId(),
+    name: init.name ?? 'Proyecto 1',
+    controller: new EditorController(init.timeline),
+    projectDir: init.projectDir ?? null,
+    projectName: init.projectName ?? init.name ?? 'Untitled Project',
+    createdAt: init.createdAt ?? new Date().toISOString(),
+    manifest: init.manifest ?? makeManifest(),
+    thumbnails: {},
+    transcript: null,
+    exportQuality: init.exportQuality ?? 'veryHigh',
+    dirty: false
+  }
+}
+
+let sessions: Session[] = [makeSession()]
+let activeId = sessions[0].id
+
+function activeSession(): Session {
+  return sessions.find((s) => s.id === activeId) ?? sessions[0]
+}
+
+/** The ACTIVE session's editing brain. UI components call commands on this directly. */
 export function getController(): EditorController {
-  return controller
+  return activeSession().controller
+}
+
+/** Create a new session (tab) from a ready timeline + manifest and register its tab. Returns its id.
+ *  Does NOT switch to it — call `loadSessionIntoStore` after. `projectDir` MUST be inherited from the
+ *  parent so project-relative media (proxies, enhanced audio) and export-per-tab resolve correctly. */
+function openSession(name: string, timeline: Timeline, manifest: MediaManifest, projectDir: string | null): string {
+  const sess = makeSession({ name, projectName: name, timeline, manifest: structuredClone(manifest), projectDir })
+  subscribeSession(sess)
+  sessions.push(sess)
+  useEditorStore.setState((s) => {
+    s.tabs.push({ id: sess.id, name: sess.name, dirty: false })
+  })
+  return sess.id
 }
 
 /** Session clipboard for clip copy/paste. Module-scoped (not undoable, not persisted);
@@ -84,15 +149,15 @@ function projectNameFromPath(p: string): string {
  *  source so the export isn't silently downscaled to the 1080p/30 default — addressing "the export
  *  weighs much less than the raw". A manual resolution/fps change marks settings configured and wins. */
 function maybeAdoptProjectSettings(imported: ImportedAsset[]): void {
-  if (controller.getTimeline().settingsConfigured) return
+  if (getController().getTimeline().settingsConfigured) return
   const v = imported.find(
     (a) => a.entry.type === 'video' && (a.entry.sourceWidth ?? 0) > 0 && (a.entry.sourceHeight ?? 0) > 0
   )
   if (!v) return
-  const srcFps = v.entry.sourceFPS && v.entry.sourceFPS > 0 ? Math.round(v.entry.sourceFPS) : controller.getTimeline().fps
+  const srcFps = v.entry.sourceFPS && v.entry.sourceFPS > 0 ? Math.round(v.entry.sourceFPS) : getController().getTimeline().fps
   // x264 + yuv420p require even dimensions; round down so an odd-sized source can't break the export.
   const even = (n: number): number => (n % 2 === 0 ? n : n - 1)
-  controller.setProjectSettings(even(v.entry.sourceWidth as number), even(v.entry.sourceHeight as number), srcFps)
+  getController().setProjectSettings(even(v.entry.sourceWidth as number), even(v.entry.sourceHeight as number), srcFps)
 }
 
 /** Full-length clip duration (frames) for a freshly dropped asset at the project fps. */
@@ -480,6 +545,27 @@ export interface AnglePlan {
   destructive: boolean
 }
 
+/** A reviewable "take detection" plan: the raw clip's transcript segmented into takes (guiones) plus
+ *  the spans to cut, awaiting user confirmation before each accepted take is built + exported. Mirrors
+ *  the `anglePlan` preview-then-apply pattern. Times are absolute SOURCE ms (from the transcript). */
+export interface TakesPlanState {
+  takes: PlannedTake[]
+  cuts: PlannedCut[]
+  durationMs: number
+  /** The raw clip on the live timeline these takes are carved from. */
+  rawClipId: string
+  rawMediaRef: string
+  /** Project fps at analysis time (ms→frame conversion). */
+  fps: number
+  /** UI: per-take accept flag, index-aligned with `takes`. */
+  takeAccepted: boolean[]
+  /** UI: per-cut accept flag, index-aligned with `cuts`. Aggressive default: all on. */
+  cutAccepted: boolean[]
+  /** The pasted guiones split into blocks (script-driven mode) — for the verification UI to show the
+   *  expected text per take, paired via `PlannedTake.scriptIndex`. Empty in inference mode. */
+  scriptBlocks: string[]
+}
+
 export interface EditorState {
   // Mirrored from the controller (read-only for components).
   timeline: Timeline
@@ -519,6 +605,10 @@ export interface EditorState {
   progress: OpProgress | null
   /** Proposed angle-cut plan awaiting user confirmation, or null — drives the preview modal + timeline marks. */
   anglePlan: AnglePlan | null
+  /** True while the LLM take-detection analysis runs. */
+  analyzingTakes: boolean
+  /** Detected take/cut plan awaiting confirmation, or null — drives the take review modal. */
+  takesPlan: TakesPlanState | null
   /** True while the Preview transport is playing. Lifted here so the Timeline can follow the playhead. */
   isPlaying: boolean
   /** True when the session clipboard holds clips (enables "Pegar" in menus/shortcuts). */
@@ -529,9 +619,20 @@ export interface EditorState {
   audioInspectorOpen: boolean
   /** Active tab of the right column: the AI chat or the clip properties inspector. */
   rightTab: 'chat' | 'props'
+  /** Open project tabs (sessions). The mirrored fields above reflect the ACTIVE tab. */
+  tabs: { id: string; name: string; dirty: boolean }[]
+  activeTabId: string
+  /** True while the take-detection input modal (pegar guiones) is open. */
+  takesInputOpen: boolean
 
   init: () => Promise<void>
   newProject: () => void
+  /** Switch the active project tab. */
+  switchSession: (id: string) => void
+  /** Close a project tab (recreates a blank one if it was the last). */
+  closeSession: (id: string) => void
+  /** Open/close the "pegar guiones" input modal (take detection). */
+  setTakesInputOpen: (open: boolean) => void
   importFiles: () => Promise<void>
   importFromSources: (sources: string[]) => Promise<ImportedAsset[]>
   saveProject: () => Promise<void>
@@ -577,6 +678,18 @@ export interface EditorState {
   setAnglePlanDestructive: (destructive: boolean) => void
   /** Descarta el plan de cortes previsualizado sin aplicar. */
   dismissAnglePlan: () => void
+  /** Analiza el transcript de un clip crudo (transcribe si hace falta) y abre el plan de tomas (no aplica).
+   *  `cleanCuts` (default false) activa el corte de muletillas/repeticiones/silencios; apagado trae el
+   *  fragmento completo de cada guión sin cortes. */
+  analyzeTakes: (clipOrAssetId?: string, scripts?: string, cleanCuts?: boolean) => Promise<ToolCallResult>
+  /** Construye la Timeline limpia de cada toma aceptada y exporta un MP4 por toma. */
+  applyTakesPlan: () => Promise<void>
+  /** Marca/desmarca una toma (por su posición en `takes`). */
+  setTakeAccepted: (takeArrayIndex: number, accepted: boolean) => void
+  /** Marca/desmarca un corte (por su posición en `cuts`). */
+  setCutAccepted: (cutArrayIndex: number, accepted: boolean) => void
+  /** Descarta el plan de tomas sin exportar. */
+  dismissTakesPlan: () => void
   /** Set by the Preview transport when play/pause toggles (so the Timeline can auto-follow the playhead). */
   setPlaying: (playing: boolean) => void
   /** Toggle playback from anywhere (Space, preview click, transport button). Restarts from 0 when the
@@ -605,7 +718,7 @@ export interface EditorState {
 
 export const useEditorStore = create<EditorState>()(
   immer((set, get) => ({
-    timeline: controller.getTimeline(),
+    timeline: getController().getTimeline(),
     currentFrame: 0,
     selectedClipIds: [],
     canUndo: false,
@@ -631,11 +744,16 @@ export const useEditorStore = create<EditorState>()(
     transcript: null,
     progress: null,
     anglePlan: null,
+    analyzingTakes: false,
+    takesPlan: null,
     isPlaying: false,
     hasClipboard: false,
     colorInspectorOpen: false,
     audioInspectorOpen: false,
     rightTab: 'chat' as const,
+    tabs: [{ id: sessions[0].id, name: sessions[0].name, dirty: false }],
+    activeTabId: sessions[0].id,
+    takesInputOpen: false,
 
     init: async () => {
       window.editorBridge.onExportProgress((fraction) =>
@@ -656,7 +774,7 @@ export const useEditorStore = create<EditorState>()(
     },
 
     newProject: () => {
-      controller.reset(makeTimeline())
+      getController().reset(makeTimeline())
       set((s) => {
         s.projectDir = null
         s.projectName = 'Untitled Project'
@@ -727,7 +845,7 @@ export const useEditorStore = create<EditorState>()(
       const { projectName, createdAt, manifest } = get()
       const res = await window.editorBridge.saveProject(dir, {
         meta: { schemaVersion: PROJECT_SCHEMA_VERSION, name: projectName, createdAt, modifiedAt: new Date().toISOString() },
-        timeline: controller.getTimeline(),
+        timeline: getController().getTimeline(),
         manifest
       })
       set((s) => {
@@ -746,7 +864,7 @@ export const useEditorStore = create<EditorState>()(
       })
       try {
         const data = await window.editorBridge.loadProject(dir)
-        controller.load(data.timeline)
+        getController().load(data.timeline)
         set((s) => {
           s.projectDir = dir
           s.projectName = data.meta.name || projectNameFromPath(dir)
@@ -789,7 +907,7 @@ export const useEditorStore = create<EditorState>()(
         s.exportResult = null
       })
       const res = await window.editorBridge.exportTimeline({
-        timeline: controller.getTimeline(),
+        timeline: getController().getTimeline(),
         manifest: get().manifest,
         projectDir: get().projectDir,
         outputPath: out,
@@ -812,7 +930,7 @@ export const useEditorStore = create<EditorState>()(
         s.exportProgress = 0
       })
       const res = await window.editorBridge.exportTimeline({
-        timeline: controller.getTimeline(),
+        timeline: getController().getTimeline(),
         manifest: get().manifest,
         projectDir: get().projectDir,
         outputPath,
@@ -828,8 +946,8 @@ export const useEditorStore = create<EditorState>()(
         : { ok: false, error: res.error ?? 'Export failed' }
     },
 
-    setResolution: (width, height) => controller.setResolution(width, height),
-    setFps: (fps) => controller.setFps(fps),
+    setResolution: (width, height) => getController().setResolution(width, height),
+    setFps: (fps) => getController().setFps(fps),
     setExportQuality: (q) =>
       set((s) => {
         s.exportQuality = q
@@ -841,7 +959,7 @@ export const useEditorStore = create<EditorState>()(
     revealExport: (filePath) => void window.editorBridge.showItemInFolder(filePath),
 
     extractAudioFromClip: async (clipOrAssetId) => {
-      const c = controller
+      const c = getController()
       const { manifest, projectDir } = get()
       const clip = c.getClip(clipOrAssetId)
       const assetId = clip ? clip.mediaRef : clipOrAssetId
@@ -871,7 +989,7 @@ export const useEditorStore = create<EditorState>()(
     },
 
     enhanceClipAudio: async (clipId, settings = {}) => {
-      const c = controller
+      const c = getController()
       const { manifest, projectDir } = get()
       const clip = c.getClip(clipId)
       if (!clip || clip.mediaType !== 'audio') {
@@ -914,7 +1032,7 @@ export const useEditorStore = create<EditorState>()(
     },
 
     isolateClipVoice: async (clipId, intensity, denoise) => {
-      const c = controller
+      const c = getController()
       const { manifest, projectDir } = get()
       const clip = c.getClip(clipId)
       if (!clip || clip.mediaType !== 'audio') {
@@ -994,7 +1112,7 @@ export const useEditorStore = create<EditorState>()(
     },
 
     analyzeSyncForSelection: async () => {
-      const c = controller
+      const c = getController()
       const { manifest, projectDir } = get()
       const videoClips = c
         .getSelectedClipIds()
@@ -1085,7 +1203,7 @@ export const useEditorStore = create<EditorState>()(
     },
 
     applySyncAngles: async (opts, origin = 'user') => {
-      const c = controller
+      const c = getController()
       const { manifest, projectDir } = get()
       const frontal = c.getClip(opts.frontalClipId)
       const lateral = c.getClip(opts.lateralClipId)
@@ -1189,7 +1307,7 @@ export const useEditorStore = create<EditorState>()(
     },
 
     syncAnglesTool: async (input) => {
-      const c = controller
+      const c = getController()
       const { manifest, projectDir } = get()
       const ids = input.clipIds ?? c.getSelectedClipIds()
       const clips = ids
@@ -1233,7 +1351,7 @@ export const useEditorStore = create<EditorState>()(
 
     transcribeClip: async (clipOrAssetId, opts) => {
       // Resolve the media path from either a clip id or an asset id.
-      const tl = controller.getTimeline()
+      const tl = getController().getTimeline()
       const manifest = get().manifest
       let mediaPath: string | null = null
 
@@ -1385,6 +1503,171 @@ clearTranscript: () => set((s) => { s.transcript = null }),
 
     dismissAnglePlan: () => set((s) => { s.anglePlan = null }),
 
+    analyzeTakes: async (clipOrAssetId, scripts, cleanCuts = false) => {
+      const c = getController()
+      const tl = c.getTimeline()
+      const isAudible = (cl: Clip): boolean => cl.mediaType === 'video' || cl.mediaType === 'audio'
+      // Resolve the raw clip: explicit id → a selected audible clip → the first audible clip.
+      let clip: Clip | null = null
+      if (clipOrAssetId) {
+        for (const t of tl.tracks) {
+          const cl = t.clips.find((x) => x.id === clipOrAssetId)
+          if (cl) { clip = cl; break }
+        }
+      }
+      if (!clip) {
+        const sel = c.getSelectedClipIds()
+        for (const t of tl.tracks) for (const cl of t.clips) if (sel.includes(cl.id) && isAudible(cl)) clip = cl
+      }
+      if (!clip) {
+        // Auto-pick: prefer the (optimized) audio track — best transcription + its source time maps
+        // cleanly to the timeline — then fall back to the first video clip.
+        const audible: Clip[] = []
+        for (const t of tl.tracks) for (const cl of t.clips) if (isAudible(cl)) audible.push(cl)
+        clip = audible.find((cl) => cl.mediaType === 'audio') ?? audible[0] ?? null
+      }
+      if (!clip) return { ok: false, error: 'No hay un clip de video para analizar. Importá un crudo y agregalo a la línea de tiempo.' }
+      const raw = clip
+      const mediaPath = expectedPath(get().manifest, raw.mediaRef, get().projectDir)
+      if (!mediaPath) {
+        alert('El archivo del clip no se encuentra en el disco.')
+        return { ok: false, error: 'El medio del clip está offline.' }
+      }
+
+      set((s) => { s.analyzingTakes = true; s.lastError = null })
+      get().startProgress('Detectar tomas', [
+        { id: 'transcribe', label: 'Transcribir audio (ElevenLabs Scribe)' },
+        { id: 'analyze', label: 'Detectar guiones y cortes (Claude)' }
+      ])
+      try {
+        get().setStep('transcribe', 'active')
+        let words = transcriptCache.get(raw.mediaRef) ?? null
+        if (!words) {
+          const r = await window.editorBridge.transcribeMedia({ mediaPath, languageCode: 'es' })
+          if (!r.ok || !r.words) {
+            get().finishProgress(r.error ?? 'La transcripción falló.')
+            set((s) => { s.analyzingTakes = false })
+            return { ok: false, error: r.error }
+          }
+          // Never cache a transcript without usable times — a poisoned cache survives re-runs.
+          const invalid = r.words.some((w) => !Number.isFinite(w.startMs) || !Number.isFinite(w.endMs))
+          if (invalid) {
+            const msg = 'La transcripción llegó sin timestamps válidos. Volvé a intentar.'
+            get().finishProgress(msg)
+            set((s) => { s.analyzingTakes = false })
+            return { ok: false, error: msg }
+          }
+          words = r.words
+          transcriptCache.set(raw.mediaRef, words)
+        }
+        set((s) => { s.transcript = words })
+        get().setStep('transcribe', 'done')
+
+        get().setStep('analyze', 'active')
+        const res = await window.editorBridge.analyzeTakes({ words, languageCode: 'es', scripts, cleanCuts })
+        if (!res.ok || !res.plan) {
+          get().finishProgress(res.error ?? 'El análisis falló.')
+          set((s) => { s.analyzingTakes = false })
+          return { ok: false, error: res.error }
+        }
+        const plan = res.plan
+        set((s) => {
+          s.analyzingTakes = false
+          s.takesPlan = {
+            takes: plan.takes,
+            cuts: plan.cuts,
+            durationMs: plan.durationMs,
+            rawClipId: raw.id,
+            rawMediaRef: raw.mediaRef,
+            fps: tl.fps,
+            // Default-off any take whose guión was poorly matched (<50%), so a low-coverage/misaligned
+            // take isn't opened by accident; well-matched (or inference-mode) takes stay on.
+            takeAccepted: plan.takes.map((t) => (t.coverage ? t.coverage.fraction >= 0.5 : true)),
+            cutAccepted: plan.cuts.map(() => true),
+            scriptBlocks: scripts ? splitScriptBlocks(scripts) : []
+          }
+        })
+        get().finishProgress()
+        get().dismissProgress()
+        return { ok: true, result: { takes: plan.takes.length, cuts: plan.cuts.length } }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        get().finishProgress(msg)
+        set((s) => { s.analyzingTakes = false })
+        return { ok: false, error: msg }
+      }
+    },
+
+    setTakeAccepted: (i, accepted) =>
+      set((s) => {
+        if (s.takesPlan && i >= 0 && i < s.takesPlan.takeAccepted.length) s.takesPlan.takeAccepted[i] = accepted
+      }),
+
+    setCutAccepted: (i, accepted) =>
+      set((s) => {
+        if (s.takesPlan && i >= 0 && i < s.takesPlan.cutAccepted.length) s.takesPlan.cutAccepted[i] = accepted
+      }),
+
+    dismissTakesPlan: () => set((s) => { s.takesPlan = null }),
+
+    applyTakesPlan: async () => {
+      const plan = get().takesPlan
+      if (!plan) return
+      const c = getController()
+      const tl = c.getTimeline()
+      // Resolve the raw clip again (by id, then by mediaRef in case it was split/moved).
+      let rawClip: Clip | null = null
+      for (const t of tl.tracks) {
+        const cl = t.clips.find((x) => x.id === plan.rawClipId)
+        if (cl) { rawClip = cl; break }
+      }
+      if (!rawClip) {
+        for (const t of tl.tracks) {
+          const cl = t.clips.find((x) => x.mediaRef === plan.rawMediaRef)
+          if (cl) { rawClip = cl; break }
+        }
+      }
+      if (!rawClip) {
+        set((s) => { s.lastError = 'El clip crudo ya no está en la línea de tiempo.'; s.takesPlan = null })
+        return
+      }
+      const raw = rawClip
+      const accepted = plan.takes.filter((_, i) => plan.takeAccepted[i])
+      if (accepted.length === 0) {
+        alert('Seleccioná al menos una toma.')
+        return
+      }
+
+      // Open each accepted take as its own editable tab (a cleaned segment). Export happens later,
+      // manually, from each tab's normal "Exportar" button.
+      const manifest = get().manifest
+      const projectDir = get().projectDir // inherit so proxies/enhanced audio/export resolve in take tabs
+      saveActiveToSession() // persist the current (raw) tab before opening the take tabs
+      let firstId = ''
+      const failed: string[] = []
+      for (const take of accepted) {
+        // "Ya limpia": apply ALL cuts detected inside this take (the cut list is not user-selectable).
+        const cutsForTake = plan.cuts.filter((cut) => cut.takeIndex === take.index)
+        const takeTimeline = buildTakeTimeline(tl, raw, take, cutsForTake)
+        if (!takeTimeline) {
+          failed.push(`Guión ${take.index}: ${take.title}`)
+          continue
+        }
+        const id = openSession(`Guión ${take.index}`, takeTimeline, manifest, projectDir)
+        if (!firstId) firstId = id
+      }
+      if (failed.length > 0) {
+        const msg =
+          `No se pudo ubicar ${failed.length === 1 ? 'esta toma' : 'estas tomas'} en la línea de tiempo ` +
+          `(tiempos fuera del clip transcrito):\n${failed.join('\n')}\n\nProbá volver a transcribir/segmentar.`
+        set((s) => { s.lastError = msg })
+        alert(msg)
+      }
+      set((s) => { s.takesPlan = null; s.takesInputOpen = false })
+      const target = sessions.find((s) => s.id === firstId)
+      if (target) loadSessionIntoStore(target)
+    },
+
     setPlaying: (playing) => set((s) => { s.isPlaying = playing }),
 
     togglePlayback: () => {
@@ -1442,6 +1725,34 @@ clearTranscript: () => set((s) => { s.transcript = null }),
     setAudioInspectorOpen: (open) => set((s) => { s.audioInspectorOpen = open }),
     setRightTab: (tab) => set((s) => { s.rightTab = tab }),
 
+    switchSession: (id) => {
+      if (id === activeId) return
+      const target = sessions.find((s) => s.id === id)
+      if (!target) return
+      saveActiveToSession()
+      loadSessionIntoStore(target)
+    },
+
+    closeSession: (id) => {
+      const idx = sessions.findIndex((s) => s.id === id)
+      if (idx < 0) return
+      const wasActive = id === activeId
+      sessions.splice(idx, 1)
+      set((s) => { s.tabs = s.tabs.filter((t) => t.id !== id) })
+      if (sessions.length === 0) {
+        const blank = makeSession()
+        subscribeSession(blank)
+        sessions.push(blank)
+        set((s) => { s.tabs.push({ id: blank.id, name: blank.name, dirty: false }) })
+        loadSessionIntoStore(blank)
+      } else if (wasActive) {
+        // The removed session was active and is discarded (no save); switch to a neighbor.
+        loadSessionIntoStore(sessions[Math.min(idx, sessions.length - 1)])
+      }
+    },
+
+    setTakesInputOpen: (open) => set((s) => { s.takesInputOpen = open }),
+
     applyAutoAngles: async (opts) => {
       // One-shot path (AI/MCP): analyze then apply immediately, no preview.
       const r = await buildAnglePlan(get, opts?.destructive ?? true)
@@ -1455,10 +1766,10 @@ clearTranscript: () => set((s) => { s.transcript = null }),
   }))
 )
 
-// Push every controller change into the store so React re-renders. `edit` marks the project
-// dirty (for autosave); `view` (playhead/selection) and `load` (open/new) do not.
-function syncFromController(kind: EditorChangeKind): void {
-  const snap = controller.snapshot()
+// Push the ACTIVE session's controller snapshot into the store so React re-renders. `edit` marks
+// dirty (autosave + the tab dot); `view` (playhead/selection) and `load` (open/new) do not.
+function pushSnapshotToStore(kind: EditorChangeKind): void {
+  const snap = activeSession().controller.snapshot()
   useEditorStore.setState((s) => {
     s.timeline = snap.timeline
     s.currentFrame = snap.currentFrame
@@ -1467,10 +1778,68 @@ function syncFromController(kind: EditorChangeKind): void {
     s.canRedo = snap.canRedo
     s.undoLabel = snap.undoLabel
     s.redoLabel = snap.redoLabel
-    if (kind === 'edit') s.dirty = true
+    if (kind === 'edit') {
+      s.dirty = true
+      const tab = s.tabs.find((t) => t.id === activeId)
+      if (tab) tab.dirty = true
+    }
   })
 }
-controller.subscribe(syncFromController)
+
+/** Subscribe a session's controller: mark its own `dirty` on edits, and — only while it is the
+ *  active session — mirror its snapshot into the store. */
+function subscribeSession(sess: Session): void {
+  sess.controller.subscribe((kind) => {
+    if (kind === 'edit') sess.dirty = true
+    if (sess.id === activeId) pushSnapshotToStore(kind)
+  })
+}
+
+/** Copy the reactive store's per-project fields back into the (outgoing) active session. */
+function saveActiveToSession(): void {
+  const sess = activeSession()
+  const s = useEditorStore.getState()
+  sess.projectDir = s.projectDir
+  sess.projectName = s.projectName
+  sess.createdAt = s.createdAt
+  sess.manifest = s.manifest
+  sess.thumbnails = s.thumbnails
+  sess.transcript = s.transcript
+  sess.exportQuality = s.exportQuality
+  sess.dirty = s.dirty
+}
+
+/** Make `sess` active and mirror it (and its controller) into the store. Does NOT save the previous
+ *  session — a switch must call `saveActiveToSession()` first; a close must not (it's discarded). */
+function loadSessionIntoStore(sess: Session): void {
+  activeId = sess.id
+  const snap = sess.controller.snapshot()
+  useEditorStore.setState((s) => {
+    s.projectDir = sess.projectDir
+    s.projectName = sess.projectName
+    s.createdAt = sess.createdAt
+    s.manifest = sess.manifest
+    s.thumbnails = sess.thumbnails
+    s.transcript = sess.transcript
+    s.exportQuality = sess.exportQuality
+    s.dirty = sess.dirty
+    s.timeline = snap.timeline
+    s.currentFrame = snap.currentFrame
+    s.selectedClipIds = snap.selectedClipIds
+    s.canUndo = snap.canUndo
+    s.canRedo = snap.canRedo
+    s.undoLabel = snap.undoLabel
+    s.redoLabel = snap.redoLabel
+    s.activeTabId = sess.id
+    // Transient per-project UI shouldn't leak across tabs.
+    s.anglePlan = null
+    s.takesPlan = null
+    s.syncResult = null
+  })
+}
+
+// Subscribe the initial session created at module load.
+subscribeSession(sessions[0])
 
 export function timelineTotalFrames(timeline: Timeline): number {
   return totalFrames(timeline)

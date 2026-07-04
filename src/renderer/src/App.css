@@ -617,6 +617,17 @@ button.primary:hover:not(:disabled) {
 .progress-modal .spinner {
   align-self: center;
 }
+.progress-modal canvas {
+  align-self: center;
+}
+.progress-msg {
+  margin: var(--space-1) 0 0;
+  align-self: center;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: var(--text-sm);
+  color: var(--accent);
+  letter-spacing: 0.02em;
+}
 .progress-steps {
   list-style: none;
   margin: var(--space-3) 0 0;
@@ -1460,6 +1471,10 @@ button.primary:hover:not(:disabled) {
 .pill.warn {
   background: var(--orange-soft);
   color: var(--orange);
+}
+.pill.err {
+  background: var(--red-soft);
+  color: var(--red);
 }
 .busy {
   color: var(--accent);

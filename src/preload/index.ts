@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   AiCompleteRequest,
   AiCompleteResponse,
+  AnalyzeTakesRequest,
+  AnalyzeTakesResult,
   AudioOffsetRequest,
   AudioOffsetResult,
   AudioPreviewRequest,
@@ -103,6 +105,8 @@ const editorBridge = {
   aiSetKey: (key: string): Promise<void> => ipcRenderer.invoke('ai:setKey', key),
   aiClearKey: (): Promise<void> => ipcRenderer.invoke('ai:clearKey'),
   aiComplete: (req: AiCompleteRequest): Promise<AiCompleteResponse> => ipcRenderer.invoke('ai:complete', req),
+  analyzeTakes: (req: AnalyzeTakesRequest): Promise<AnalyzeTakesResult> =>
+    ipcRenderer.invoke('ai:analyzeTakes', req),
 
   // MCP tool execution requested by the main-process server, run against the renderer controller.
   onMcpExecute: (cb: (payload: { requestId: string; name: string; input: unknown }) => void): void => {

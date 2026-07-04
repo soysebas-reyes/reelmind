@@ -19,7 +19,9 @@ export async function complete(req: AiCompleteRequest): Promise<AiCompleteRespon
       max_tokens: req.maxTokens ?? 2048,
       system: req.system,
       messages: req.messages,
-      tools: req.tools
+      tools: req.tools,
+      // Forward `tool_choice` only when set (structured/forced-tool calls); the chat agent omits it.
+      ...(req.toolChoice ? { tool_choice: req.toolChoice } : {})
     } as unknown as Anthropic.MessageCreateParamsNonStreaming)
     return { ok: true, stopReason: msg.stop_reason, content: msg.content }
   } catch (e) {

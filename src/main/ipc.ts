@@ -7,6 +7,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { parseCubeLut } from '../core'
 import type {
   AiCompleteRequest,
+  AnalyzeTakesRequest,
   AudioOffsetRequest,
   AudioPreviewRequest,
   ColorLutDataRequest,
@@ -24,6 +25,7 @@ import type {
 } from '../shared/ipc'
 import { readFile, rm } from 'node:fs/promises'
 import { complete } from './ai/anthropic'
+import { analyzeTakes } from './ai/analyzeTakes'
 import { transcribeMedia } from './elevenlabs/transcript'
 import { isolateVoice, isolateVoiceSnippet } from './elevenlabs/voiceIsolation'
 import { clearApiKey, hasApiKey, setApiKey } from './ai/secrets'
@@ -350,6 +352,11 @@ export function registerIpc(): void {
   ipcMain.handle('ai:setKey', (_e, key: string) => setApiKey(key))
   ipcMain.handle('ai:clearKey', () => clearApiKey())
   ipcMain.handle('ai:complete', (_e, req: AiCompleteRequest) => complete(req))
+
+  // Segment a raw clip's transcript into takes (guiones) + cuts via the LLM (forced-tool structured JSON).
+  ipcMain.handle('ai:analyzeTakes', (e, req: AnalyzeTakesRequest) =>
+    analyzeTakes(req, (line) => e.sender.send('op:progress', { stage: 'analyze', line }))
+  )
 }
 
 function dialogOpts() {
