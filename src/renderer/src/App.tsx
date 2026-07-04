@@ -9,7 +9,10 @@ import ChatPanel from './ai/ChatPanel'
 import ColorInspector from './color/ColorInspector'
 import AudioInspector from './audio/AudioInspector'
 import ClipInspector from './inspector/ClipInspector'
+import { TakesPlanModal } from './takes/TakesPlanModal'
+import { SessionTabs } from './tabs/SessionTabs'
 import { Icon, type IconName } from './ui/Icon'
+import { Reelo, REELO_MESSAGES } from './ui/Reelo'
 
 const RESOLUTIONS: { label: string; w: number; h: number }[] = [
   { label: '1920×1080 (16:9)', w: 1920, h: 1080 },
@@ -167,6 +170,7 @@ export default function App() {
   const setAudioOpen = useEditorStore((s) => s.setAudioInspectorOpen)
   const rightTab = useEditorStore((s) => s.rightTab)
   const setRightTab = useEditorStore((s) => s.setRightTab)
+  const analyzingTakes = useEditorStore((s) => s.analyzingTakes)
   const [transcriptOpen, setTranscriptOpen] = useState(false)
   // Sync confirmation modal options (frontal/lateral swap, which audio to keep, per-angle color).
   const [syncSwap, setSyncSwap] = useState(false)
@@ -332,6 +336,19 @@ export default function App() {
           </button>
 
           <button
+            onClick={() => useEditorStore.getState().setTakesInputOpen(true)}
+            disabled={
+              analyzingTakes ||
+              !!busy ||
+              syncBusy ||
+              !timeline.tracks.some((t) => t.clips.some((c) => c.mediaType === 'video' || c.mediaType === 'audio'))
+            }
+            title="Segmentar el crudo por guiones con IA y abrir un video por guión en pestañas (ya recortados y limpios)"
+          >
+            <Icon name="wand" /> {analyzingTakes ? 'Segmentando…' : 'Segmentar por guiones (IA)'}
+          </button>
+
+          <button
             onClick={() => setColorOpen(true)}
             disabled={selectedClipIds.length === 0}
             title={selectedClipIds.length === 0 ? 'Selecciona un clip para colorizar' : 'Abrir explorador de colorización'}
@@ -391,6 +408,8 @@ export default function App() {
         </div>
       </header>
 
+      <SessionTabs />
+
       <div className="workspace" style={{ '--timeline-h': `${layout.timelineH}px` } as CSSProperties}>
         <div className="stage" style={{ '--bin-w': `${layout.binW}px`, '--chat-w': `${layout.chatW}px` } as CSSProperties}>
           <section className="bin" onDragOver={binDragOver} onDrop={binDrop}>
@@ -446,7 +465,12 @@ export default function App() {
         <span className={`pill ${ffmpegOk ? 'ok' : 'warn'}`}>
           {ffmpegOk ? `FFmpeg ready` : 'FFmpeg not found — install it and restart'}
         </span>
-        {busy && <span className="busy">{busy}</span>}
+        {busy && (
+          <span className="busy" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <Reelo state="loading" size={22} ariaLabel="Trabajando" />
+            {busy}
+          </span>
+        )}
         {lastError && <span className="err">{lastError}</span>}
         <span className="spacer" />
         <span className="credit">
@@ -488,8 +512,8 @@ export default function App() {
       {exportProgress !== null && (
         <div className="modal-backdrop">
           <div className="modal export-modal" onMouseDown={(e) => e.stopPropagation()}>
-            <div className="spinner" />
-            <h2>Exportando tu video…</h2>
+            <Reelo state={exportProgress >= 1 ? 'success' : 'progress'} size={72} progress={exportProgress} ariaLabel="Reelo exportando" />
+            <h2>{exportProgress >= 1 ? '¡Y… corten!' : 'Exportando tu video…'}</h2>
             <div className="export-bar">
               <div className="export-bar-fill" style={{ width: `${Math.round(exportProgress * 100)}%` }} />
             </div>
@@ -504,6 +528,7 @@ export default function App() {
 
       <ProgressModal />
       <AnglePlanModal />
+      <TakesPlanModal />
 
       {exportResult && (
         <div className="modal-backdrop" onMouseDown={() => dismissExportResult()}>
@@ -541,7 +566,7 @@ export default function App() {
       {syncBusy && (
         <div className="modal-backdrop">
           <div className="modal export-modal" onMouseDown={(e) => e.stopPropagation()}>
-            <div className="spinner" />
+            <Reelo state="loading" size={72} ariaLabel="Reelo sincronizando" />
             <h2>Analizando audio para sincronizar…</h2>
             <p className="export-note">Comparando las pistas de audio de ambos ángulos. Puede tardar unos segundos.</p>
           </div>
@@ -572,8 +597,8 @@ export default function App() {
               </div>
             </div>
             {transcribing ? (
-              <div style={{ textAlign: 'center', padding: '2rem' }}>
-                <div className="spinner" />
+              <div style={{ textAlign: 'center', padding: '2rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+                <Reelo state="loading" size={56} ariaLabel="Reelo transcribiendo" />
                 <p>Transcribiendo con ElevenLabs Scribe…</p>
               </div>
             ) : transcript ? (
@@ -681,14 +706,28 @@ function ProgressModal() {
   const progress = useEditorStore((s) => s.progress)
   const dismiss = useEditorStore((s) => s.dismissProgress)
   const [showLog, setShowLog] = useState(false)
+  const [msgIdx, setMsgIdx] = useState(0)
+  const active = !!progress && !progress.done && !progress.error
+  // Rotate a playful cinema line while Reelo works (paused when done or on error).
+  useEffect(() => {
+    if (!active) return
+    const id = setInterval(() => setMsgIdx((i) => (i + 1) % REELO_MESSAGES.length), 1600)
+    return () => clearInterval(id)
+  }, [active])
   if (!progress) return null
   const ico = (status: string): string =>
     status === 'done' ? '✓' : status === 'error' ? '✗' : status === 'active' ? '…' : '○'
   return (
     <div className="modal-backdrop">
       <div className="modal export-modal progress-modal" onMouseDown={(e) => e.stopPropagation()}>
-        {!progress.done && <div className="spinner" />}
+        <Reelo
+          state={progress.error ? 'idle' : progress.done ? 'success' : 'progress'}
+          size={72}
+          progress={0.6}
+          ariaLabel="Reelo trabajando"
+        />
         <h2>{progress.title}</h2>
+        {active && <p className="progress-msg">{REELO_MESSAGES[msgIdx]}</p>}
         <ul className="progress-steps">
           {progress.steps.map((st) => (
             <li key={st.id} className={`progress-step ${st.status}`}>
