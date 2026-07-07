@@ -67,21 +67,28 @@ rebuild the platform layers on cross-platform tech (Electron, FFmpeg, ONNX, whis
 | **P9.5** | Color: Colorization Explorer — param panel, one-click recommended configs, save/compare *muestras* vs raw, "Elegir" one look for the whole video | ✅ done — headless core + UI + **live-playback WebGL LUT** (the earlier live-LUT gap was fixed in `9cfb32e`); export is exact |
 | **P10** | Color: AI colorization (B&W → color) | 📋 planned (later) — see [`COLOR_GRADING_PLAN.md`](./COLOR_GRADING_PLAN.md) §2 |
 | **P11** | Agentic copilot workflow: `import_folder` · `export` · `remove_silences` · recipes | 🚧 in progress — `import_folder` + `export` + `remove_silences` shipped; recipes pending; see [`AGENTIC_WORKFLOW_PLAN.md`](./AGENTIC_WORKFLOW_PLAN.md) |
-| **P12** | CapCut parity — MCP tool surface + manual UX | ✅ core pass done (5 milestones, branch `feat/p95-colorization-core`): widened `set_clip_properties` (text/transform/crop/audioEnhance) + `set_clips_properties`, `inspect_clip`, `list_assets`, `list/apply_color_preset`, `batch_operations` (1 IPC = 1 undo), keyframe tools, `ripple_delete_range`, `add_text_clip`, `get_frame_preview` (composited frame as a REAL image block in both transports), per-tool timeouts, `sync_angles` frames; UX: Space play/pause + `[`/`]`/Home/End/±zoom, Ctrl+C/X/V/D clipboard, right-click context menus (clip/track/empty), ClipInspector "Propiedades" tab (transform/opacity/speed/fades/volume, coalesced-undo sliders), multi-select group drag, OS drag-and-drop, inline fade handles, bigger transport + frame-step + preview rate. 353 tests green. Pending (bigger core work): text rendering in preview-style + export (drawtext), transitions, keyframe curve UI, markers |
+| **P12** | CapCut parity — MCP tool surface + manual UX | ✅ core pass done (5 milestones, merged to `main`): widened `set_clip_properties` (text/transform/crop/audioEnhance) + `set_clips_properties`, `inspect_clip`, `list_assets`, `list/apply_color_preset`, `batch_operations` (1 IPC = 1 undo), keyframe tools, `ripple_delete_range`, `add_text_clip`, `get_frame_preview` (composited frame as a REAL image block in both transports), per-tool timeouts, `sync_angles` frames; UX: Space play/pause + `[`/`]`/Home/End/±zoom, Ctrl+C/X/V/D clipboard, right-click context menus (clip/track/empty), ClipInspector "Propiedades" tab (transform/opacity/speed/fades/volume, coalesced-undo sliders), multi-select group drag, OS drag-and-drop, inline fade handles, bigger transport + frame-step + preview rate. Pending (bigger core work): text rendering in preview-style + export (drawtext), transitions, keyframe curve UI, markers |
+| **P13** | Multicam sync + audio enhancement + angle switching | ✅ done (merged to `main`): sync two angles by audio cross-correlation (no FFT); non-destructive per-clip voice-cleanup/loudness chain (Web Audio live + FFmpeg on export); non-destructive & ripple angle cuts with `linkGroupId` + track roles |
+| **P14** | "Segmentar por guiones" (take detection) | ✅ done (merged to `main`): ElevenLabs Scribe transcript + `claude-sonnet-5` forced-tool aligns each pasted guión to its span → opens each take as a clean, editable tab (multi-session tabs, persisted in `sessions.json`); editable take-boundary preview. Unit + integration green; **pending full on-footage E2E** |
+| **P15** | Editor-workflow handoff + MCP flow | ✅ done (merged to `main`, see §12): "Enviar a editor" → FCP7 xmeml + per-source **baked media** (grade + audio applied) for Premiere / DaVinci / Final Cut; MCP workflow tools `segment_by_scripts` · `export_to_nle` · `new/open/save_project`; platform-URL import via `yt-dlp`. Unit + ffmpeg-integration green; **pending real-NLE + on-device MCP E2E** |
 
-**Verification bar (all green as of P6):** `npm run typecheck`, `npm run build`, `npm test` (173 tests,
-incl. 29 EditorController command/undo, 6 compositor, 11 export-graph, 11 AI-tool, 6 agent-loop, and a real
-MCP client↔server HTTP integration test, plus 2 ffmpeg integration suites — export render + media pipeline —
-that self-skip if ffmpeg is absent). The app boot-smoke-tests via `npm run dev`: the AI panel + Anthropic SDK
-load in main, the media protocol serves video, and the MCP server logs `listening at http://127.0.0.1:4399/mcp`.
+**Verification bar (all green):** `npm run typecheck` (node + web), `npm run build` (main + preload + renderer),
+`npm test` — **436 tests**, incl. EditorController command/undo, compositor, export-graph, AI-tool + agent-loop,
+color/LUT, take-detection (transcript serialize / postprocess / script-align / take-plan), and the new
+**interchange** golden tests (fcp7xml / bakePlan / bakeCommand); plus ffmpeg/MCP integration suites — export
+render, media pipeline, the **NLE-handoff** end-to-end (bakes graded media + writes valid xmeml), and a real
+MCP client↔server HTTP test — that self-skip if their deps are absent. The app boot-smoke-tests via
+`npm run dev`: the AI panel + Anthropic SDK load in main, the media protocol serves video, and the MCP server
+logs `listening at http://127.0.0.1:4399/mcp`.
 
-> **Scope note (this session executed P2→P5 incl. the in-app AI chat):** the editor is functionally complete —
-> import, multi-track timeline editing, live preview, real FFmpeg export — and the **AI editor chat is wired**
-> (BYOK Anthropic key, encrypted via safeStorage in main; the agent drives the exact same EditorController
-> commands the UI does). Remaining: P6 (MCP server — needs `@modelcontextprotocol/sdk` + the main↔renderer
-> proxy) and P7/P8. **P7 is descoped to import-based**: scenes are generated externally (e.g. Higgsfield) and
-> imported as media assets, which the existing P1 pipeline already handles — no provider SDK/key needed.
-> P8 (Windows installer) still needs electron-builder + signing/auto-update decisions.
+> **Current state:** the editor is functionally complete and the AI/MCP layer works end-to-end — import
+> (incl. URLs/yt-dlp), multi-track timeline editing, live preview, FFmpeg export, colorization, multicam sync,
+> audio enhancement, angle switching, script-based take segmentation, and the NLE handoff. The in-app agent and
+> the embedded MCP server both drive the *same* EditorController commands (BYOK Anthropic key, encrypted via
+> safeStorage). Everything is merged to `main` (single branch, pushed). **P7 (generation) is descoped to
+> import-based** — scenes are generated externally (e.g. Higgsfield) and imported, which the P1 pipeline handles.
+> **Remaining:** real-world verification of take detection (on footage) and the NLE handoff (in a real NLE) +
+> the MCP flow with Claude Code; then a CapCut writer and shipping the packaged installer.
 
 ## 5. What exists today (file map)
 
@@ -107,8 +114,14 @@ src/
       EditorController.test.ts  # 29 tests: engine parity, undo/redo round-trips, agent parity
     preview/compositor.ts       # composeFrame(timeline,frame) → ordered visual+audio layers (P3)
     export/exportGraph.ts       # buildExportGraph: timeline → one FFmpeg filter_complex (P4)
+    export/colorFilters.ts      # ColorAdjustments → FFmpeg grade chain (shared by export + bake)
+    interchange/                # NLE handoff (P15): pure + golden-tested
+      fcp7xml.ts                #   Timeline → FCP7 xmeml (Premiere/Resolve/FCP), file:// encoding, A/V link
+      bakePlan.ts               #   plan one baked file per source (grade+audio); per-clip on speed
+      bakeCommand.ts            #   ffmpeg args to bake a source (reuses buildColorFilterChain/EnhanceChain)
     ai/tools.ts                 # Zod tool contract + executeTool over EditorController (P5);
-                                #   toJsonSchemaTools() for Anthropic/MCP transports
+                                #   toJsonSchemaTools() for Anthropic/MCP; incl. segment_by_scripts,
+                                #   export_to_nle, new/open/save_project (host-executed)
     testing/fixtures.ts         # fxClip / fxTrack / fxTimeline
     index.ts                    # barrel (import via "@core")
   shared/ipc.ts                 # wire types shared by main/preload/renderer
@@ -122,10 +135,15 @@ src/
     ffmpeg/ {binary,probe,thumbnail,index}.ts   # ffprobe/ffmpeg integration
     ffmpeg/exporter.ts          # runs buildExportGraph + spawns ffmpeg (P4)
     ffmpeg/exporter.test.ts     # renders a 3-track project end-to-end (self-skips if no ffmpeg)
+    interchange/handoff.ts      # runHandoff: bake per-source media + write the xmeml package (P15)
+    interchange/handoff.test.ts # ffmpeg integration: bakes graded media + valid xmeml (self-skips)
     media/importer.ts           # classify → probe → thumbnail → manifest entry
+    media/importSources.ts      # import from paths / folders / URLs (+ yt-dlp for platform links)
     media/mediaProtocol.ts      # reelmind-media:// — streams local files to the renderer (P3 video)
     media/mediaPipeline.test.ts # ffmpeg integration test (self-skips if no ffmpeg)
-    project/projectStore.ts     # .vproj save/load (atomic writes)
+    ai/analyzeTakes.ts          # take detection: transcript → forced-tool claude-sonnet-5 (P14)
+    project/projectStore.ts     # .vproj save/load (atomic writes; timeline/manifest/sessions)
+    project/transcriptStore.ts  # persist ElevenLabs transcripts in cache/transcripts.json (P14)
   preload/index.ts(.d.ts)       # editorBridge (typed, sandboxed) — adds export methods
   renderer/
     index.html                  # CSP-locked shell
@@ -134,8 +152,10 @@ src/
     src/timeline/geometry.ts    # px↔frame layout math (ruler/tracks/clips)
     src/timeline/Timeline.tsx   # Canvas timeline: drag-from-bin, move+snap, trim, split, ripple
     src/preview/Preview.tsx     # composited preview canvas + transport (play/seek)
+    src/takes/{TakesPlanModal,TakesPreview}.tsx, format.ts  # segment-by-scripts UI + editable preview (P14)
+    src/tabs/SessionTabs.tsx    # multi-project / per-guión tab bar (P14)
     src/ai/{agent.ts,ChatPanel.tsx}  # in-app agent loop (executeTool) + BYOK chat UI (P5)
-    src/ai/mcpBridge.ts         # answers main's MCP tool-execute requests via executeTool (P6)
+    src/ai/{runTool.ts,mcpBridge.ts} # host-tool routing + answers main's MCP tool-execute requests (P6)
 scripts/fetch-ffmpeg.mjs        # downloads GPL win64 ffmpeg → resources/ffmpeg (build-time)
 electron-builder.yml            # NSIS packaging: bundles ffmpeg + GitHub auto-update (P8)
 resources/ffmpeg/               # bundled ffmpeg/ffprobe — GITIGNORED, fetched at build time
@@ -152,7 +172,7 @@ docs/PROJECT_PLAN.md            # this file
 ```powershell
 npm install
 npm run dev        # launches the ReelMind window with hot reload
-npm test           # 173 tests (3 ffmpeg/MCP integration suites self-skip without their deps)
+npm test           # 436 tests (ffmpeg/MCP integration suites self-skip without their deps)
 npm run typecheck
 npm run build      # production build into out/
 npm run dist       # build a Windows installer (fetch ffmpeg → build → electron-builder) [build machine]
@@ -277,7 +297,46 @@ Higgsfield ships an official OAuth MCP server (`https://mcp.higgsfield.ai/mcp`) 
 > "Remove silences" / "arrange" are ReelMind edits (FFmpeg), not generation. "Upscale my own footage to HD"
 > is **not** a confirmed Higgsfield capability — verify before relying on it.
 
-## 12. Reference docs
+## 12. Phases 13–15 ✅ done — editor workflow (sync / audio / angles → take detection → NLE handoff)
+
+The product framing settled here: **ReelMind complements CapCut/Premiere, it doesn't replace them.** It does
+the technical, repeatable work — colorize, sync, enhance audio, switch angles, segment by scripts — then hands
+a still-editable project to a finishing editor. All merged to `main`.
+
+- **P13 — sync / audio / angles.** Multicam **sync** by audio cross-correlation (`core/edit/audioSync.ts`
+  envelope correlation, no FFT; main-side PCM decode) places two angles at the matching offset with a shared
+  `linkGroupId`. **Audio enhancement** = a non-destructive per-clip voice-cleanup/loudness chain
+  (`core/model/audioEnhance*.ts` → `buildEnhanceChain`), live via Web Audio and baked exactly on export.
+  **Angle switching** = `core/ai/angleCut.ts` (non-destructive `opacity 0` or ripple), plus track `role`s.
+- **P14 — "Segmentar por guiones" (take detection).** `main/ai/analyzeTakes.ts` transcribes the raw clip
+  (ElevenLabs Scribe, cached in `cache/transcripts.json`) and runs a forced-tool `claude-sonnet-5` pass that
+  aligns each pasted guión to the span where it was recorded (`core/ai/scriptAlign.ts`) and optionally cuts
+  fillers/repeats/silences. Each accepted take opens as a **clean, editable tab** (`buildTakeTimeline` clones
+  the whole multicam timeline and ripple-deletes the complement, preserving both angles + color + sync). Tabs
+  are a multi-session registry mirrored by the Zustand store and persisted in **`sessions.json`**. UI: input
+  modal (paste guiones + `cleanCuts` toggle) → verification modal with an **editable take-boundary preview**
+  (`renderer/src/takes/TakesPreview.tsx`, drag handles over a proxy `<video>`, `setTakeBounds`).
+- **P15 — NLE handoff + MCP flow.** The **"Enviar a editor"** button writes an editable project + baked media.
+  - *Format:* **FCP7 legacy XML (`xmeml`)**, chosen over FCPXML because Premiere's FCPXML importer is
+    deprecated while Premiere + DaVinci Resolve + Final Cut all import xmeml reliably — and our frame-based
+    timeline maps to xmeml's integer timebase with no rounding.
+  - *Baked media (per source):* `core/interchange/bakePlan.ts` renders ONE file per distinct
+    (source × grade × audio × flip) with our color + audio-enhancement applied (per-clip only when speed ≠ 1),
+    reusing the export chain builders; a source that needs neither grade nor enhancement is referenced
+    unchanged. `core/interchange/fcp7xml.ts` lays out cuts/trims/opacity/crop/transform/volume + A/V links;
+    keyframes/fades and text clips are dropped (the editor re-adds them) and reported as warnings.
+  - *Orchestration:* `main/interchange/handoff.ts` `runHandoff` bakes with ffmpeg and writes
+    `handoff/<project>-<timestamp>/` (`.xml` + `media/` + `luts/` + README). IPC `project:handoff` /
+    `project:pickHandoffDir`; store `exportToNle`; a topbar "Enviar a editor ▾" dropdown + a Reelo progress modal.
+  - *MCP flow:* new host-executed tools close the Claude-Code workflow — `segment_by_scripts` (guiones),
+    `export_to_nle`, `new/open/save_project` (the store's open/save now take an optional `dir` for headless
+    use) — and `media/importSources.ts` downloads platform links (YouTube/Instagram/TikTok/…) via **yt-dlp**
+    (direct URLs still use `fetch`). Connection + full flow: [`../MCP.md`](../MCP.md); smoke script `mcp_flow.mjs`.
+  - *Pending (needs the owner's environment):* import the `.xml` into a real Premiere/Resolve/FCP and confirm
+    timing/color/audio (tune per-NLE quirks in the README); run the MCP flow with the app open + Claude Code.
+  - *Next:* an experimental **CapCut** draft-JSON writer plugs in as another `export_to_nle` target.
+
+## 13. Reference docs
 - Full original architecture/plan (private, owner's machine): `~/.claude/plans/cosmic-mapping-swan.md`
 - Upstream agent tool contract (for P5/P6): `reference/.../Agent/Tools/ToolDefinitions.swift` (~30 tools)
 - Higgs Field SDK (for P7): `@higgsfield/client` — confirm endpoint ids/params before coding.
