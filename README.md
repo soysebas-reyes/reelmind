@@ -1,14 +1,72 @@
 # ReelMind
 
 **An open-source, AI-native video editor for Windows — you and your agent
-generate and edit video together, right on the timeline.**
+edit video together on the timeline. It doesn't replace CapCut or Premiere; it
+does the technical, repetitive work fast and hands the result off to them.**
 
-> ⚠️ **Status: early development.** Phases 0–1 done: the desktop app runs, imports
-> media (video/audio/images) into a project, and saves/opens `.vproj` projects.
-> Timeline editing, preview, export, the AI agent, and generation are coming phase
-> by phase. **Full plan & state:** [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md).
+> ⚠️ **Status: active development, not yet packaged.** The desktop app runs and
+> the core editor + AI + MCP are working: import, timeline editing, real-time
+> preview, FFmpeg export, colorization, multicam sync, audio enhancement, angle
+> switching, script-based take segmentation, and an "export to Premiere / DaVinci
+> / Final Cut" handoff. Some end-to-end flows (take detection, the NLE handoff)
+> are implemented and unit/integration-tested but still pending verification on
+> real footage / in a real NLE. AI media **generation** and a Windows **installer**
+> are next. **Full plan & state:** [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md).
 
 ---
+
+## What it does today
+
+ReelMind focuses on the technical, repeatable parts of an editing job so a human
+(or an agent) can move fast, then hands a clean, still-editable project to a
+finishing editor:
+
+- **Import** video/audio/images from files, folders, or URLs (direct links, and
+  platform links — YouTube/Instagram/TikTok/… — via `yt-dlp`).
+- **Multicam sync** — align two angles of the same take by audio
+  cross-correlation, tag them as a linked group.
+- **Angle switching** — cut between synced angles (non-destructive or ripple).
+- **Colorization** — per-clip color grade + `.cube` LUTs, live in the WebGL
+  preview and baked exactly on export.
+- **Audio enhancement** — non-destructive voice cleanup / loudness chain (Web
+  Audio live, FFmpeg on export).
+- **Segment by scripts ("guiones")** — paste your scripts; it transcribes, aligns
+  each script to where it was recorded, and opens each take as a clean, editable
+  tab.
+- **Timeline editing** — trim / move / split / ripple / snap, keyframes,
+  transform, crop, opacity, fades, undo/redo.
+- **Export** — one flat MP4 (FFmpeg), **or** a handoff to a finishing editor (see
+  below).
+
+### Handoff to a finishing editor (Premiere / DaVinci Resolve / Final Cut)
+
+Subtitles and effects aren't ReelMind's job — they're the editor's. So instead of
+only rendering a flat MP4, the **"Enviar a editor"** button writes an **editable
+project** the editor opens in their **NLE** (*Non-Linear Editor* — Premiere Pro,
+DaVinci Resolve, Final Cut):
+
+- A **Final Cut Pro 7 XML** (`xmeml`) sequence — the one interchange format all
+  three import reliably.
+- **Baked media** with our color grade + audio enhancement already in the
+  pixels/audio, but with clips still **separate and re-editable** — so the editor
+  keeps your look and just adds titles/effects/transitions.
+
+Output lands in a `handoff/<project>-<timestamp>/` folder (`.xml` + `media/` +
+`luts/` + a README with per-NLE import steps).
+
+## Drive it from Claude Code (MCP)
+
+ReelMind embeds an **MCP** server, so an external agent (**Claude Code**, Cursor,
+Claude Desktop) can operate the editor with the *same* command surface a human
+uses — in natural language: *"load this folder, download these videos, sync the
+angles, colorize, segment by my scripts, export to Premiere."*
+
+```sh
+# with the app open:
+claude mcp add --transport http reelmind http://127.0.0.1:4399/mcp
+```
+
+Full tool list, the workflow, and setup: [`MCP.md`](./MCP.md).
 
 ## Credit where it's due
 
@@ -45,39 +103,51 @@ contract, the MCP design) are re-implemented in TypeScript.
 | UI | AppKit + SwiftUI | Electron + React + TypeScript |
 | Video compose / preview / export | AVFoundation | FFmpeg + HTML5/Canvas preview |
 | Visual search | CoreML (SigLIP2) | ONNX Runtime (planned) |
-| Transcription | Speech framework | whisper.cpp / faster-whisper (planned) |
+| Transcription | Speech framework | ElevenLabs Scribe (cloud, BYOK) |
 | Auto-update | Sparkle | Squirrel / WinSparkle (planned) |
-| AI generation | Palmier cloud backend (credits) | Multi-provider, bring-your-own-key |
+| AI generation | Palmier cloud backend (credits) | Multi-provider, bring-your-own-key (planned) |
 
-## Architecture (target)
+## Architecture
 
 - **Electron 3-context model.** *Main* (Node): project IO, FFmpeg/ffprobe,
   secrets via Windows `safeStorage`/DPAPI, the embedded MCP server, the agent
   runner. *Preload*: a narrow, context-isolated, sandboxed bridge. *Renderer*
-  (React): UI, live editing state, and the pure engines (run at 60fps).
+  (React): UI, live editing state, and the pure engines.
 - **`EditorController` command API** — every edit is one named, undoable command.
   The UI, the in-app agent, and the MCP server all call the *same* commands.
-- **Frame-based time** throughout (integers), matching upstream.
+- **Frame-based time** throughout (integers), matching upstream — which also
+  makes the FCP7-XML handoff map 1:1 with no rounding.
 - **Preview** = pooled `<video>` + Canvas compositor (real-time); **export** =
-  one FFmpeg `filter_complex` (exact). Both share one geometry/opacity/volume
-  module so they stay consistent.
+  one FFmpeg `filter_complex` (exact). Both share one geometry/opacity/color/
+  volume module so they stay consistent.
 - **AI** = one tool contract (Zod → JSON Schema) + one executor, shared by two
   transports: the in-app agent (`@anthropic-ai/sdk`, BYOK) and the MCP server
   (`@modelcontextprotocol/sdk`). Bring-your-own-key only.
-- **Generation** = a provider-agnostic adapter (Higgs Field first, then fal.ai /
-  Replicate), with your own API keys.
+- **Interchange** = a pure `src/core/interchange/` builder (FCP7 xmeml) + a bake
+  planner, orchestrated in main to produce editable media for the handoff.
 
 ## Roadmap
 
-- **P0 — Repo + scaffold** ✅ _(this commit)_
-- **P1 — Editor:** media import + bin (ffprobe, thumbnails, waveforms), project format
-- **P2 — Editor:** timeline editing (trim / move / split / ripple / snap), undo/redo
-- **P3 — Editor:** real-time multi-track preview
-- **P4 — Editor:** FFmpeg export
-- **P5 — AI:** agent tool contract + in-app chat (BYOK)
-- **P6 — AI:** embedded MCP server (Claude Code / Cursor / Claude Desktop)
-- **P7 — Generation:** Higgs Field (multi-provider adapter)
-- **P8 — Generation + packaging:** fal.ai / Replicate, Windows installer
+Done:
+
+- **P0 — Repo + scaffold** ✅
+- **P1 — Media import + bin** (ffprobe, thumbnails, waveforms), `.vproj` format ✅
+- **P2 — Timeline editing** (trim / move / split / ripple / snap, keyframes, undo/redo) ✅
+- **P3 — Real-time multi-track preview** ✅
+- **P4 — FFmpeg export** ✅
+- **P5 — AI agent tool contract + in-app chat** (BYOK) ✅
+- **P6 — Embedded MCP server** (Claude Code / Cursor / Claude Desktop) ✅
+- **Colorization** — per-clip grade + LUTs, live + export ✅
+- **Multicam sync + angle switching** ✅
+- **Audio enhancement** (voice cleanup / loudness) ✅
+- **Segment by scripts** (transcription + take tabs) ✅ *(pending on-footage E2E)*
+- **NLE handoff** (FCP7 XML + baked media → Premiere / Resolve / FCP) ✅ *(pending real-NLE verification)*
+
+Next:
+
+- **Generation** — Higgs Field, then fal.ai / Replicate (multi-provider, BYOK)
+- **CapCut handoff** — experimental draft-JSON writer
+- **Packaging** — Windows installer (electron-builder) + auto-update
 
 ## Getting started (development)
 
@@ -85,8 +155,12 @@ contract, the MCP design) are re-implemented in TypeScript.
 
 - Windows 10/11
 - [Node.js](https://nodejs.org/) 20+ (developed on v24)
-- [FFmpeg](https://ffmpeg.org/) 6+ on your `PATH` (developed on 8.0.1) — required
-  from Phase 1 onward; the bundled binary will come later
+- [FFmpeg](https://ffmpeg.org/) 6+ on your `PATH` (developed on 8.0.1) — the
+  bundled binary ships with packaging (`npm run fetch:ffmpeg`)
+- Optional: [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) on your `PATH` to import
+  from YouTube/Instagram/TikTok/… links
+- Optional keys (bring-your-own): `ANTHROPIC` key (set in the app's AI panel) for
+  the agent; `ELEVENLABS_API_KEY` in `.env` for transcription
 
 **Run**
 
@@ -95,7 +169,7 @@ npm install      # install dependencies
 npm run dev      # launch the app in development (hot reload)
 npm run build    # production build into out/
 npm run typecheck
-npm test         # unit tests (vitest)
+npm test         # unit + integration tests (vitest)
 ```
 
 ## License
