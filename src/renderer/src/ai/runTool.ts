@@ -15,6 +15,7 @@ import {
   pickDefaultSilenceTarget,
   silencesToCuts
 } from '@core'
+import type { NleTarget } from '../../../shared/ipc'
 import { type SyncAnglesInput, getController, getFrameCapturer, useEditorStore } from '../store'
 
 /** Import sources (file paths, http(s) URLs, or folders) through the store and report asset ids. */
@@ -158,6 +159,78 @@ export async function runEditorTool(name: string, input: unknown): Promise<ToolC
 
   if (name === 'sync_angles') {
     return useEditorStore.getState().syncAnglesTool((input ?? {}) as SyncAnglesInput)
+  }
+
+  if (name === 'segment_by_scripts') {
+    const { clipId, scripts, cleanCuts, apply } = (input ?? {}) as {
+      clipId?: string
+      scripts?: string
+      cleanCuts?: boolean
+      apply?: boolean
+    }
+    const res = await useEditorStore.getState().analyzeTakes(clipId, scripts, cleanCuts ?? false)
+    if (!res.ok) return res
+    const summary = (res.result ?? {}) as Record<string, unknown>
+    if (apply === false) {
+      return { ok: true, result: { ...summary, applied: false, note: 'Plan de tomas listo para revisar en la app.' } }
+    }
+    await useEditorStore.getState().applyTakesPlan()
+    return { ok: true, result: { ...summary, applied: true } }
+  }
+
+  if (name === 'new_project') {
+    useEditorStore.getState().newProject()
+    return { ok: true, result: { message: 'Proyecto nuevo creado.' } }
+  }
+
+  if (name === 'open_project') {
+    const { dir } = (input ?? {}) as { dir?: string }
+    if (typeof dir !== 'string' || dir.length === 0) return { ok: false, error: 'open_project: `dir` es obligatorio.' }
+    await useEditorStore.getState().openProject(dir)
+    const st = useEditorStore.getState()
+    return { ok: true, result: { projectName: st.projectName, projectDir: st.projectDir, assets: st.manifest.entries.length } }
+  }
+
+  if (name === 'save_project') {
+    const { dir } = (input ?? {}) as { dir?: string }
+    await useEditorStore.getState().saveProject(dir)
+    const st = useEditorStore.getState()
+    if (!st.projectDir) return { ok: false, error: 'save_project: el proyecto no tiene ubicación. Pasá `dir`.' }
+    return { ok: true, result: { projectDir: st.projectDir } }
+  }
+
+  if (name === 'export_to_nle') {
+    const { outDir, target, fullLength } = (input ?? {}) as {
+      outDir?: string
+      target?: NleTarget
+      fullLength?: boolean
+    }
+    if (typeof outDir !== 'string' || outDir.length === 0) {
+      return { ok: false, error: 'export_to_nle: `outDir` (ruta absoluta a una carpeta) es obligatorio.' }
+    }
+    const st = useEditorStore.getState()
+    const res = await window.editorBridge.runHandoff({
+      timeline: getController().getTimeline(),
+      manifest: st.manifest,
+      projectDir: st.projectDir,
+      projectName: st.projectName,
+      outDir,
+      target: target ?? 'universal',
+      fullLength
+    })
+    return res.ok
+      ? {
+          ok: true,
+          result: {
+            folder: res.folder,
+            xmlPath: res.xmlPath,
+            bakedCount: res.bakedCount,
+            referencedCount: res.referencedCount,
+            clipItemCount: res.clipItemCount,
+            warnings: res.warnings
+          }
+        }
+      : { ok: false, error: res.error ?? 'Handoff falló' }
   }
 
   if (name === 'apply_auto_angles') {

@@ -14,6 +14,8 @@ import type {
   DetectSilencesRequest,
   ExportRequest,
   ExportResult,
+  HandoffRequest,
+  HandoffResult,
   EnhanceAudioRequest,
   EnhanceAudioResult,
   ExtractAudioRequest,
@@ -29,6 +31,11 @@ import type {
   PreviewIsolateResult,
   OpProgressEvent,
   ProjectData,
+  ReconcileProxiesRequest,
+  ReconcileProxiesResult,
+  LoadTranscriptsResult,
+  SaveTranscriptRequest,
+  SaveTranscriptResult,
   SaveResult,
   SilenceSeconds,
   ThumbnailRequest,
@@ -69,6 +76,14 @@ const editorBridge = {
   onExportProgress: (cb: (fraction: number) => void): void => {
     ipcRenderer.on('export:progress', (_e, fraction: number) => cb(fraction))
   },
+
+  // NLE handoff (interchange): pick a folder, then write an editable XML + baked media.
+  pickHandoffDir: (): Promise<string | null> => ipcRenderer.invoke('project:pickHandoffDir'),
+  runHandoff: (req: HandoffRequest): Promise<HandoffResult> => ipcRenderer.invoke('project:handoff', req),
+  /** Subscribe to handoff progress (0..1) across all baked files. */
+  onHandoffProgress: (cb: (fraction: number) => void): void => {
+    ipcRenderer.on('handoff:progress', (_e, fraction: number) => cb(fraction))
+  },
   /** Subscribe to generic backend op progress (stage label + raw log line) for long ops. */
   onOpProgress: (cb: (p: OpProgressEvent) => void): void => {
     ipcRenderer.on('op:progress', (_e, p: OpProgressEvent) => cb(p))
@@ -87,6 +102,12 @@ const editorBridge = {
     ipcRenderer.invoke('media:enhanceAudioPreview', req),
   generateProxy: (req: GenerateProxyRequest): Promise<GenerateProxyResult> =>
     ipcRenderer.invoke('media:generateProxy', req),
+  reconcileProxies: (req: ReconcileProxiesRequest): Promise<ReconcileProxiesResult> =>
+    ipcRenderer.invoke('media:reconcileProxies', req),
+  saveTranscript: (req: SaveTranscriptRequest): Promise<SaveTranscriptResult> =>
+    ipcRenderer.invoke('transcript:save', req),
+  loadTranscripts: (projectDir: string): Promise<LoadTranscriptsResult> =>
+    ipcRenderer.invoke('transcript:load', projectDir),
 
   // Color (Phase 9.5)
   colorStill: (req: ColorStillRequest): Promise<string | null> => ipcRenderer.invoke('color:still', req),

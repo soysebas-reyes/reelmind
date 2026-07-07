@@ -47,10 +47,29 @@ export interface ProjectMeta {
   modifiedAt: string
 }
 
+/** One editor tab (session) persisted with the project so the guión tabs survive reopen. The controller
+ *  is rebuilt from `timeline`; thumbnails are regenerated on load; transcript lives in the cache. */
+export interface PersistedSession {
+  id: string
+  name: string
+  createdAt: string
+  timeline: Timeline
+  manifest: MediaManifest
+  exportQuality: ExportQuality
+}
+export interface SessionsData {
+  version: number
+  /** Which tab was focused. */
+  activeId: string
+  sessions: PersistedSession[]
+}
+
 export interface ProjectData {
   meta: ProjectMeta
   timeline: Timeline
   manifest: MediaManifest
+  /** All open tabs (raw project + guión tabs). Absent for old single-session projects. */
+  sessions?: SessionsData
 }
 
 export interface SaveResult {
@@ -74,6 +93,36 @@ export interface ExportResult {
   outputPath?: string
   error?: string
   durationSeconds?: number
+}
+
+/** Handoff (interchange) target. v1 emits one FCP7 xmeml (`universal`) that opens in all three;
+ *  the specific labels drive UI copy and leave room for a future CapCut writer. */
+export type NleTarget = 'premiere' | 'resolve' | 'finalcut' | 'universal'
+
+/** Export an EDITABLE NLE project (XML) + baked media (our grade + audio enhancement pre-applied). */
+export interface HandoffRequest {
+  timeline: Timeline
+  manifest: MediaManifest
+  projectDir: string | null
+  projectName: string
+  /** Directory the user picked; the handoff folder is created inside it. */
+  outDir: string
+  target: NleTarget
+  /** Bake whole sources instead of just the used range (bigger files, wider re-trim). */
+  fullLength?: boolean
+}
+
+export interface HandoffResult {
+  ok: boolean
+  /** Absolute path to the written .xml. */
+  xmlPath?: string
+  /** Absolute path to the handoff folder (media + xml + luts + README). */
+  folder?: string
+  bakedCount?: number
+  referencedCount?: number
+  clipItemCount?: number
+  warnings?: string[]
+  error?: string
 }
 
 /** AI completion proxy. The renderer builds Anthropic-shaped `messages`/`tools` and the main
@@ -181,6 +230,18 @@ export interface GenerateProxyResult {
   error?: string
 }
 
+/** media:reconcileProxies — re-link preview proxies already present on disk (reopened project reuses them
+ *  instead of regenerating). Returns only the entries whose proxyPath should change. */
+export interface ReconcileProxiesRequest {
+  manifest: MediaManifest
+  projectDir: string | null
+}
+export interface ReconcileProxiesResult {
+  ok: boolean
+  relinked?: { id: string; proxyPath: string }[]
+  error?: string
+}
+
 /** media:computeAudioOffset — cross-correlate two videos' audio to find their time offset (multicam). */
 export interface AudioOffsetRequest {
   pathA: string
@@ -219,6 +280,24 @@ export interface TranscribeResult {
   ok: boolean
   text?: string
   words?: TranscriptWord[]
+  error?: string
+}
+
+/** transcript:save / transcript:load — persist ElevenLabs transcripts in the project `cache/` (keyed by
+ *  mediaRef) so every transcript-consuming feature reuses them across reopens instead of re-transcribing. */
+export interface SaveTranscriptRequest {
+  projectDir: string
+  mediaRef: string
+  words: TranscriptWord[]
+}
+export interface SaveTranscriptResult {
+  ok: boolean
+  error?: string
+}
+export interface LoadTranscriptsResult {
+  ok: boolean
+  /** mediaRef → words. */
+  transcripts?: Record<string, TranscriptWord[]>
   error?: string
 }
 

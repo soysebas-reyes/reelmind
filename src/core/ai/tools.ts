@@ -845,6 +845,59 @@ export const editorTools: ToolDef[] = [
       c.runAs('agent', () => c.setTrackRole(input.trackId, input.role ?? undefined))
       return { ok: true }
     }
+  ),
+
+  // ── Guiones / tomas + handoff a editor (host-executed) ────────────────────────────────────────
+  tool(
+    'segment_by_scripts',
+    'Segment a raw clip into TAKES by its spoken scripts ("guiones"). Transcribes the clip (ElevenLabs) if not cached, then uses Claude to align each pasted guión to the span where it was recorded and (optionally) cut fillers/false-starts/repeats. Pass `scripts` (the guiones as text, one block per guión, in order) to align to them, or omit to auto-detect take boundaries. `clipId` selects the raw clip (defaults to the optimized audio / first audible clip). `cleanCuts` (default false) enables aggressive filler/silence cutting. `apply` (default true) builds the take tabs; false leaves the plan for the user to review in the app. NOTE: executed by the host app (transcription + Claude), not the timeline core.',
+    z.object({
+      clipId: z.string().optional(),
+      scripts: z.string().optional(),
+      cleanCuts: z.boolean().optional(),
+      apply: z.boolean().optional()
+    }),
+    () => {
+      throw new Error('segment_by_scripts is executed by the host app, not the core executor')
+    }
+  ),
+  tool(
+    'export_to_nle',
+    'Export an EDITABLE project for Premiere Pro / DaVinci Resolve / Final Cut (FCP7 xmeml) PLUS baked media with our color grade + audio enhancement already applied, so the editor finishes subtitles/effects there. Writes a `handoff/<name>-<timestamp>/` folder (the .xml + media/ + luts/ + README) inside `outDir`. `outDir` is REQUIRED (absolute path). `target` is a label (premiere|resolve|finalcut|universal; default universal — all emit the same xmeml). `fullLength` (default false) bakes whole sources instead of just the used range (bigger files, wider re-trim). Returns the folder path + counts + warnings. NOTE: executed by the host app (FFmpeg + filesystem), not the timeline core.',
+    z.object({
+      outDir: z.string().min(1),
+      target: z.enum(['premiere', 'resolve', 'finalcut', 'universal']).optional(),
+      fullLength: z.boolean().optional()
+    }),
+    () => {
+      throw new Error('export_to_nle is executed by the host app, not the core executor')
+    }
+  ),
+
+  // ── Ciclo de vida del proyecto (host-executed; para sesiones persistentes vía Claude Code) ────────
+  tool(
+    'new_project',
+    'Start a fresh, empty project (clears the timeline + media bin). Use before importing a new batch. NOTE: executed by the host app, not the timeline core.',
+    z.object({}).strict(),
+    () => {
+      throw new Error('new_project is executed by the host app, not the core executor')
+    }
+  ),
+  tool(
+    'open_project',
+    'Open an existing ReelMind project package (a `.vproj` directory) by absolute path, restoring its timeline, media and take tabs. NOTE: executed by the host app (filesystem), not the timeline core.',
+    z.object({ dir: z.string().min(1).describe('Absolute path to the .vproj project directory.') }),
+    () => {
+      throw new Error('open_project is executed by the host app, not the core executor')
+    }
+  ),
+  tool(
+    'save_project',
+    'Save the current project. Pass `dir` (an absolute `.vproj` path) to save/relocate there; omit to save to the project\'s existing location (errors if it was never saved). NOTE: executed by the host app (filesystem), not the timeline core.',
+    z.object({ dir: z.string().optional() }),
+    () => {
+      throw new Error('save_project is executed by the host app, not the core executor')
+    }
   )
 ]
 
@@ -860,7 +913,12 @@ export const HOST_EXECUTED_TOOLS: ReadonlySet<string> = new Set([
   'transcribe_clip',
   'get_transcript',
   'list_assets',
-  'get_frame_preview'
+  'get_frame_preview',
+  'segment_by_scripts',
+  'export_to_nle',
+  'new_project',
+  'open_project',
+  'save_project'
 ])
 
 export const editorToolsByName: Map<string, ToolDef> = new Map(editorTools.map((t) => [t.name, t]))
@@ -873,9 +931,13 @@ const TOOL_TIMEOUTS: Record<string, number> = {
   sync_angles: 600_000,
   apply_auto_angles: 600_000,
   remove_silences: 600_000,
-  import_media: 600_000, // may download URLs
+  import_media: 600_000, // may download URLs (yt-dlp)
   import_folder: 600_000,
-  extract_audio: 600_000
+  extract_audio: 600_000,
+  segment_by_scripts: 1_800_000, // transcription + Claude alignment on a long raw clip
+  export_to_nle: 1_800_000, // bakes media per source
+  open_project: 600_000, // reconciles proxies + regenerates thumbnails on load
+  save_project: 600_000
 }
 for (const [name, ms] of Object.entries(TOOL_TIMEOUTS)) {
   const def = editorToolsByName.get(name)

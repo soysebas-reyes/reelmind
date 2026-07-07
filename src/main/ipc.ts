@@ -15,11 +15,14 @@ import type {
   DetectSilencesRequest,
   EnhanceAudioRequest,
   ExportRequest,
+  HandoffRequest,
   ExtractAudioRequest,
   GenerateProxyRequest,
   IsolateVoiceRequest,
   PreviewIsolateRequest,
   ProjectData,
+  ReconcileProxiesRequest,
+  SaveTranscriptRequest,
   ThumbnailRequest,
   TranscribeRequest
 } from '../shared/ipc'
@@ -40,13 +43,16 @@ import {
   extractAudio,
   generateProxy,
   generateStillWithColor,
-  generateThumbnail
+  generateThumbnail,
+  reconcileProxies
 } from './ffmpeg'
 import { exportTimeline } from './ffmpeg/exporter'
+import { runHandoff } from './interchange/handoff'
 import { detectSilences } from './ffmpeg/silence'
 import { importMedia } from './media/importer'
 import { importMediaFromSources } from './media/importSources'
 import { loadProject, saveProject } from './project/projectStore'
+import { loadTranscripts, saveTranscript } from './project/transcriptStore'
 
 const MEDIA_EXTENSIONS = [
   'mov',
@@ -154,6 +160,25 @@ export function registerIpc(): void {
     )
   })
 
+  // Pick the destination folder for an NLE handoff (the package goes in a `handoff/…` subfolder inside).
+  ipcMain.handle('project:pickHandoffDir', async () => {
+    const win = focused()
+    const props: 'openDirectory'[] = ['openDirectory']
+    const res = win
+      ? await dialog.showOpenDialog(win, { properties: props })
+      : await dialog.showOpenDialog({ properties: props })
+    return res.canceled || !res.filePaths[0] ? null : res.filePaths[0]
+  })
+
+  // Export an EDITABLE NLE project (FCP7 xmeml) + baked media (our grade + audio enhancement pre-applied).
+  ipcMain.handle('project:handoff', (e, req: HandoffRequest) =>
+    runHandoff(req, {
+      onProgress: (fraction) => e.sender.send('handoff:progress', fraction),
+      resolveLut: (lutRef) =>
+        resolveLut(lutRef, { projectDir: req.projectDir, libraryDir: getLutLibraryDir(), profileDir: profileLutDir() })
+    })
+  )
+
   // Reveal a finished export in the OS file manager (the export confirmation's "show in folder").
   ipcMain.handle('shell:showItem', (_e, filePath: string) => {
     if (filePath) shell.showItemInFolder(filePath)
@@ -209,6 +234,29 @@ export function registerIpc(): void {
         onLine: (line) => e.sender.send('op:progress', { stage: 'proxy', line })
       })
       return { ok: true, outputPath }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+  ipcMain.handle('media:reconcileProxies', async (_e, req: ReconcileProxiesRequest) => {
+    try {
+      const relinked = await reconcileProxies(req.manifest, req.projectDir)
+      return { ok: true, relinked }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+  ipcMain.handle('transcript:save', async (_e, req: SaveTranscriptRequest) => {
+    try {
+      await saveTranscript(req.projectDir, req.mediaRef, req.words)
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+  ipcMain.handle('transcript:load', async (_e, projectDir: string) => {
+    try {
+      return { ok: true, transcripts: await loadTranscripts(projectDir) }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }

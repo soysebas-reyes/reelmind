@@ -546,6 +546,11 @@ button.primary:hover:not(:disabled) {
   z-index: 100;
   animation: backdrop-in var(--dur-2) var(--ease-out);
 }
+/* Transient/blocking overlays (e.g. the progress modal fired from inside another modal) must sit ABOVE
+   the base workflow modals so they never get buried behind the modal that launched them. */
+.modal-backdrop-front {
+  z-index: 200;
+}
 .modal {
   background: var(--surface-1);
   border: 1px solid var(--separator);
@@ -835,6 +840,234 @@ button.primary:hover:not(:disabled) {
   padding-right: var(--space-1);
   margin-top: var(--space-1);
 }
+
+/* Verification phase: selection checklist (left) beside the editable preview (right). Wraps on narrow. */
+.takes-verify-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: stretch;
+  margin-top: var(--space-1);
+}
+.takes-verify-list {
+  flex: 0 1 340px;
+  max-height: 64vh;
+  margin-top: 0;
+}
+.takes-verify-main {
+  flex: 1 1 460px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Editable takes preview (whole raw clip + one colored region per guión, draggable boundaries) ── */
+.takes-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.takes-preview-videowrap {
+  position: relative;
+  width: 100%;
+}
+.takes-preview-video {
+  display: block;
+  width: 100%;
+  max-height: 260px;
+  background: var(--void);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-md);
+  object-fit: contain;
+}
+.takes-preview-proxyhint {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(4px);
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  font-size: var(--text-xs);
+  color: var(--label);
+}
+.takes-preview-proxyhint span {
+  flex: 1;
+  line-height: 1.4;
+}
+.takes-preview-proxyhint button {
+  flex: 0 0 auto;
+}
+.takes-preview-novideo {
+  width: 100%;
+  min-height: 110px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: var(--space-3);
+  background: var(--surface-2);
+  border: 1px dashed var(--separator);
+  border-radius: var(--radius-md);
+  color: var(--label-2);
+  font-size: var(--text-sm);
+}
+.takes-preview-transport {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.takes-preview-play,
+.takes-preview-mute {
+  width: 32px;
+  height: 26px;
+  background: var(--surface-2);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-sm);
+  color: var(--label);
+  cursor: pointer;
+}
+.takes-preview-clock {
+  font-variant-numeric: tabular-nums;
+  color: var(--label-2);
+  font-size: var(--text-sm);
+}
+.takes-preview-track {
+  position: relative;
+  height: 46px;
+  background: var(--surface-2);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  user-select: none;
+  touch-action: none;
+  cursor: pointer;
+}
+.takes-preview-region {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  box-sizing: border-box;
+  min-width: 3px;
+  background: color-mix(in srgb, var(--region-col) 30%, transparent);
+  border: 1px solid var(--region-col);
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+}
+.takes-preview-region.selected {
+  z-index: 3;
+  background: color-mix(in srgb, var(--region-col) 46%, transparent);
+  box-shadow: 0 0 0 2px var(--region-col);
+}
+.takes-preview-region.rejected {
+  opacity: 0.35;
+}
+.takes-preview-region-label {
+  position: absolute;
+  top: 2px;
+  left: 5px;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-bold);
+  color: var(--label);
+  pointer-events: none;
+}
+.takes-preview-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  z-index: 4;
+  background: var(--region-col);
+  opacity: 0.9;
+  cursor: ew-resize;
+}
+.takes-preview-handle.left {
+  left: -1px;
+  border-radius: var(--radius-xs) 0 0 var(--radius-xs);
+}
+.takes-preview-handle.right {
+  right: -1px;
+  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+}
+.takes-preview-cut {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: repeating-linear-gradient(45deg, rgba(0, 0, 0, 0.5) 0 3px, transparent 3px 6px);
+  pointer-events: none;
+}
+.takes-preview-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  z-index: 5;
+  background: #ff5c7a;
+  pointer-events: none;
+}
+.takes-preview-speechend {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px dashed var(--label-3);
+  z-index: 2;
+  pointer-events: none;
+}
+.takes-preview-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--fill-3);
+  border-radius: var(--radius-sm);
+}
+.takes-preview-controls-title {
+  width: 100%;
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-sm);
+}
+.takes-preview-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--label-2);
+}
+.takes-preview-field label {
+  min-width: 40px;
+}
+.takes-preview-field input {
+  width: 74px;
+  padding: 3px 6px;
+  background: var(--surface-2);
+  color: var(--label);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-xs);
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+}
+.takes-preview-field button,
+.takes-preview-playregion {
+  padding: 3px 8px;
+  background: var(--surface-2);
+  color: var(--label);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-xs);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.takes-preview-field button:hover,
+.takes-preview-playregion:hover,
+.takes-preview-play:hover,
+.takes-preview-mute:hover {
+  background: var(--surface-3);
+}
 .angleplan-legend {
   display: flex;
   flex-wrap: wrap;
@@ -931,6 +1164,45 @@ button.primary:hover:not(:disabled) {
   display: flex;
   gap: var(--space-2);
   margin-top: var(--space-4);
+}
+
+/* "Enviar a editor ▾" dropdown (topbar handoff target picker). */
+.menu-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+.nle-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 41;
+  min-width: 176px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-1);
+  background: var(--surface-2);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-popover);
+}
+.nle-menu button {
+  justify-content: flex-start;
+  width: 100%;
+  text-align: left;
+}
+.handoff-warnings {
+  margin: var(--space-2) 0 0;
+  padding-left: 1.1rem;
+  text-align: left;
+  font-size: var(--text-sm);
+  color: var(--label-2);
+  max-height: 30vh;
+  overflow-y: auto;
+}
+.handoff-warnings li {
+  margin: 2px 0;
 }
 .sync-angles {
   font-size: var(--text-sm);

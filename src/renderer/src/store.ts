@@ -33,13 +33,14 @@ import {
   newId,
   presetById,
   resolvePasteTargets,
+  resyncTrackHeads,
   serializeSelection,
   splitScriptBlocks,
   totalFrames
 } from '@core'
 import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
-import { PROJECT_SCHEMA_VERSION, type ExportQuality, type FfmpegStatus, type ImportedAsset, type TranscriptWord } from '../../shared/ipc'
+import { PROJECT_SCHEMA_VERSION, type ExportQuality, type FfmpegStatus, type HandoffResult, type ImportedAsset, type NleTarget, type SessionsData, type TranscriptWord } from '../../shared/ipc'
 
 // ── Sessions (tabs) ───────────────────────────────────────────────────────────────────────────
 // Each open project is a Session with its own EditorController. The reactive store below ALWAYS
@@ -67,6 +68,7 @@ function makeSession(init: {
   projectName?: string
   createdAt?: string
   manifest?: MediaManifest
+  thumbnails?: Record<string, string | null>
   exportQuality?: ExportQuality
 } = {}): Session {
   return {
@@ -77,7 +79,7 @@ function makeSession(init: {
     projectName: init.projectName ?? init.name ?? 'Untitled Project',
     createdAt: init.createdAt ?? new Date().toISOString(),
     manifest: init.manifest ?? makeManifest(),
-    thumbnails: {},
+    thumbnails: init.thumbnails ?? {},
     transcript: null,
     exportQuality: init.exportQuality ?? 'veryHigh',
     dirty: false
@@ -99,8 +101,21 @@ export function getController(): EditorController {
 /** Create a new session (tab) from a ready timeline + manifest and register its tab. Returns its id.
  *  Does NOT switch to it — call `loadSessionIntoStore` after. `projectDir` MUST be inherited from the
  *  parent so project-relative media (proxies, enhanced audio) and export-per-tab resolve correctly. */
-function openSession(name: string, timeline: Timeline, manifest: MediaManifest, projectDir: string | null): string {
-  const sess = makeSession({ name, projectName: name, timeline, manifest: structuredClone(manifest), projectDir })
+function openSession(
+  name: string,
+  timeline: Timeline,
+  manifest: MediaManifest,
+  projectDir: string | null,
+  thumbnails?: Record<string, string | null>
+): string {
+  const sess = makeSession({
+    name,
+    projectName: name,
+    timeline,
+    manifest: structuredClone(manifest),
+    projectDir,
+    thumbnails: thumbnails ? { ...thumbnails } : undefined
+  })
   subscribeSession(sess)
   sessions.push(sess)
   useEditorStore.setState((s) => {
@@ -447,12 +462,20 @@ async function buildAnglePlan(
  *  same file. Source files don't change (cleaning only rearranges timeline clips), so the cache stays valid. */
 const transcriptCache = new Map<string, TranscriptWord[]>()
 
+/** Remember a transcript for a source in-memory AND persist it to the project `cache/` (fire-and-forget)
+ *  so every feature reuses it across reopens without re-transcribing. Keyed by `mediaRef` (stable). */
+function rememberTranscript(mediaRef: string, words: TranscriptWord[]): void {
+  transcriptCache.set(mediaRef, words)
+  const projectDir = useEditorStore.getState().projectDir
+  if (projectDir) void window.editorBridge.saveTranscript({ projectDir, mediaRef, words })
+}
+
 async function transcribeCached(mediaPath: string, mediaRef: string): Promise<TranscriptWord[] | null> {
   const hit = transcriptCache.get(mediaRef)
   if (hit) return hit
   const res = await window.editorBridge.transcribeMedia({ mediaPath, languageCode: 'es' })
   if (!res.ok || !res.words) return null
-  transcriptCache.set(mediaRef, res.words)
+  rememberTranscript(mediaRef, res.words)
   return res.words
 }
 
@@ -593,6 +616,10 @@ export interface EditorState {
   exportProgress: number | null
   /** Set when an export finishes (ok with path, or error) — drives the confirmation modal. */
   exportResult: { ok: boolean; outputPath?: string; error?: string } | null
+  /** 0..1 while an NLE handoff bakes media, else null — drives the handoff progress overlay. */
+  handoffProgress: number | null
+  /** Set when a handoff finishes — drives the handoff result modal. */
+  handoffResult: HandoffResult | null
   /** True while audio-offset analysis runs — drives the sync analysis spinner. */
   syncBusy: boolean
   /** Detected offset (or error) — drives the sync confirmation modal. */
@@ -635,8 +662,11 @@ export interface EditorState {
   setTakesInputOpen: (open: boolean) => void
   importFiles: () => Promise<void>
   importFromSources: (sources: string[]) => Promise<ImportedAsset[]>
-  saveProject: () => Promise<void>
-  openProject: () => Promise<void>
+  /** Save the project. `dir` (absolute .vproj path) saves there headlessly (MCP); omit to use the
+   *  current projectDir or pop a save dialog. */
+  saveProject: (dir?: string) => Promise<void>
+  /** Open a project. `dir` opens it headlessly (MCP); omit to pop the open dialog. */
+  openProject: (dir?: string) => Promise<void>
   exportProject: () => Promise<void>
   /** Render to a given path without a dialog — used by the AI `export` tool (and MCP). */
   exportToPath: (outputPath: string) => Promise<ToolCallResult>
@@ -645,6 +675,9 @@ export interface EditorState {
   setExportQuality: (q: ExportQuality) => void
   dismissExportResult: () => void
   revealExport: (filePath: string) => void
+  /** Export an EDITABLE NLE project (XML + baked media) so the editor finishes in Premiere/Resolve/FCP. */
+  exportToNle: (target: NleTarget, opts?: { fullLength?: boolean }) => Promise<void>
+  dismissHandoffResult: () => void
   /** Extract a video clip/asset's audio into a new bin asset. */
   extractAudioFromClip: (clipOrAssetId: string) => Promise<ToolCallResult>
   /** Voice-cleanup an AUDIO clip's audio (re-render via FFmpeg) and replace its media in place. */
@@ -686,6 +719,10 @@ export interface EditorState {
   applyTakesPlan: () => Promise<void>
   /** Marca/desmarca una toma (por su posición en `takes`). */
   setTakeAccepted: (takeArrayIndex: number, accepted: boolean) => void
+  /** Ajusta los límites [inicio, fin] en ms de una toma (por su posición en `takes`) desde la vista
+   *  previa editable. Sin recorte superior (la UI conoce la duración real del medio; `buildTakeTimeline`
+   *  vuelve a clampar al rango real del clip al aplicar); solo evita inversión/ancho cero y marca `edited`. */
+  setTakeBounds: (takeArrayIndex: number, startMs: number, endMs: number) => void
   /** Marca/desmarca un corte (por su posición en `cuts`). */
   setCutAccepted: (cutArrayIndex: number, accepted: boolean) => void
   /** Descarta el plan de tomas sin exportar. */
@@ -738,6 +775,8 @@ export const useEditorStore = create<EditorState>()(
     exportQuality: 'veryHigh',
     exportProgress: null,
     exportResult: null,
+    handoffProgress: null,
+    handoffResult: null,
     syncBusy: false,
     syncResult: null,
     transcribing: false,
@@ -759,6 +798,11 @@ export const useEditorStore = create<EditorState>()(
       window.editorBridge.onExportProgress((fraction) =>
         set((s) => {
           s.exportProgress = fraction
+        })
+      )
+      window.editorBridge.onHandoffProgress((fraction) =>
+        set((s) => {
+          s.handoffProgress = fraction
         })
       )
       window.editorBridge.onOpProgress(({ line }) => {
@@ -828,8 +872,14 @@ export const useEditorStore = create<EditorState>()(
       return imported
     },
 
-    saveProject: async () => {
-      let dir = get().projectDir
+    saveProject: async (dirArg) => {
+      let dir = dirArg ?? get().projectDir
+      if (dirArg && dirArg !== get().projectDir) {
+        set((s) => {
+          s.projectDir = dirArg
+          s.projectName = projectNameFromPath(dirArg)
+        })
+      }
       if (!dir) {
         const picked = await window.editorBridge.pickSaveProjectPath(get().projectName)
         if (!picked) return
@@ -842,21 +892,39 @@ export const useEditorStore = create<EditorState>()(
       set((s) => {
         s.busy = 'Saving…'
       })
+      saveActiveToSession() // sync the active tab's live edits into its Session before snapshotting all tabs
       const { projectName, createdAt, manifest } = get()
+      // Persist EVERY tab (raw project + guión tabs) so a reopened project restores its segmentation.
+      const sessionsData = {
+        version: 1,
+        activeId,
+        sessions: sessions.map((sess) => ({
+          id: sess.id,
+          name: sess.name,
+          createdAt: sess.createdAt,
+          timeline: sess.controller.getTimeline(),
+          manifest: sess.manifest,
+          exportQuality: sess.exportQuality
+        }))
+      }
       const res = await window.editorBridge.saveProject(dir, {
         meta: { schemaVersion: PROJECT_SCHEMA_VERSION, name: projectName, createdAt, modifiedAt: new Date().toISOString() },
         timeline: getController().getTimeline(),
-        manifest
+        manifest,
+        sessions: sessionsData
       })
       set((s) => {
         s.busy = null
-        if (res.ok) s.dirty = false
-        else s.lastError = res.error ?? 'Save failed'
+        if (res.ok) {
+          s.dirty = false
+          for (const t of s.tabs) t.dirty = false
+        } else s.lastError = res.error ?? 'Save failed'
       })
+      if (res.ok) for (const sess of sessions) sess.dirty = false
     },
 
-    openProject: async () => {
-      const dir = await window.editorBridge.pickOpenProjectDir()
+    openProject: async (dirArg) => {
+      const dir = dirArg ?? (await window.editorBridge.pickOpenProjectDir())
       if (!dir) return
       set((s) => {
         s.busy = 'Opening…'
@@ -864,19 +932,45 @@ export const useEditorStore = create<EditorState>()(
       })
       try {
         const data = await window.editorBridge.loadProject(dir)
-        getController().load(data.timeline)
-        set((s) => {
-          s.projectDir = dir
-          s.projectName = data.meta.name || projectNameFromPath(dir)
-          s.createdAt = data.meta.createdAt
-          s.manifest = data.manifest
-          s.thumbnails = {}
-          s.dirty = false
-        })
-        // Regenerate session thumbnails for restored assets.
-        const items = data.manifest.entries
-          .map((e) => {
-            const path = expectedPath(data.manifest, e.id, dir)
+        // Restore cached transcripts first so any transcription reuse is available immediately.
+        try {
+          const tc = await window.editorBridge.loadTranscripts(dir)
+          if (tc.ok && tc.transcripts) for (const [ref, words] of Object.entries(tc.transcripts)) transcriptCache.set(ref, words)
+        } catch {
+          /* cache is best-effort */
+        }
+
+        if (data.sessions && data.sessions.sessions.length > 0) {
+          // Rebuild ALL tabs (raw project + guión tabs) and focus the saved active one.
+          restoreSessions(data.sessions, dir)
+        } else {
+          // Old single-session project: load into the active session as before.
+          getController().load(data.timeline)
+          set((s) => {
+            s.projectDir = dir
+            s.projectName = data.meta.name || projectNameFromPath(dir)
+            s.createdAt = data.meta.createdAt
+            s.manifest = data.manifest
+            s.thumbnails = {}
+            s.dirty = false
+          })
+        }
+
+        // Re-link preview proxies on disk + regenerate thumbnails on the ACTIVE session's manifest (all
+        // tabs share the same sources, so one pass covers every mediaRef). Copy the results to every tab.
+        const activeManifest = get().manifest
+        const rec = await window.editorBridge.reconcileProxies({ manifest: activeManifest, projectDir: dir })
+        if (rec.ok && rec.relinked && rec.relinked.length > 0) {
+          set((s) => {
+            for (const r of rec.relinked!) {
+              const e = s.manifest.entries.find((x) => x.id === r.id)
+              if (e) e.proxyPath = r.proxyPath
+            }
+          })
+        }
+        const items = get()
+          .manifest.entries.map((e) => {
+            const path = expectedPath(get().manifest, e.id, dir)
             return path ? { id: e.id, path, type: e.type, durationSeconds: e.duration } : null
           })
           .filter((x): x is NonNullable<typeof x> => x !== null)
@@ -886,6 +980,9 @@ export const useEditorStore = create<EditorState>()(
             for (const t of thumbs) s.thumbnails[t.id] = t.thumbnail
           })
         }
+        // Share the regenerated thumbnails across all tabs so switching tabs shows posters immediately.
+        const thumbMap = get().thumbnails
+        for (const sess of sessions) sess.thumbnails = { ...thumbMap }
       } catch (e) {
         set((s) => {
           s.lastError = e instanceof Error ? e.message : String(e)
@@ -957,6 +1054,36 @@ export const useEditorStore = create<EditorState>()(
         s.exportResult = null
       }),
     revealExport: (filePath) => void window.editorBridge.showItemInFolder(filePath),
+
+    exportToNle: async (target, opts) => {
+      const dir = await window.editorBridge.pickHandoffDir()
+      if (!dir) return
+      set((s) => {
+        s.busy = 'Preparando handoff…'
+        s.lastError = null
+        s.handoffProgress = 0
+        s.handoffResult = null
+      })
+      const res = await window.editorBridge.runHandoff({
+        timeline: getController().getTimeline(),
+        manifest: get().manifest,
+        projectDir: get().projectDir,
+        projectName: get().projectName,
+        outDir: dir,
+        target,
+        fullLength: opts?.fullLength
+      })
+      set((s) => {
+        s.busy = null
+        s.handoffProgress = null
+        s.handoffResult = res
+        if (!res.ok) s.lastError = res.error ?? 'Handoff falló'
+      })
+    },
+    dismissHandoffResult: () =>
+      set((s) => {
+        s.handoffResult = null
+      }),
 
     extractAudioFromClip: async (clipOrAssetId) => {
       const c = getController()
@@ -1355,20 +1482,30 @@ export const useEditorStore = create<EditorState>()(
       const manifest = get().manifest
       let mediaPath: string | null = null
 
-      // Try as asset id first, then as clip id.
+      // Try as asset id first, then as clip id. Capture the mediaRef too (the stable transcript cache key).
+      let mediaRef: string | null = null
       const entry = manifest.entries.find((e) => e.id === clipOrAssetId)
       if (entry) {
+        mediaRef = clipOrAssetId
         mediaPath = expectedPath(manifest, clipOrAssetId, get().projectDir)
       } else {
         for (const track of tl.tracks) {
           const clip = track.clips.find((c) => c.id === clipOrAssetId)
           if (clip) {
+            mediaRef = clip.mediaRef
             mediaPath = expectedPath(manifest, clip.mediaRef, get().projectDir)
             break
           }
         }
       }
-      if (!mediaPath) return { ok: false, error: `transcribe: clip/asset "${clipOrAssetId}" not found.` }
+      if (!mediaPath || !mediaRef) return { ok: false, error: `transcribe: clip/asset "${clipOrAssetId}" not found.` }
+
+      // Reuse a cached transcript (this session or restored from cache/ on open) — no re-transcription.
+      const cached = transcriptCache.get(mediaRef)
+      if (cached) {
+        set((s) => { s.transcript = cached })
+        return { ok: true, result: { wordCount: cached.length } }
+      }
 
       set((s) => { s.transcribing = true; s.lastError = null })
       try {
@@ -1377,6 +1514,7 @@ export const useEditorStore = create<EditorState>()(
           set((s) => { s.transcribing = false; s.lastError = res.error ?? 'Transcription failed.' })
           return { ok: false, error: res.error }
         }
+        rememberTranscript(mediaRef, res.words)
         set((s) => { s.transcribing = false; s.transcript = res.words! })
         return { ok: true, result: { wordCount: res.words!.length, text: res.text } }
       } catch (e) {
@@ -1558,7 +1696,7 @@ clearTranscript: () => set((s) => { s.transcript = null }),
             return { ok: false, error: msg }
           }
           words = r.words
-          transcriptCache.set(raw.mediaRef, words)
+          rememberTranscript(raw.mediaRef, words)
         }
         set((s) => { s.transcript = words })
         get().setStep('transcribe', 'done')
@@ -1603,6 +1741,20 @@ clearTranscript: () => set((s) => { s.transcript = null }),
         if (s.takesPlan && i >= 0 && i < s.takesPlan.takeAccepted.length) s.takesPlan.takeAccepted[i] = accepted
       }),
 
+    setTakeBounds: (i, startMs, endMs) =>
+      set((s) => {
+        const plan = s.takesPlan
+        if (!plan || i < 0 || i >= plan.takes.length) return
+        const minGap = 1000 / (plan.fps || 30) // never let a take collapse below ~1 frame
+        const a = Math.max(0, startMs)
+        const b = Math.max(a + minGap, endMs) // defensive: never inverted / zero-width (UI already clamps per edge)
+        const t = plan.takes[i]
+        t.startMs = a
+        t.endMs = b
+        t.edited = true
+        t.startCorrected = false // provenance no longer meaningful once the human moves the boundary
+      }),
+
     setCutAccepted: (i, accepted) =>
       set((s) => {
         if (s.takesPlan && i >= 0 && i < s.takesPlan.cutAccepted.length) s.takesPlan.cutAccepted[i] = accepted
@@ -1638,10 +1790,25 @@ clearTranscript: () => set((s) => { s.transcript = null }),
         return
       }
 
+      // Ensure every VIDEO angle used by the timeline has a proxy BEFORE opening the tabs. A camera 4K
+      // angle without a proxy renders black in the tab's preview (and, being the top track, occludes the
+      // others). The proxy is a WHOLE-video file inherited by every tab via the cloned manifest and just
+      // plays its trimmed span — so it's generated ONCE here and reused across all guiones (never per-tab).
+      const needsProxy = tl.tracks.some(
+        (t) =>
+          t.type === 'video' &&
+          t.clips.some((cl) => {
+            const e = get().manifest.entries.find((x) => x.id === cl.mediaRef)
+            return e?.type === 'video' && !e.proxyPath
+          })
+      )
+      if (needsProxy) await get().optimizePlayback()
+
       // Open each accepted take as its own editable tab (a cleaned segment). Export happens later,
       // manually, from each tab's normal "Exportar" button.
       const manifest = get().manifest
       const projectDir = get().projectDir // inherit so proxies/enhanced audio/export resolve in take tabs
+      const thumbnails = get().thumbnails // inherit posters so a missing-proxy angle shows a frame, not black
       saveActiveToSession() // persist the current (raw) tab before opening the take tabs
       let firstId = ''
       const failed: string[] = []
@@ -1653,7 +1820,24 @@ clearTranscript: () => set((s) => { s.transcript = null }),
           failed.push(`Guión ${take.index}: ${take.title}`)
           continue
         }
-        const id = openSession(`Guión ${take.index}`, takeTimeline, manifest, projectDir)
+        // DIAGNOSTIC (temporary): compare where the preview says the take starts vs where the built tab
+        // actually starts, to pinpoint any "inicio cortado" (trim clamp vs leading cut vs other).
+        const firstClip = takeTimeline.tracks.flatMap((t) => t.clips).sort((a, b) => a.startFrame - b.startFrame)[0]
+        console.log('[reelmind] applyTakes', {
+          guion: take.index,
+          startMs: Math.round(take.startMs),
+          endMs: Math.round(take.endMs),
+          expectedStartSrcFrame: Math.round((take.startMs / 1000) * tl.fps),
+          refTrimStart: raw.trimStartFrame,
+          refDur: raw.durationFrames,
+          refSpeed: raw.speed,
+          fps: tl.fps,
+          cuts: cutsForTake.length,
+          firstCutMs: cutsForTake[0] ? [Math.round(cutsForTake[0].startMs), Math.round(cutsForTake[0].endMs)] : null,
+          tabFirstClipTrimStart: firstClip?.trimStartFrame,
+          edited: take.edited === true
+        })
+        const id = openSession(`Guión ${take.index}`, takeTimeline, manifest, projectDir, thumbnails)
         if (!firstId) firstId = id
       }
       if (failed.length > 0) {
@@ -1666,6 +1850,7 @@ clearTranscript: () => set((s) => { s.transcript = null }),
       set((s) => { s.takesPlan = null; s.takesInputOpen = false })
       const target = sessions.find((s) => s.id === firstId)
       if (target) loadSessionIntoStore(target)
+      set((s) => { s.dirty = true }) // the new guión tabs are unsaved → trigger autosave to persist them
     },
 
     setPlaying: (playing) => set((s) => { s.isPlaying = playing }),
@@ -1836,6 +2021,36 @@ function loadSessionIntoStore(sess: Session): void {
     s.takesPlan = null
     s.syncResult = null
   })
+}
+
+/** Replace the whole tab set with sessions restored from disk (open project). Rebuilds each controller
+ *  from its saved timeline, preserves ids + order + the saved active tab, and mirrors the active one into
+ *  the store. Used when a project was saved WITH its guión tabs (sessions.json present). */
+function restoreSessions(data: SessionsData, dir: string): void {
+  const restored = data.sessions.map((ps) => {
+    // Heal a guión tab saved out of sync (per-track leading gap). Scoped to take tabs — a general project
+    // can legitimately have overlay/B-roll tracks starting at different frames, which must NOT be moved.
+    if (ps.name.startsWith('Guión ')) resyncTrackHeads(ps.timeline)
+    const sess = makeSession({
+      name: ps.name,
+      projectName: ps.name,
+      timeline: ps.timeline,
+      manifest: ps.manifest,
+      projectDir: dir,
+      createdAt: ps.createdAt,
+      exportQuality: ps.exportQuality
+    })
+    sess.id = ps.id // preserve the saved tab id (matches data.activeId)
+    subscribeSession(sess)
+    return sess
+  })
+  sessions.length = 0
+  sessions.push(...restored)
+  const active = restored.find((s) => s.id === data.activeId) ?? restored[0]
+  useEditorStore.setState((s) => {
+    s.tabs = restored.map((r) => ({ id: r.id, name: r.name, dirty: false }))
+  })
+  loadSessionIntoStore(active) // sets activeId + mirrors the active session
 }
 
 // Subscribe the initial session created at module load.

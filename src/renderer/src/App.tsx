@@ -149,6 +149,10 @@ export default function App() {
     exportResult,
     dismissExportResult,
     revealExport,
+    exportToNle,
+    handoffProgress,
+    handoffResult,
+    dismissHandoffResult,
     extractAudioFromClip,
     analyzeSyncForSelection,
     applySyncAngles,
@@ -176,6 +180,7 @@ export default function App() {
   const [syncSwap, setSyncSwap] = useState(false)
   const [syncKeepAudio, setSyncKeepAudio] = useState<'frontal' | 'lateral'>('frontal')
   const [syncAutoColor, setSyncAutoColor] = useState(true)
+  const [nleMenuOpen, setNleMenuOpen] = useState(false)
   useEffect(() => {
     localStorage.setItem('reelmind.layout', JSON.stringify(layout))
   }, [layout])
@@ -309,6 +314,39 @@ export default function App() {
               <button className="primary" onClick={() => void exportProject()} disabled={!!busy} title="Exportar Video">
                 <Icon name="export" /> Exportar
               </button>
+              <div style={{ position: 'relative' }}>
+                <button
+                  onClick={() => setNleMenuOpen((o) => !o)}
+                  disabled={!!busy}
+                  title="Enviar a Premiere / DaVinci / Final Cut (proyecto editable + media con color y audio ya aplicados)"
+                >
+                  <Icon name="export" /> Enviar a editor ▾
+                </button>
+                {nleMenuOpen && (
+                  <>
+                    <div className="menu-scrim" onMouseDown={() => setNleMenuOpen(false)} />
+                    <div className="nle-menu">
+                      {(
+                        [
+                          ['premiere', 'Premiere Pro'],
+                          ['resolve', 'DaVinci Resolve'],
+                          ['finalcut', 'Final Cut Pro']
+                        ] as const
+                      ).map(([target, label]) => (
+                        <button
+                          key={target}
+                          onClick={() => {
+                            setNleMenuOpen(false)
+                            void exportToNle(target)
+                          }}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -563,6 +601,67 @@ export default function App() {
         </div>
       )}
 
+      {/* NLE handoff: baking media (color + audio) then writing the editable XML. */}
+      {handoffProgress !== null && (
+        <div className="modal-backdrop">
+          <div className="modal export-modal" onMouseDown={(e) => e.stopPropagation()}>
+            <Reelo state={handoffProgress >= 1 ? 'success' : 'progress'} size={72} progress={handoffProgress} ariaLabel="Reelo preparando handoff" />
+            <h2>{handoffProgress >= 1 ? '¡Listo para tu editor!' : 'Preparando para tu editor…'}</h2>
+            <div className="export-bar">
+              <div className="export-bar-fill" style={{ width: `${Math.round(handoffProgress * 100)}%` }} />
+            </div>
+            <p className="export-pct">{Math.round(handoffProgress * 100)}%</p>
+            <p className="export-note">
+              Aplicando tu color y realce de audio a la media y armando el proyecto editable. No cierres la app.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {handoffResult && (
+        <div className="modal-backdrop" onMouseDown={() => dismissHandoffResult()}>
+          <div className="modal export-modal" onMouseDown={(e) => e.stopPropagation()}>
+            {handoffResult.ok ? (
+              <>
+                <div className="export-check">✓</div>
+                <h2>Proyecto listo para tu editor</h2>
+                <p className="export-path" title={handoffResult.folder}>
+                  {handoffResult.folder}
+                </p>
+                <p className="export-note">
+                  {handoffResult.clipItemCount ?? 0} clips · {handoffResult.bakedCount ?? 0} horneados ·{' '}
+                  {handoffResult.referencedCount ?? 0} referenciados. Importá el .xml desde tu editor (ver README).
+                </p>
+                {handoffResult.warnings && handoffResult.warnings.length > 0 && (
+                  <ul className="handoff-warnings">
+                    {handoffResult.warnings.map((w, i) => (
+                      <li key={i}>{w}</li>
+                    ))}
+                  </ul>
+                )}
+                <div className="export-actions">
+                  {handoffResult.xmlPath && (
+                    <button className="primary" onClick={() => revealExport(handoffResult.xmlPath as string)}>
+                      Mostrar en carpeta
+                    </button>
+                  )}
+                  <button onClick={() => dismissHandoffResult()}>Cerrar</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="export-fail">✗</div>
+                <h2>El handoff falló</h2>
+                <p className="export-err">{handoffResult.error}</p>
+                <div className="export-actions">
+                  <button onClick={() => dismissHandoffResult()}>Cerrar</button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {syncBusy && (
         <div className="modal-backdrop">
           <div className="modal export-modal" onMouseDown={(e) => e.stopPropagation()}>
@@ -718,7 +817,7 @@ function ProgressModal() {
   const ico = (status: string): string =>
     status === 'done' ? '✓' : status === 'error' ? '✗' : status === 'active' ? '…' : '○'
   return (
-    <div className="modal-backdrop">
+    <div className="modal-backdrop modal-backdrop-front">
       <div className="modal export-modal progress-modal" onMouseDown={(e) => e.stopPropagation()}>
         <Reelo
           state={progress.error ? 'idle' : progress.done ? 'success' : 'progress'}
