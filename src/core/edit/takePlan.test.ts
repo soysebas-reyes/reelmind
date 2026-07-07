@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { describe, expect, it } from 'vitest'
-import { buildTakeTimeline } from './takePlan'
+import { buildTakeTimeline, resyncTrackHeads } from './takePlan'
 import { type Clip, type Timeline, clipEndFrame, makeClip, makeTimeline, makeTrack, totalFrames } from '../model/timeline'
 import { IDENTITY_COLOR } from '../model/color'
 import { makeAudioEnhance } from '../model/audioEnhance'
@@ -121,6 +121,53 @@ describe('buildTakeTimeline (multicam)', () => {
     expect(tl.tracks[0].clips[0].color).toEqual(IDENTITY_COLOR)
     // The kept span starts 60 frames into the visible window: frontal trim = offset + 60.
     expect(tl.tracks[0].clips[0].trimStartFrame).toBe(offset + 60)
+  })
+
+  it('keeps the two video angles frame-aligned + in sync (frontal trim 112 / lateral 0 / audio ref 112)', () => {
+    // Exact shape of the reported project: frontal (C0429) trimStartFrame 112, lateral (C0480) 0, audio
+    // extracted from the frontal also 112. buildTakeTimeline must keep BOTH video clips at timeline frame 0
+    // (no per-track gap/lag) AND preserve their sync offset so neither angle drifts.
+    const offset = 112
+    const front = videoClip('c0429', { trimStartFrame: offset })
+    const lat = videoClip('c0480', { trimStartFrame: 0 })
+    const aud = { ...audioClip('c0429_audio'), trimStartFrame: offset }
+    const base = multicamBase(front, lat, aud)
+    const tl = buildTakeTimeline(base, aud, take(6000, 12000), [])! // 6s–12s in audio-file time
+    expect(tl).not.toBeNull()
+    expectAllTracksContiguous(tl, 180)
+    const [frontOut, latOut, audOut] = tl.tracks.map((t) => t.clips[0])
+    // Both video angles start at timeline frame 0 — the "V1 starts 2s after V2" gap must NOT happen.
+    expect(frontOut.startFrame).toBe(0)
+    expect(latOut.startFrame).toBe(0)
+    // Sync preserved: the frontal shows a source frame exactly `offset` ahead of the lateral (same moment).
+    expect(frontOut.trimStartFrame - latOut.trimStartFrame).toBe(offset)
+    // Audio stays aligned with the frontal it was extracted from.
+    expect(audOut.trimStartFrame).toBe(frontOut.trimStartFrame)
+  })
+
+  it('resyncTrackHeads pulls a lagging angle back to align (the Guión-1 desync case)', () => {
+    // Reproduces the reported broken tab: the frontal ended up at startFrame 290 while the lateral/audio
+    // were at 0 → the frontal plays ~12s out of sync. Resync must pull the lagging track to match the
+    // others (frame 0 here) while keeping the trim offset intact (= the real sync between angles).
+    const front = { ...videoClip('c0429', { trimStartFrame: 786 }), startFrame: 290 }
+    const lat = videoClip('c0480', { trimStartFrame: 674 })
+    const aud = { ...audioClip('c0429_audio'), trimStartFrame: 786 }
+    const tl = multicamBase(front, lat, aud)
+    resyncTrackHeads(tl)
+    expect(tl.tracks[0].clips[0].startFrame).toBe(0) // frontal pulled back from 290 to match lateral/audio
+    expect(tl.tracks[1].clips[0].startFrame).toBe(0)
+    expect(tl.tracks[2].clips[0].startFrame).toBe(0)
+    expect(tl.tracks[0].clips[0].trimStartFrame - tl.tracks[1].clips[0].trimStartFrame).toBe(112) // sync kept
+  })
+
+  it('resyncTrackHeads leaves an intentional intro gap shared by ALL tracks untouched', () => {
+    // Every track starts at frame 30 (a 30-frame intro gap) → not a per-track divergence, so nothing moves.
+    const front = { ...videoClip('c0429'), startFrame: 30 }
+    const lat = { ...videoClip('c0480'), startFrame: 30 }
+    const aud = { ...audioClip('c0429_audio'), startFrame: 30 }
+    const tl = multicamBase(front, lat, aud)
+    resyncTrackHeads(tl)
+    expect(tl.tracks.map((t) => t.clips[0].startFrame)).toEqual([30, 30, 30])
   })
 
   it('returns null for NaN take times instead of wiping the timeline', () => {

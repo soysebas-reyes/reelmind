@@ -20,7 +20,7 @@ import { getController, useEditorStore } from '../store'
 import { applyAudioEnhance } from './audioGraph'
 import { Icon } from '../ui/Icon'
 
-type BoolKey = 'gate' | 'denoise' | 'deEss' | 'limiter'
+type BoolKey = 'gate' | 'denoise' | 'deEss' | 'limiter' | 'centerStereo'
 type NumericKey = Exclude<keyof AudioEnhanceSettings, 'enabled' | BoolKey>
 
 interface SliderDef {
@@ -82,7 +82,7 @@ const GROUPS: Group[] = [
   },
   {
     title: 'Volumen final',
-    toggles: [],
+    toggles: [{ key: 'centerStereo', label: 'Centrar en ambos canales (mono→estéreo)' }],
     sliders: [
       { key: 'targetLufs', label: 'Volumen objetivo (LUFS)', min: -24, max: -9, step: 1 },
       { key: 'outputGainDb', label: 'Ganancia de salida (dB)', min: -12, max: 12, step: 0.5 }

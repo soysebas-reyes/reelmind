@@ -72,6 +72,9 @@ export interface PlannedTake {
   coverage?: TakeCoverage
   /** True when the deterministic aligner moved the start earlier to recover a skipped intro. */
   startCorrected?: boolean
+  /** True once the user manually adjusted this take's bounds in the editable preview. Invalidates the
+   *  script coverage/`startCorrected` provenance (both were computed for the AI's original span). */
+  edited?: boolean
 }
 
 /** A resolved cut: absolute SOURCE-time span (ms), the take it belongs to, and provenance. */

@@ -64,6 +64,12 @@ export interface AudioEnhanceSettings {
   targetLufs: number
   /** Final output trim in dB applied after loudness normalization. (-12..12) */
   outputGainDb: number
+
+  // --- Canales ---
+  /** Collapse to mono then output dual-mono stereo, so a mono / one-sided (mic-on-left) recording plays
+   *  on BOTH channels — fixes "only the left earbud has sound". On by default (voice-first). Turn OFF to
+   *  preserve a true stereo image (e.g. music). */
+  centerStereo: boolean
 }
 
 export const DEFAULT_AUDIO_ENHANCE: AudioEnhanceSettings = {
@@ -88,7 +94,8 @@ export const DEFAULT_AUDIO_ENHANCE: AudioEnhanceSettings = {
   limiter: true,
   limitDb: -1,
   targetLufs: -16,
-  outputGainDb: 0
+  outputGainDb: 0,
+  centerStereo: true
 }
 
 export function makeAudioEnhance(p: Partial<AudioEnhanceSettings> = {}): AudioEnhanceSettings {
@@ -114,7 +121,8 @@ export function makeAudioEnhance(p: Partial<AudioEnhanceSettings> = {}): AudioEn
     limiter: p.limiter ?? DEFAULT_AUDIO_ENHANCE.limiter,
     limitDb: p.limitDb ?? DEFAULT_AUDIO_ENHANCE.limitDb,
     targetLufs: p.targetLufs ?? DEFAULT_AUDIO_ENHANCE.targetLufs,
-    outputGainDb: p.outputGainDb ?? DEFAULT_AUDIO_ENHANCE.outputGainDb
+    outputGainDb: p.outputGainDb ?? DEFAULT_AUDIO_ENHANCE.outputGainDb,
+    centerStereo: p.centerStereo ?? DEFAULT_AUDIO_ENHANCE.centerStereo
   }
 }
 
@@ -197,7 +205,8 @@ export const AUDIO_PRESETS: AudioEnhancePreset[] = [
       compMakeupDb: 2,
       limiter: true,
       limitDb: -1,
-      targetLufs: -14
+      targetLufs: -14,
+      centerStereo: false // keep the real stereo image for music
     })
   }
 ]

@@ -30,6 +30,8 @@ export async function saveProject(dir: string, data: ProjectData): Promise<void>
   await writeJsonAtomic(join(dir, ProjectFiles.projectFilename), meta)
   await writeJsonAtomic(join(dir, ProjectFiles.timelineFilename), data.timeline)
   await writeJsonAtomic(join(dir, ProjectFiles.manifestFilename), data.manifest)
+  // Persist ALL tabs (raw project + guión tabs) so segmentation survives reopen. Absent = single-session.
+  if (data.sessions) await writeJsonAtomic(join(dir, ProjectFiles.sessionsFilename), data.sessions)
 }
 
 /** Read a project package, tolerating missing/old files with sensible defaults. */
@@ -42,5 +44,6 @@ export async function loadProject(dir: string): Promise<ProjectData> {
   }
   const timeline = (await readJson<ProjectData['timeline']>(join(dir, ProjectFiles.timelineFilename))) ?? makeTimeline()
   const manifest = (await readJson<ProjectData['manifest']>(join(dir, ProjectFiles.manifestFilename))) ?? makeManifest()
-  return { meta, timeline, manifest }
+  const sessions = (await readJson<ProjectData['sessions']>(join(dir, ProjectFiles.sessionsFilename))) ?? undefined
+  return { meta, timeline, manifest, sessions }
 }

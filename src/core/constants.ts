@@ -43,6 +43,7 @@ export const ProjectFiles = {
   projectFilename: 'project.json',
   timelineFilename: 'timeline.json',
   manifestFilename: 'manifest.json',
+  sessionsFilename: 'sessions.json',
   thumbnailFilename: 'thumbnail.jpg',
   mediaDirectoryName: 'media',
   cacheDirectoryName: 'cache',

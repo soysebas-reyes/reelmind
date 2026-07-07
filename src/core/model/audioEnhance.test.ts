@@ -86,4 +86,15 @@ describe('buildEnhanceChain', () => {
     expect(buildEnhanceChain(makeAudioEnhance({ presenceDb: 0, mudDb: 0, airDb: 0, lowShelfDb: 0 }))).not.toContain('equalizer=')
     expect(buildEnhanceChain(makeAudioEnhance({ presenceDb: 4 }))).toContain('equalizer=f=4000')
   })
+
+  it('wraps the chain in mono→dual-mono when centerStereo is on, and skips it when off', () => {
+    const on = buildEnhanceChain(makeAudioEnhance({ centerStereo: true }))
+    // Collapse to mono BEFORE processing; expand to dual-mono stereo AFTER loudnorm.
+    expect(on.startsWith('aformat=channel_layouts=mono')).toBe(true)
+    expect(on.endsWith('aformat=channel_layouts=stereo')).toBe(true)
+    expect(on.indexOf('channel_layouts=mono')).toBeLessThan(on.indexOf('acompressor='))
+    expect(on.indexOf('loudnorm=')).toBeLessThan(on.indexOf('channel_layouts=stereo'))
+
+    expect(buildEnhanceChain(makeAudioEnhance({ centerStereo: false }))).not.toContain('channel_layouts')
+  })
 })

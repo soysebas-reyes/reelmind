@@ -7,9 +7,11 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   type ColorAdjustments,
+  type VisualLayer,
   colorIsIdentity,
   composeFrame,
   expectedPath,
+  layerFullyOccludes,
   visibleLayerSet,
   volumeAt
 } from '@core'
@@ -287,9 +289,30 @@ export default function Preview(): React.JSX.Element {
     // frame, so playback stays smooth even though the store only updates ~10×/s.
     const frame = playingRef.current ? playheadRef.current : currentFrame
     const composed = composeFrame(timeline, frame)
-    // Skip layers fully hidden behind an opaque full-frame clip above (pixel-identical result,
-    // and it avoids the WebGL grade pass for the occluded angle in a multicam stack). Text always draws.
-    const drawn = visibleLayerSet(composed.visual)
+    // Decode-aware visible set: skip layers hidden behind an opaque full-frame clip above (avoids the grade
+    // pass for occluded angles) — BUT only treat the occluder as such if it can actually be drawn right now
+    // (video decoded, or a poster). If the top angle can't decode (e.g. a 4K angle without a proxy), fall
+    // through to a lower drawable angle so the preview shows it instead of pure black. Text always draws.
+    const canDraw = (l: VisualLayer): boolean => {
+      if (l.mediaType === 'text') return true
+      if (l.mediaType === 'video') {
+        const v = videoFor(l.mediaRef)
+        if (v && videoDrawable(v)) return true
+      }
+      return !!imageFor(l.mediaRef)
+    }
+    let floorIdx = 0
+    for (let i = composed.visual.length - 1; i >= 0; i--) {
+      if (layerFullyOccludes(composed.visual[i]) && canDraw(composed.visual[i])) {
+        floorIdx = i
+        break
+      }
+    }
+    const drawn = new Set<string>()
+    for (let i = floorIdx; i < composed.visual.length; i++) drawn.add(composed.visual[i].mediaRef)
+    // Once something has painted at this frame, a higher layer that fails to draw must NOT overwrite it with
+    // black — let the layer beneath show through (only a totally-empty frame falls back to black).
+    let anyPainted = false
     for (const layer of composed.visual) {
       if (layer.mediaType !== 'text' && !drawn.has(layer.mediaRef)) continue
       const t = layer.transform
@@ -346,12 +369,16 @@ export default function Preview(): React.JSX.Element {
         }
         if (!painted) {
           if (graded && color) ctx.filter = colorToCanvasFilter(color)
-          if (!drawSource(ctx, layer.mediaType, layer.mediaRef, layer.crop, dx, dy, dw, dh)) {
+          painted = drawSource(ctx, layer.mediaType, layer.mediaRef, layer.crop, dx, dy, dw, dh)
+          // Only fall back to a dark fill for a totally-empty frame — never paint over a lower angle that
+          // already drew (that was the multicam "black screen" when the top angle had no proxy).
+          if (!painted && !anyPainted) {
             ctx.filter = 'none'
             ctx.fillStyle = '#23232e'
             ctx.fillRect(dx, dy, dw, dh)
           }
         }
+        if (painted) anyPainted = true
       }
       ctx.restore()
     }

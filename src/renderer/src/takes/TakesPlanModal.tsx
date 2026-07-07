@@ -9,14 +9,8 @@ import { useState } from 'react'
 import { timelineFrameForSourceSeconds } from '@core'
 import type { PlannedTake } from '@core'
 import { getController, useEditorStore } from '../store'
-
-/** m:ss.d from ms. */
-function mmss(ms: number): string {
-  const total = Math.max(0, ms) / 1000
-  const m = Math.floor(total / 60)
-  const rem = total - m * 60
-  return `${m}:${rem.toFixed(1).padStart(4, '0')}`
-}
+import { TakesPreview } from './TakesPreview'
+import { mmss } from './format'
 
 /** Coverage badge state for a take's guión: how much of the pasted script was found in the transcript. */
 function coverageBadge(take: PlannedTake): { cls: string; label: string } | null {
@@ -71,7 +65,7 @@ export function TakesPlanModal(): React.JSX.Element | null {
 
     return (
       <div className="modal-backdrop">
-        <div className="modal export-modal angleplan-modal" style={{ maxHeight: '92vh' }} onMouseDown={(e) => e.stopPropagation()}>
+        <div className="modal export-modal angleplan-modal" style={{ maxHeight: '92vh', width: 'min(1180px, 96vw)' }} onMouseDown={(e) => e.stopPropagation()}>
           <h2>Verificación de guiones</h2>
           <p className="export-note">
             <strong>{plan.takes.length} videos</strong> detectados · revisá que cada guión se haya encontrado completo y que
@@ -96,7 +90,10 @@ export function TakesPlanModal(): React.JSX.Element | null {
             </span>
           </div>
 
-          <div className="angleplan-scroll">
+          {/* Two columns: the selection checklist on the LEFT (the player was eating its vertical space),
+              the editable preview on the RIGHT where the horizontal room helps most. */}
+          <div className="takes-verify-body">
+            <div className="takes-verify-list angleplan-scroll">
             {plan.takes.map((take, ti) => {
               const badge = coverageBadge(take)
               const scriptText = take.scriptIndex != null ? plan.scriptBlocks[take.scriptIndex] : undefined
@@ -126,8 +123,16 @@ export function TakesPlanModal(): React.JSX.Element | null {
                       <strong>
                         Video {take.index}: {take.title}
                       </strong>
-                      {badge && <span className={`pill ${badge.cls}`}>{badge.label}</span>}
-                      {take.startCorrected && <span className="pill ok">Inicio corregido</span>}
+                      {take.edited ? (
+                        <span className="pill" style={{ background: 'var(--fill-2)', color: 'var(--label-2)' }} title="Los tiempos fueron ajustados a mano; la coincidencia del guión ya no aplica.">
+                          Ajustado manualmente
+                        </span>
+                      ) : (
+                        <>
+                          {badge && <span className={`pill ${badge.cls}`}>{badge.label}</span>}
+                          {take.startCorrected && <span className="pill ok">Inicio corregido</span>}
+                        </>
+                      )}
                     </div>
                     {take.summary && <p style={{ margin: '4px 0 0', opacity: 0.75 }}>{take.summary}</p>}
                     {scriptText && (
@@ -150,6 +155,14 @@ export function TakesPlanModal(): React.JSX.Element | null {
                 </label>
               )
             })}
+            </div>
+            <div className="takes-verify-main">
+              <p className="export-note" style={{ textAlign: 'left', margin: '0 0 6px' }}>
+                Ajustá con criterio los límites de cada guión: arrastrá los bordes de cada bloque de color, o usá los
+                campos de tiempo y “usar posición actual”.
+              </p>
+              <TakesPreview />
+            </div>
           </div>
 
           <div className="export-actions">

@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { basename, extname, join } from 'node:path'
+import { expectedPath, type MediaManifest } from '../../core'
 import { ffmpegBinary } from './binary'
 
 export interface ProxyOptions {
@@ -71,4 +72,52 @@ export async function generateProxy(srcPath: string, outDir: string, opts: Proxy
     })
   })
   return out
+}
+
+/** Re-link preview proxies that already exist on disk in `projectDir`. `generateProxy` writes the proxy
+ *  .mp4 immediately, so a proxy survives on disk even if its `proxyPath` was lost from a saved/reopened
+ *  manifest (or now points at a stale/missing file). For each VIDEO entry: keep a `proxyPath` that still
+ *  resolves; otherwise look for a `<sourceStem>-proxy-*.mp4` beside the project and adopt the newest match.
+ *  Returns ONLY the entries whose `proxyPath` should change, so a reopened project reuses an existing proxy
+ *  instead of prompting to regenerate. Reads the filesystem; writes nothing. */
+export async function reconcileProxies(
+  manifest: MediaManifest,
+  projectDir: string | null
+): Promise<{ id: string; proxyPath: string }[]> {
+  if (!projectDir) return []
+  let dirFiles: string[]
+  try {
+    dirFiles = await fs.readdir(projectDir)
+  } catch {
+    return []
+  }
+  const relinked: { id: string; proxyPath: string }[] = []
+  for (const e of manifest.entries) {
+    if (e.type !== 'video') continue
+    // A proxyPath that still points at a real file is fine — leave it untouched.
+    if (e.proxyPath) {
+      try {
+        await fs.stat(e.proxyPath)
+        continue
+      } catch {
+        /* stale path → fall through and try to re-find the proxy on disk */
+      }
+    }
+    const src = expectedPath(manifest, e.id, projectDir)
+    if (!src) continue
+    const stem = basename(src, extname(src))
+    const candidates = dirFiles.filter((f) => f.startsWith(`${stem}-proxy-`) && f.toLowerCase().endsWith('.mp4'))
+    let best: { path: string; mtime: number } | null = null
+    for (const name of candidates) {
+      const p = join(projectDir, name)
+      try {
+        const st = await fs.stat(p)
+        if (!best || st.mtimeMs > best.mtime) best = { path: p, mtime: st.mtimeMs }
+      } catch {
+        /* unreadable candidate → skip */
+      }
+    }
+    if (best && best.path !== e.proxyPath) relinked.push({ id: e.id, proxyPath: best.path })
+  }
+  return relinked
 }

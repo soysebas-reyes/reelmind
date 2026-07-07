@@ -51,5 +51,29 @@ export function buildTakeTimeline(base: Timeline, refClip: Clip, take: PlannedTa
   removals.sort((a, b) => b.startFrame - a.startFrame)
   // `undefined` trackIds = ALL tracks: keeps frontal/lateral/audio aligned, splits boundaries, closes gaps.
   for (const r of removals) tc.rippleDeleteRange(undefined, r.startFrame, r.endFrame)
-  return tc.getTimeline()
+
+  // Invariant: every track starts at the SAME frame (see resyncTrackHeads).
+  const out = tc.getTimeline()
+  resyncTrackHeads(out)
+  return out
+}
+
+/** Re-sync tracks whose first clip lags behind the others. In a synced multicam take every angle + the
+ *  audio start at the same real moment; if one track's earliest clip ends up at a later frame than the
+ *  rest (a stray per-track leading gap — the "lateral out of sync" bug), that angle plays late. We pull
+ *  each lagging track left to match the earliest track's start, which re-aligns the angles WITHOUT closing
+ *  a leading gap that ALL tracks share (that would be an intentional intro gap — left untouched). Mutates
+ *  in place; no-op when all tracks already share the same head. Also used to heal projects reopened from
+ *  an older/edited state. */
+export function resyncTrackHeads(tl: Timeline): void {
+  const heads = tl.tracks
+    .filter((t) => t.clips.length > 0)
+    .map((t) => Math.min(...t.clips.map((c) => c.startFrame)))
+  if (heads.length < 2) return
+  const globalMin = Math.min(...heads)
+  for (const t of tl.tracks) {
+    if (t.clips.length === 0) continue
+    const k = Math.min(...t.clips.map((c) => c.startFrame))
+    if (k > globalMin) for (const c of t.clips) c.startFrame -= k - globalMin
+  }
 }

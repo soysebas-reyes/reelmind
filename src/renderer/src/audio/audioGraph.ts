@@ -90,6 +90,8 @@ function flatten(g: EnhanceGraph): void {
   g.limiter.threshold.value = 0
   g.limiter.ratio.value = 1
   g.output.gain.value = 1
+  g.output.channelCountMode = 'max' // transparent = keep the source's channel layout
+  g.output.channelCount = 2
 }
 
 function applySettings(g: EnhanceGraph, s: AudioEnhanceSettings): void {
@@ -118,6 +120,16 @@ function applySettings(g: EnhanceGraph, s: AudioEnhanceSettings): void {
   }
   // Output: make-up + final trim. (True LUFS loudnorm is applied exactly on export.)
   g.output.gain.value = dbToLin(Math.max(0, s.compMakeupDb) + s.outputGainDb)
+  // Mono→dual-mono: force the output to a single (speaker-downmixed) channel; the stereo destination then
+  // upmixes it to BOTH channels, so a mono / one-sided source is heard in both earbuds. Off → preserve the
+  // source's channels. Mirrors the FFmpeg `aformat` mono→stereo wrap used on export.
+  if (s.centerStereo) {
+    g.output.channelCountMode = 'explicit'
+    g.output.channelCount = 1
+  } else {
+    g.output.channelCountMode = 'max'
+    g.output.channelCount = 2
+  }
 }
 
 /** Route `el` through the enhance graph and apply `settings`. When settings are missing/disabled and the

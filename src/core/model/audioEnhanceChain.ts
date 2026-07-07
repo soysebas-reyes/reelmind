@@ -18,6 +18,11 @@ export function buildEnhanceChain(p: Partial<AudioEnhanceSettings> = {}): string
   const s = makeAudioEnhance(p)
   const parts: string[] = []
 
+  // Center to mono FIRST so a mono / one-sided (mic-on-left) source becomes centered; the matching
+  // dual-mono expansion at the very END (after loudnorm restores the level) makes BOTH channels carry the
+  // voice — fixes "only one earbud plays". Skipped when centerStereo is off (preserves a true stereo image).
+  if (s.centerStereo) parts.push('aformat=channel_layouts=mono')
+
   // Noise gate (linear threshold).
   if (s.gate) parts.push(`agate=threshold=${lin(s.gateThresholdDb).toFixed(5)}:ratio=2:attack=5:release=80`)
 
@@ -46,6 +51,9 @@ export function buildEnhanceChain(p: Partial<AudioEnhanceSettings> = {}): string
   // Loudness normalization (LAST), then optional output trim.
   parts.push(`loudnorm=I=${s.targetLufs}:TP=-1.5:LRA=11`)
   if (s.outputGainDb !== 0) parts.push(`volume=${s.outputGainDb}dB`)
+
+  // Expand the centered mono back to dual-mono stereo so both channels (both earbuds) carry the audio.
+  if (s.centerStereo) parts.push('aformat=channel_layouts=stereo')
 
   return parts.join(',')
 }
