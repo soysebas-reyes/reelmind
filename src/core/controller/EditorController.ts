@@ -78,6 +78,30 @@ interface UndoEntry {
   coalesceKey?: string
 }
 
+/**
+ * Telemetry seam (inversion of control). `notifyCommit` fires once per committed edit with the
+ * command's display label, origin (user/agent) and coalesceKey. The renderer telemetry layer
+ * registers an observer via `setCommitObserver`; @core imports NO telemetry, so it stays
+ * framework-free and unit-testable. A telemetry throw can never break editing.
+ */
+export interface CommitInfo {
+  label: string
+  origin: CommandOrigin
+  coalesceKey?: string
+}
+let commitObserver: ((info: CommitInfo) => void) | null = null
+export function setCommitObserver(fn: ((info: CommitInfo) => void) | null): void {
+  commitObserver = fn
+}
+function notifyCommit(info: CommitInfo): void {
+  if (!commitObserver) return
+  try {
+    commitObserver(info)
+  } catch {
+    // A telemetry failure must never break editing.
+  }
+}
+
 export interface RippleOutcome {
   ok: boolean
   reason?: string
@@ -445,6 +469,7 @@ export class EditorController {
         this.txPatches = []
         this.txInverse = []
         this.emit('edit')
+        notifyCommit({ label: this.txLabel, origin: this.origin, coalesceKey })
       }
     }
   }

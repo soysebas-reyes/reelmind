@@ -20,6 +20,20 @@ import { getController, useEditorStore } from '../store'
 import { applyAudioEnhance } from './audioGraph'
 import { Icon } from '../ui/Icon'
 
+/** Memoized ElevenLabs isolation previews, keyed by (src + window + intensity + denoise). Re-clicking
+ *  "Generar preview" with identical settings reuses the DATA urls instead of spending ElevenLabs credit
+ *  again; each use re-derives fresh blob URLs (those get revoked, the data urls don't). Cleared on reload. */
+const isolatePreviewCache = new Map<string, { rawDataUrl?: string; isolatedDataUrl?: string }>()
+function isolatePreviewKey(
+  src: string,
+  startSec: number,
+  durationSec: number,
+  intensity: number,
+  denoise: number
+): string {
+  return `${src}::${startSec.toFixed(3)}::${durationSec}::${intensity.toFixed(3)}::${denoise.toFixed(3)}`
+}
+
 type BoolKey = 'gate' | 'denoise' | 'deEss' | 'limiter' | 'centerStereo'
 type NumericKey = Exclude<keyof AudioEnhanceSettings, 'enabled' | BoolKey>
 
@@ -193,19 +207,26 @@ export default function AudioInspector({ onClose }: { onClose?: () => void }): R
       let rawUrl: string | null = null
       let mejUrl: string | null = null
       if (useAI) {
-        const r = await window.editorBridge.previewIsolateVoice({
-          srcPath: mediaPath,
-          startSec: seekSeconds,
-          durationSec: PREVIEW_SECONDS,
-          intensity: aiIntensity / 100,
-          denoise: aiDenoise / 100
-        })
-        if (!r.ok) {
-          alert('No se pudo generar el preview: ' + (r.error ?? ''))
-          return
+        // Reuse a prior identical isolation (same clip, window, intensity, denoise) — no repeat ElevenLabs call.
+        const key = isolatePreviewKey(mediaPath, seekSeconds, PREVIEW_SECONDS, aiIntensity / 100, aiDenoise / 100)
+        let iso = isolatePreviewCache.get(key) ?? null
+        if (!iso) {
+          const r = await window.editorBridge.previewIsolateVoice({
+            srcPath: mediaPath,
+            startSec: seekSeconds,
+            durationSec: PREVIEW_SECONDS,
+            intensity: aiIntensity / 100,
+            denoise: aiDenoise / 100
+          })
+          if (!r.ok) {
+            alert('No se pudo generar el preview: ' + (r.error ?? ''))
+            return
+          }
+          iso = { rawDataUrl: r.rawDataUrl, isolatedDataUrl: r.isolatedDataUrl }
+          isolatePreviewCache.set(key, iso)
         }
-        rawUrl = r.rawDataUrl ? trackBlob(dataUrlToBlobUrl(r.rawDataUrl)) : null
-        mejUrl = r.isolatedDataUrl ? trackBlob(dataUrlToBlobUrl(r.isolatedDataUrl)) : null
+        rawUrl = iso.rawDataUrl ? trackBlob(dataUrlToBlobUrl(iso.rawDataUrl)) : null
+        mejUrl = iso.isolatedDataUrl ? trackBlob(dataUrlToBlobUrl(iso.isolatedDataUrl)) : null
       } else {
         // No AI: the "Mejorado" base is the raw snippet; manual DSP rides on top via Web Audio.
         const r = await window.editorBridge.enhanceAudioPreview({

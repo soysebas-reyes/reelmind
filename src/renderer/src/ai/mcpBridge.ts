@@ -6,6 +6,6 @@ import { runEditorTool } from './runTool'
 
 export function installMcpBridge(): void {
   window.editorBridge.onMcpExecute(({ requestId, name, input }) => {
-    void runEditorTool(name, input).then((result) => window.editorBridge.sendMcpResult(requestId, result))
+    void runEditorTool(name, input, 'mcp').then((result) => window.editorBridge.sendMcpResult(requestId, result))
   })
 }

@@ -8,6 +8,8 @@ import { useEffect, useRef, useState } from 'react'
 import {
   type ColorAdjustments,
   type VisualLayer,
+  clipContains,
+  clipSourceSecondsAt,
   colorIsIdentity,
   composeFrame,
   expectedPath,
@@ -450,16 +452,19 @@ export default function Preview(): React.JSX.Element {
       if (v.playbackRate !== rate) v.playbackRate = rate
       const target = Math.max(0, layer.sourceSeconds)
       if (playing) {
-        // Seek ONLY when the element (re)appears (was paused) or the active segment for this source
-        // CHANGED (a multicam jump). Then let it play its contiguous segment freely. The !v.seeking +
-        // alignRef guards mean exactly one seek per jump — we never restart an in-flight (slow proxy)
-        // seek, which is what made it "repeat the same shot / never advance". A seek before the element
-        // is loaded is deferred so it never plays from 0 ("always starts from the beginning").
-        const mustSeek = v.paused || alignRef.current.get(v) !== layer.clipId
+        // Seek ONLY when the element (re)appears, jumps to a DIFFERENT source, or drifts. Keying on
+        // `mediaRef` (not clipId) + a source-time tolerance means a cut BETWEEN segments of the SAME
+        // source (contiguous source time — e.g. frontal→frontal across a split, or adopting a warm angle
+        // that was already playing at the right spot) needs NO seek → no hitch. The !v.seeking + alignRef
+        // guards mean exactly one seek per real jump — we never restart an in-flight (slow proxy) seek,
+        // which is what made it "repeat the same shot". A seek before load is deferred so it never plays
+        // from 0. This is what lets a warm counterpart angle switch in smoothly (Δ from playing warm ≈ 0).
+        const mustSeek =
+          v.paused || alignRef.current.get(v) !== layer.mediaRef || Math.abs(v.currentTime - target) > 0.25
         if (mustSeek) {
           if (!v.seeking) {
             requestSeekAndPlay(v, target, true)
-            alignRef.current.set(v, layer.clipId)
+            alignRef.current.set(v, layer.mediaRef)
           }
         } else if (v.paused && !v.seeking) {
           void v.play().catch(() => {})
@@ -469,9 +474,47 @@ export default function Preview(): React.JSX.Element {
         if (Math.abs(v.currentTime - target) > 0.04) requestSeekAndPlay(v, target, false)
       }
     }
-    // Pause any pooled video that isn't on screen this frame.
+    // Keep the COUNTERPART angle(s) WARM: decode+play (muted) the video clips that overlap the playhead
+    // but are hidden behind an opaque angle, so an angle cut that exposes one needs NO seek → no hitch
+    // (the visible-loop `mustSeek` above is false because the element is already at the right source
+    // time). Derived from `timeline.tracks`, NOT `composed.visual` (which drops opacity-0 angles).
+    // Bounded to proxy-backed sources (never dual-decode a 4K original) and to ≤2 concurrent warm decodes
+    // (720p → trivial on a multicore box). Only while playing.
+    const warmVideos = new Set<string>()
+    if (playing) {
+      const WARM_CAP = 2
+      const liveManifest = useEditorStore.getState().manifest
+      outer: for (const track of timeline.tracks) {
+        if (track.type !== 'video' || track.hidden) continue
+        for (const clip of track.clips) {
+          if (clip.mediaType !== 'video' || !clipContains(clip, currentFrame)) continue
+          const ref = clip.mediaRef
+          if (visibleVideos.has(ref) || warmVideos.has(ref)) continue
+          if (!liveManifest.entries.find((e) => e.id === ref)?.proxyPath) continue // proxy-backed only
+          const v = videoFor(ref)
+          if (!v) continue
+          v.muted = true // avoid double audio; the kept-audio track carries sound
+          const rate = Math.max(0.0625, Math.min(16, (clip.speed ?? 1) * previewRate))
+          if (v.playbackRate !== rate) v.playbackRate = rate
+          const target = Math.max(0, clipSourceSecondsAt(clip, currentFrame, fps))
+          const mustSeek =
+            v.paused || alignRef.current.get(v) !== ref || Math.abs(v.currentTime - target) > 0.25
+          if (mustSeek) {
+            if (!v.seeking) {
+              requestSeekAndPlay(v, target, true)
+              alignRef.current.set(v, ref)
+            }
+          } else if (v.paused && !v.seeking) {
+            void v.play().catch(() => {})
+          }
+          warmVideos.add(ref)
+          if (warmVideos.size >= WARM_CAP) break outer
+        }
+      }
+    }
+    // Pause any pooled video that is neither on screen nor kept warm this frame.
     for (const [ref, v] of videoPoolRef.current) {
-      if (!visibleVideos.has(ref) && !v.paused) v.pause()
+      if (!visibleVideos.has(ref) && !warmVideos.has(ref) && !v.paused) v.pause()
     }
 
     // Pure-audio layers (music / voiceover). composeFrame already skips muted audio tracks and
@@ -491,13 +534,15 @@ export default function Preview(): React.JSX.Element {
       applyAudioEnhance(el, aClip?.audioEnhance)
       const target = Math.max(0, a.sourceSeconds)
       if (playing) {
-        // Same policy as video: the synced audio is one continuous clip, so it seeks once (deferred
-        // until loaded → starts at its trimStart, not 0) and then plays freely with no per-tick re-seek.
-        const mustSeek = el.paused || alignRef.current.get(el) !== a.clipId
+        // Same policy as video (keyed by mediaRef + tolerance): the synced audio is one continuous clip,
+        // so it seeks once (deferred until loaded → starts at its trimStart, not 0) and then plays freely
+        // with no per-tick re-seek.
+        const mustSeek =
+          el.paused || alignRef.current.get(el) !== a.mediaRef || Math.abs(el.currentTime - target) > 0.25
         if (mustSeek) {
           if (!el.seeking) {
             requestSeekAndPlay(el, target, true)
-            alignRef.current.set(el, a.clipId)
+            alignRef.current.set(el, a.mediaRef)
           }
         } else if (el.paused && !el.seeking) {
           void el.play().catch(() => {})

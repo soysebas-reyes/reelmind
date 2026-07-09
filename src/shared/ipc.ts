@@ -9,12 +9,21 @@ import type {
   MediaManifestEntry,
   SilenceSeconds,
   TakesPlanResult,
+  TelemetryCategory,
+  TelemetryConfig,
+  TelemetryContext,
+  TelemetryEvent,
   Timeline
 } from '../core'
 
 export type { TakesPlanResult }
 
 export type { SilenceSeconds }
+
+// Telemetry wire types (canonical definitions + TELEMETRY_SCHEMA_VERSION live in
+// src/core/telemetry/event.ts; the renderer client and main sink import the schema/version
+// directly from @core). See docs/TOTAL_MEASUREMENT_PLAN.md.
+export type { TelemetryCategory, TelemetryConfig, TelemetryContext, TelemetryEvent }
 
 export interface FfmpegStatus {
   ffmpeg: boolean
@@ -254,6 +263,8 @@ export interface AudioOffsetResult {
   offsetSeconds?: number
   offsetFrames?: number
   confidence?: number
+  /** Peak minus best score outside the peak neighborhood — higher ⇒ sharper, more trustworthy peak. */
+  margin?: number
   reliable?: boolean
   error?: string
 }
@@ -311,8 +322,14 @@ export interface AnalyzeTakesRequest {
    *  provided, the LLM aligns each script to its span in the transcript instead of inferring boundaries. */
   scripts?: string
   /** Cut fillers/repeats/silences inside each take. Default false → bring each guión's WHOLE fragment
-   *  uncut (repeats and all). The intelligent-cut path is opt-in until it's improved. */
+   *  uncut (repeats and all). Opt-in; the user reviews every cut before applying. */
   cleanCuts?: boolean
+  /** Path of the transcribed media (the SAME file the `words` came from). When present and cleanCuts is
+   *  on, main runs silencedetect on it to refine cuts against real acoustic silence. */
+  mediaPath?: string
+  /** "Aire" a conservar entre frases (ms de silencio que sobrevive a cada corte). Default 250 (Natural).
+   *  Se reparte a cada lado del corte de silencio; valores mayores = ritmo más relajado. */
+  airMs?: number
 }
 
 export interface AnalyzeTakesResult {
@@ -381,3 +398,10 @@ export interface IntensityAnalysisResult {
 }
 
 export const PROJECT_SCHEMA_VERSION = 1
+
+/** Bumped whenever the proxy encoder recipe changes (resolution, GOP, codec args). A saved manifest
+ *  entry whose `proxyVersion` differs from this is treated as stale on open and regenerated in the
+ *  background. v2 = 720p + GOP 12 (denser keyframes for snappy multicam angle-switch seeking).
+ *  v3 = force LIMITED-range yuv420p (the hardware paths were emitting full-range yuvj420p, which
+ *  Chromium's <video> decoder renders black). */
+export const PROXY_VERSION = 3

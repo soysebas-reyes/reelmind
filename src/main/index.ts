@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { autoUpdater } from 'electron-updater'
 import { editorToolsByName } from '@core'
 import { registerIpc } from './ipc'
+import { initTelemetry } from './telemetry'
 import { handleMediaProtocol, registerMediaScheme } from './media/mediaProtocol'
 import { executeToolInRenderer } from './mcp/bridge'
 import { createMcpHttpServer } from './mcp/server'
@@ -69,6 +70,7 @@ app.whenReady().then(() => {
   configureBundledFfmpeg()
   handleMediaProtocol()
   registerIpc()
+  initTelemetry() // behavioral measurement sink — see docs/TOTAL_MEASUREMENT_PLAN.md
   createWindow()
 
   app.on('child-process-gone', (_e, details) => {

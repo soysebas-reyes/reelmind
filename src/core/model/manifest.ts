@@ -42,9 +42,13 @@ export interface MediaManifestEntry {
   hasAudio?: boolean
   folderId?: string
   generationInput?: GenerationInput
-  /** Absolute path to a preview-friendly proxy (1080p H.264 yuv420p). Used ONLY for smooth
+  /** Absolute path to a preview-friendly proxy (720p H.264 yuv420p). Used ONLY for smooth
    *  preview playback of hard-to-decode sources (4K / 10-bit / 4:2:2); export uses the original. */
   proxyPath?: string
+  /** Encoder-recipe version the `proxyPath` was built with (see PROXY_VERSION). When it differs from the
+   *  current version on project open, the proxy is stale (e.g. built with a coarser GOP) and is
+   *  regenerated in the background. Absent on proxies from before versioning → treated as stale. */
+  proxyVersion?: number
 }
 
 export interface MediaFolder {

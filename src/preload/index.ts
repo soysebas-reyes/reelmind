@@ -38,6 +38,9 @@ import type {
   SaveTranscriptResult,
   SaveResult,
   SilenceSeconds,
+  TelemetryConfig,
+  TelemetryContext,
+  TelemetryEvent,
   ThumbnailRequest,
   ThumbnailResult,
   TranscribeRequest,
@@ -71,6 +74,8 @@ const editorBridge = {
 
   pickExportPath: (defaultName: string): Promise<string | null> =>
     ipcRenderer.invoke('project:pickExportPath', defaultName),
+  /** Pick the destination FOLDER for a multi-tab batch export (each tab → <dir>/<tab>.mp4). */
+  pickExportDir: (): Promise<string | null> => ipcRenderer.invoke('project:pickExportDir'),
   exportTimeline: (req: ExportRequest): Promise<ExportResult> => ipcRenderer.invoke('project:export', req),
   /** Subscribe to export progress (0..1) for the current render. */
   onExportProgress: (cb: (fraction: number) => void): void => {
@@ -128,6 +133,15 @@ const editorBridge = {
   aiComplete: (req: AiCompleteRequest): Promise<AiCompleteResponse> => ipcRenderer.invoke('ai:complete', req),
   analyzeTakes: (req: AnalyzeTakesRequest): Promise<AnalyzeTakesResult> =>
     ipcRenderer.invoke('ai:analyzeTakes', req),
+
+  // Telemetry: behavioral/usage events only (never video content — see docs/TOTAL_MEASUREMENT_PLAN.md).
+  // Fire-and-forget batch, mirroring sendMcpResult; safe to call during window teardown.
+  logTelemetryBatch: (events: TelemetryEvent[]): void => ipcRenderer.send('telemetry:events', events),
+  getTelemetryContext: (): Promise<TelemetryContext> => ipcRenderer.invoke('telemetry:getContext'),
+  setTelemetryConfig: (patch: Partial<TelemetryConfig>): Promise<TelemetryConfig> =>
+    ipcRenderer.invoke('telemetry:setConfig', patch),
+  getRecentTelemetry: (limit: number): Promise<TelemetryEvent[]> =>
+    ipcRenderer.invoke('telemetry:recent', limit),
 
   // MCP tool execution requested by the main-process server, run against the renderer controller.
   onMcpExecute: (cb: (payload: { requestId: string; name: string; input: unknown }) => void): void => {

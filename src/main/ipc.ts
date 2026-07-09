@@ -38,8 +38,10 @@ import {
   analyzeIntensity,
   checkFfmpeg,
   computeAudioOffset,
+  detectH264Encoder,
   enhanceAudio,
   enhanceAudioPreview,
+  exportEncodeArgs,
   extractAudio,
   generateProxy,
   generateStillWithColor,
@@ -146,18 +148,30 @@ export function registerIpc(): void {
     return res.canceled || !res.filePath ? null : res.filePath
   })
 
-  ipcMain.handle('project:export', (e, req: ExportRequest) => {
-    // Quality tier → x264 CRF (lower = larger/closer to source). Default 'veryHigh' so a graded export
-    // lands near the source size instead of the older CRF-18 default that looked "too small".
-    const crf = req.quality === 'max' ? 12 : req.quality === 'high' ? 20 : 16
+  ipcMain.handle('project:export', async (e, req: ExportRequest) => {
+    // Quality tier → encoder args. 'max' is always libx264 CRF 12 (archival-grade, CPU); 'high'/'veryHigh'
+    // ride the hardware encoder when one works (NVENC/QSV/AMF) — several times faster on camera 4K
+    // sources because the CPU stays free for the 4:2:2 decode + filter graph.
+    const tier = req.quality ?? 'veryHigh'
+    const encoder = await detectH264Encoder()
     return exportTimeline(
-      { ...req, options: { crf } },
+      { ...req, options: { videoEncoderArgs: exportEncodeArgs(encoder, tier) } },
       {
         onProgress: (fraction) => e.sender.send('export:progress', fraction),
         resolveLut: (lutRef) =>
           resolveLut(lutRef, { projectDir: req.projectDir, libraryDir: getLutLibraryDir(), profileDir: profileLutDir() })
       }
     )
+  })
+
+  // Pick the destination FOLDER for a multi-tab batch export (each tab renders to <dir>/<tab>.mp4).
+  ipcMain.handle('project:pickExportDir', async () => {
+    const win = focused()
+    const props: 'openDirectory'[] = ['openDirectory']
+    const res = win
+      ? await dialog.showOpenDialog(win, { properties: props })
+      : await dialog.showOpenDialog({ properties: props })
+    return res.canceled || !res.filePaths[0] ? null : res.filePaths[0]
   })
 
   // Pick the destination folder for an NLE handoff (the package goes in a `handoff/…` subfolder inside).
@@ -264,7 +278,7 @@ export function registerIpc(): void {
   ipcMain.handle('media:computeAudioOffset', async (_e, req: AudioOffsetRequest) => {
     try {
       const r = await computeAudioOffset(req.pathA, req.pathB, req.fps)
-      return { ok: true, offsetSeconds: r.offsetSeconds, offsetFrames: r.offsetFrames, confidence: r.confidence, reliable: r.reliable }
+      return { ok: true, offsetSeconds: r.offsetSeconds, offsetFrames: r.offsetFrames, confidence: r.confidence, margin: r.margin, reliable: r.reliable }
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     }

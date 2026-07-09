@@ -3,8 +3,12 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import './App.css'
 import { installMcpBridge } from './ai/mcpBridge'
+import { initTelemetry } from './telemetry'
 
 installMcpBridge()
+// Behavioral measurement (see docs/TOTAL_MEASUREMENT_PLAN.md). Module scope, outside React, so
+// StrictMode's double-mount can't double-install. Fire-and-forget: it self-gates on config.
+void initTelemetry()
 
 // OS drag-and-drop guard: a file dropped outside an explicit drop target must never navigate the
 // window (Chromium's default). Targets that DO accept files call preventDefault in their own
