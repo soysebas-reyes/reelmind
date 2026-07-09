@@ -22,25 +22,35 @@ import {
   type TrackRole,
   type PlannedCut,
   type PlannedTake,
+  type AnglePairScan,
+  type ReconciledSyncOffset,
+  type RmsCandidate,
+  type SyncReconcileReason,
+  type TranscriptCandidate,
+  acceptedCutsForTake,
   alignByTranscript,
   buildTakeTimeline,
   clipEndFrame,
   clipSourceSecondsAt,
   cutRangeToAnglesByTrack,
   expectedPath,
+  findUnsyncedAnglePair,
   makeManifest,
   makeTimeline,
   newId,
   presetById,
+  reconcileSyncOffset,
   resolvePasteTargets,
   resyncTrackHeads,
   serializeSelection,
   splitScriptBlocks,
-  totalFrames
+  totalFrames,
+  verifyLinkedAlignment
 } from '@core'
 import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
-import { PROJECT_SCHEMA_VERSION, type ExportQuality, type FfmpegStatus, type HandoffResult, type ImportedAsset, type NleTarget, type SessionsData, type TranscriptWord } from '../../shared/ipc'
+import { PROJECT_SCHEMA_VERSION, PROXY_VERSION, type ExportQuality, type FfmpegStatus, type HandoffResult, type ImportedAsset, type NleTarget, type SessionsData, type TranscriptWord } from '../../shared/ipc'
+import { emit } from './telemetry/client'
 
 // ── Sessions (tabs) ───────────────────────────────────────────────────────────────────────────
 // Each open project is a Session with its own EditorController. The reactive store below ALWAYS
@@ -259,7 +269,8 @@ async function buildAnglePlan(
 ): Promise<{ ok: boolean; plan?: AnglePlan; error?: string }> {
   const c = getController()
   const { manifest, projectDir } = get()
-  let transcript = get().transcript
+  // Filled from the FRONTAL clip's transcript at step 3 (not the session slot — that may hold another clip's).
+  let transcript: TranscriptWord[] | null = null
 
   // 1. Resolve the 2-3 selected video tracks (in timeline top→bottom order).
   const tl0 = c.getTimeline()
@@ -298,25 +309,25 @@ async function buildAnglePlan(
     { id: 'segment', label: 'Mapear segmentos y reglas semánticas' }
   ])
 
-  // 3. Transcript of the primary (frontal) angle.
-  if (!transcript || transcript.length === 0) {
-    get().setStep('transcribe', 'active')
-    const res = await get().transcribeClip(frontalBase.id, { languageCode: 'es' })
-    if (!res.ok) {
-      get().setStep('transcribe', 'error', res.error)
-      get().finishProgress('No se pudo transcribir: ' + res.error)
-      return { ok: false, error: 'Transcription failed: ' + res.error }
-    }
-    transcript = get().transcript
-    if (!transcript) {
-      get().setStep('transcribe', 'error', 'Transcripción vacía')
-      get().finishProgress('La transcripción devolvió vacío.')
-      return { ok: false, error: 'La transcripción devolvió vacío.' }
-    }
-    get().setStep('transcribe', 'done', `${transcript.length} palabras`)
-  } else {
-    get().setStep('transcribe', 'done', '(ya disponible)')
+  // 3. Transcript of the primary (frontal) angle. Route through transcribeClip, which reuses the
+  //    per-source cache (transcriptCache[mediaRef]) — so we never re-transcribe the frontal AND never
+  //    reuse a DIFFERENT clip's transcript that happens to be sitting in the session slot. (The old gate
+  //    checked `get().transcript`, the "last transcript of ANY clip", which could caption B with A's words.)
+  const frontalCached = (transcriptCache.get(frontalBase.mediaRef)?.length ?? 0) > 0
+  get().setStep('transcribe', 'active')
+  const res = await get().transcribeClip(frontalBase.id, { languageCode: 'es' })
+  if (!res.ok) {
+    get().setStep('transcribe', 'error', res.error)
+    get().finishProgress('No se pudo transcribir: ' + res.error)
+    return { ok: false, error: 'Transcription failed: ' + res.error }
   }
+  transcript = get().transcript
+  if (!transcript || transcript.length === 0) {
+    get().setStep('transcribe', 'error', 'Transcripción vacía')
+    get().finishProgress('La transcripción devolvió vacío.')
+    return { ok: false, error: 'La transcripción devolvió vacío.' }
+  }
+  get().setStep('transcribe', 'done', frontalCached ? '(ya disponible)' : `${transcript.length} palabras`)
 
   const fps = c.getTimeline().fps
 
@@ -329,12 +340,16 @@ async function buildAnglePlan(
   const spanStart = frontalClips[0].startFrame
   const spanEnd = Math.max(...frontalClips.map((cl) => clipEndFrame(cl)))
 
-  type Intensity = Awaited<ReturnType<typeof window.editorBridge.analyzeIntensity>>
+  type Intensity = IntensityResult
   const intensityBySource = new Map<string, Intensity | null>()
   const analyzeSource = async (mediaRef: string): Promise<Intensity | null> => {
     if (intensityBySource.has(mediaRef)) return intensityBySource.get(mediaRef) ?? null
-    const p = expectedPath(manifest, mediaRef, projectDir)
-    const r = p ? await window.editorBridge.analyzeIntensity(p) : null
+    let r: Intensity | null = intensityCache.get(mediaRef) ?? null // reuse a prior run's decode (sources don't change)
+    if (!r) {
+      const p = expectedPath(manifest, mediaRef, projectDir)
+      r = p ? await window.editorBridge.analyzeIntensity(p) : null
+      if (r && r.ok) intensityCache.set(mediaRef, r) // only remember successful decodes (retry an offline source next run)
+    }
     intensityBySource.set(mediaRef, r)
     return r
   }
@@ -462,9 +477,18 @@ async function buildAnglePlan(
  *  same file. Source files don't change (cleaning only rearranges timeline clips), so the cache stays valid. */
 const transcriptCache = new Map<string, TranscriptWord[]>()
 
+/** A transcript is safe to cache/reuse only if every WORD token carries finite ms times — NaN poisons
+ *  everything downstream (SRT, cortes de ángulo, plan de tomas) and, once cached, survives every re-run.
+ *  Single guard shared by all three transcribe call sites (transcribeClip / transcribeCached / analyzeTakes). */
+function transcriptHasValidTimes(words: TranscriptWord[]): boolean {
+  return !words.some((w) => w.type === 'word' && (!Number.isFinite(w.startMs) || !Number.isFinite(w.endMs)))
+}
+
 /** Remember a transcript for a source in-memory AND persist it to the project `cache/` (fire-and-forget)
- *  so every feature reuses it across reopens without re-transcribing. Keyed by `mediaRef` (stable). */
+ *  so every feature reuses it across reopens without re-transcribing. Keyed by `mediaRef` (stable).
+ *  Refuses to cache a poisoned (NaN-timed) transcript — the caller surfaces the error instead. */
 function rememberTranscript(mediaRef: string, words: TranscriptWord[]): void {
+  if (!transcriptHasValidTimes(words)) return
   transcriptCache.set(mediaRef, words)
   const projectDir = useEditorStore.getState().projectDir
   if (projectDir) void window.editorBridge.saveTranscript({ projectDir, mediaRef, words })
@@ -474,9 +498,294 @@ async function transcribeCached(mediaPath: string, mediaRef: string): Promise<Tr
   const hit = transcriptCache.get(mediaRef)
   if (hit) return hit
   const res = await window.editorBridge.transcribeMedia({ mediaPath, languageCode: 'es' })
-  if (!res.ok || !res.words) return null
+  if (!res.ok || !res.words || !transcriptHasValidTimes(res.words)) return null
   rememberTranscript(mediaRef, res.words)
   return res.words
+}
+
+interface SyncComputeOutcome {
+  ok: boolean
+  error?: string
+  reconciled?: ReconciledSyncOffset
+}
+
+/** Compute the inter-angle offset with BOTH estimators — RMS cross-correlation ALWAYS, plus transcript
+ *  word alignment when transcribable — and reconcile them (core/edit/syncOffset). RMS is no longer a
+ *  fallback: it is the independent check that catches a confidently-wrong transcript (duplicated/
+ *  poisoned transcript, repeated-take word collisions) BEFORE the offset gets baked into the timeline.
+ *  Shared by the sync button, the `sync_angles` tool and the pre-segmentation auto-sync. */
+async function computeSyncOffsetFor(frontal: Clip, lateral: Clip): Promise<SyncComputeOutcome> {
+  const { manifest, projectDir } = useEditorStore.getState()
+  const pathA = expectedPath(manifest, frontal.mediaRef, projectDir)
+  const pathB = expectedPath(manifest, lateral.mediaRef, projectDir)
+  if (!pathA || !pathB) return { ok: false, error: 'Sincronizar ángulos: un clip está offline.' }
+  const fps = getController().getTimeline().fps
+  const [rms, transcript] = await Promise.all([
+    window.editorBridge
+      .computeAudioOffset({ pathA, pathB, fps })
+      .then((r): RmsCandidate | null =>
+        r.ok && r.offsetSeconds !== undefined
+          ? {
+              offsetSeconds: r.offsetSeconds,
+              confidence: r.confidence ?? 0,
+              margin: r.margin ?? 0,
+              reliable: r.reliable ?? false
+            }
+          : null
+      )
+      .catch((): null => null),
+    (async (): Promise<TranscriptCandidate | null> => {
+      try {
+        const [wa, wb] = await Promise.all([
+          transcribeCached(pathA, frontal.mediaRef),
+          transcribeCached(pathB, lateral.mediaRef)
+        ])
+        if (!wa || !wb) return null
+        const [ia, ib] = await Promise.all([
+          window.editorBridge.analyzeIntensity(pathA),
+          window.editorBridge.analyzeIntensity(pathB)
+        ])
+        const al = alignByTranscript(wa, wb, {
+          peaksFrontalSec: ia.ok ? ia.peaks : undefined,
+          peaksLateralSec: ib.ok ? ib.peaks : undefined
+        })
+        return { offsetSeconds: al.offsetSeconds, confidence: al.confidence, matched: al.matched }
+      } catch {
+        return null
+      }
+    })()
+  ])
+  const reconciled = reconcileSyncOffset(rms, transcript)
+  if (!reconciled) return { ok: false, error: 'Análisis de audio fallido' }
+  // Behavior only (method/reason/confidence) — never paths, names or transcript text.
+  emit('io', 'io.sync_offset', {
+    method: reconciled.method,
+    reason: reconciled.reason,
+    reliable: reconciled.reliable,
+    transcriptRefuted: reconciled.transcriptRefuted,
+    deltaMs: reconciled.deltaSeconds !== undefined ? Math.round(reconciled.deltaSeconds * 1000) : undefined,
+    rmsReliable: rms?.reliable ?? false,
+    hadTranscript: transcript !== null
+  })
+  return { ok: true, reconciled }
+}
+
+interface AutoSyncOutcome {
+  attempted: boolean
+  applied: boolean
+  scan: AnglePairScan['kind']
+  offsetSeconds?: number
+  method?: 'transcript' | 'audio'
+  confidence?: number
+  /** Non-blocking Spanish message when auto-sync was skipped or could not run safely. */
+  warning?: string
+}
+
+/** Make "Segmentar por guiones" self-sufficient: the take tabs inherit whatever alignment the base
+ *  timeline has, so segmenting two unsynced angles bakes the raw camera lag into EVERY tab. When the
+ *  timeline is in the one unambiguous multicam-raw state (two overlapping, unlinked video angles),
+ *  sync them automatically first; anything ambiguous only warns (never guesses), and an offset the
+ *  reconciliation flags unreliable is NOT applied — silently baking a garbage offset is exactly the
+ *  bug class this prevents. `keepAudioClipId` picks whose audio survives (default: the frontal). */
+async function ensureAnglesSynced(
+  keepAudioClipId: string | undefined,
+  origin: CommandOrigin
+): Promise<AutoSyncOutcome> {
+  const c = getController()
+  const scan = findUnsyncedAnglePair(c.getTimeline())
+  if (scan.kind === 'none' || scan.kind === 'synced') return { attempted: false, applied: false, scan: scan.kind }
+  if (scan.kind === 'ambiguous') {
+    return {
+      attempted: false,
+      applied: false,
+      scan: scan.kind,
+      warning: `Ángulos sin sincronizar (${scan.reason}). Para mejores resultados usá "Sincronizar" antes de segmentar.`
+    }
+  }
+  const frontal = c.getClip(scan.frontalClipId)
+  const lateral = c.getClip(scan.lateralClipId)
+  if (!frontal || !lateral) {
+    return { attempted: false, applied: false, scan: 'ambiguous', warning: 'No se pudieron resolver los clips de los ángulos.' }
+  }
+  useEditorStore.setState((s) => {
+    s.busy = 'Sincronizando ángulos automáticamente…'
+  })
+  try {
+    const outcome = await computeSyncOffsetFor(frontal, lateral)
+    if (!outcome.ok || !outcome.reconciled) {
+      return {
+        attempted: true,
+        applied: false,
+        scan: scan.kind,
+        warning: `No se pudo sincronizar automáticamente (${outcome.error ?? 'análisis fallido'}). Los tabs pueden quedar desfasados; usá "Sincronizar" manualmente.`
+      }
+    }
+    const rec = outcome.reconciled
+    if (!rec.reliable) {
+      return {
+        attempted: true,
+        applied: false,
+        scan: scan.kind,
+        warning: 'El desfase entre ángulos se detectó con confianza baja y NO se aplicó. Usá "Sincronizar" y revisá el resultado antes de segmentar.'
+      }
+    }
+    const applied = await useEditorStore.getState().applySyncAngles(
+      {
+        frontalClipId: scan.frontalClipId,
+        lateralClipId: scan.lateralClipId,
+        offsetSeconds: rec.offsetSeconds,
+        keepAudioOf: keepAudioClipId === scan.lateralClipId ? 'lateral' : 'frontal',
+        // Coloring is its own step of the flow — never repaint grades as a side effect of segmenting.
+        autoColor: false,
+        silent: true
+      },
+      origin
+    )
+    if (!applied.ok) return { attempted: true, applied: false, scan: scan.kind, warning: applied.error }
+    return {
+      attempted: true,
+      applied: true,
+      scan: scan.kind,
+      offsetSeconds: rec.offsetSeconds,
+      method: rec.method,
+      confidence: rec.confidence
+    }
+  } finally {
+    useEditorStore.setState((s) => {
+      s.busy = null
+    })
+  }
+}
+
+/** Cache of the LLM (Claude) take-segmentation plan, keyed by (mediaRef + cleanCuts + scripts). Re-opening
+ *  the SAME segmentation with unchanged inputs reuses the plan instead of re-calling Claude; changing the
+ *  guiones or the cleanCuts toggle is a different key and re-runs. Cleared on app reload. */
+type TakesPlan = NonNullable<Awaited<ReturnType<typeof window.editorBridge.analyzeTakes>>['plan']>
+const takesPlanCache = new Map<string, TakesPlan>()
+function takesPlanKey(mediaRef: string, cleanCuts: boolean, scripts?: string, airMs?: number): string {
+  return `${mediaRef}::${cleanCuts ? 1 : 0}::${airMs ?? ''}::${scripts ?? ''}`
+}
+
+/** Loudness/peaks analysis (media:analyzeIntensity) cached by mediaRef ACROSS angle-cut runs — the source
+ *  files don't change, so a second "Cambios de ángulo" reuses the decode instead of re-running FFmpeg. */
+type IntensityResult = Awaited<ReturnType<typeof window.editorBridge.analyzeIntensity>>
+const intensityCache = new Map<string, IntensityResult>()
+
+// ── Proxy pipeline (auto on import + manual button + takes-plan gate, all deduplicated) ──────────
+/** In-flight proxy generations by mediaRef: auto-proxy (import), "Optimizar reproducción" and
+ *  applyTakesPlan all await the SAME promise, so a source is never encoded twice. */
+const proxyJobs = new Map<string, Promise<string | null>>()
+
+/** Encode at most 2 proxies at once: the decode is CPU-bound (measured ~8% faster aggregate than
+ *  sequential) and, more importantly, both angles of a multicam pair finish together — which is the
+ *  state the "Sincronizar" step needs. */
+const PROXY_CONCURRENCY = 2
+let proxyActive = 0
+const proxyWaiters: (() => void)[] = []
+async function acquireProxySlot(): Promise<void> {
+  if (proxyActive < PROXY_CONCURRENCY) {
+    proxyActive++
+    return
+  }
+  await new Promise<void>((r) => proxyWaiters.push(r))
+  proxyActive++
+}
+function releaseProxySlot(): void {
+  proxyActive--
+  proxyWaiters.shift()?.()
+}
+
+/** Link a finished proxy in the ACTIVE store manifest and in every session tab's manifest (tabs clone
+ *  the manifest, so each copy needs the path). Non-active session manifests may alias a frozen store
+ *  snapshot — clone before mutating. */
+function setProxyPathEverywhere(mediaRef: string, proxyPath: string): void {
+  useEditorStore.setState((s) => {
+    const e = s.manifest.entries.find((x) => x.id === mediaRef)
+    if (e) {
+      e.proxyPath = proxyPath
+      e.proxyVersion = PROXY_VERSION // stamp the recipe version so a future bump can invalidate it
+    }
+    s.dirty = true
+  })
+  for (const sess of sessions) {
+    if (sess.id === activeId) continue // covered by the store update (synced back on tab switch)
+    const e = sess.manifest.entries.find((x) => x.id === mediaRef)
+    if (e && e.proxyPath !== proxyPath) {
+      sess.manifest = structuredClone(sess.manifest)
+      const e2 = sess.manifest.entries.find((x) => x.id === mediaRef)
+      if (e2) {
+        e2.proxyPath = proxyPath
+        e2.proxyVersion = PROXY_VERSION
+      }
+      sess.dirty = true
+    }
+  }
+}
+
+/** Generate (or reuse) the preview proxy for a video source. Resolves to the proxy path, or null when
+ *  the entry isn't a proxy-able video / the file is offline / the encode failed. Deduplicated: concurrent
+ *  callers share one encode. `force` regenerates even when a proxyPath already exists (stale recipe):
+ *  the OLD proxy keeps playing until the new one lands, then `setProxyPathEverywhere` swaps it in. */
+function ensureProxy(mediaRef: string, force = false): Promise<string | null> {
+  const st = useEditorStore.getState()
+  const entry = st.manifest.entries.find((e) => e.id === mediaRef)
+  if (!entry || entry.type !== 'video') return Promise.resolve(null)
+  if (entry.proxyPath && !force) return Promise.resolve(entry.proxyPath)
+  const inflight = proxyJobs.get(mediaRef)
+  if (inflight) return inflight
+  const srcPath = expectedPath(st.manifest, mediaRef, st.projectDir)
+  if (!srcPath) return Promise.resolve(null)
+  const job = (async (): Promise<string | null> => {
+    await acquireProxySlot()
+    try {
+      const r = await window.editorBridge.generateProxy({ srcPath, outDir: useEditorStore.getState().projectDir })
+      if (!r.ok || !r.outputPath) return null
+      setProxyPathEverywhere(mediaRef, r.outputPath)
+      return r.outputPath
+    } catch {
+      return null
+    } finally {
+      releaseProxySlot()
+      proxyJobs.delete(mediaRef)
+    }
+  })()
+  proxyJobs.set(mediaRef, job)
+  return job
+}
+
+/** Kick BACKGROUND proxy generation for the given video entries (no blocking modal), surfacing progress
+ *  via the non-blocking `proxying` counter (statusbar/toolbar chip). `force` regenerates stale-recipe
+ *  proxies; without it, only entries lacking a proxy are processed. */
+function kickProxies(entries: MediaManifestEntry[], force = false): void {
+  const videos = entries.filter((e) => e.type === 'video' && (force || !e.proxyPath) && !proxyJobs.has(e.id))
+  if (videos.length === 0) return
+  useEditorStore.setState((s) => {
+    const p = s.proxying ?? { done: 0, total: 0 }
+    s.proxying = { done: p.done, total: p.total + videos.length }
+  })
+  for (const v of videos) {
+    void ensureProxy(v.id, force).finally(() => {
+      useEditorStore.setState((s) => {
+        if (!s.proxying) return
+        const done = s.proxying.done + 1
+        s.proxying = done >= s.proxying.total ? null : { done, total: s.proxying.total }
+      })
+    })
+  }
+}
+
+/** Kick off BACKGROUND proxy generation for freshly imported videos: by the time the user has placed
+ *  clips and synced angles, playback is already smooth. */
+function autoProxyImports(entries: MediaManifestEntry[]): void {
+  kickProxies(entries, false)
+}
+
+/** Regenerate proxies whose recipe version is stale (e.g. an older, coarser GOP) so preview seeking /
+ *  angle switching benefits from the current recipe. Non-blocking; the old proxy plays until the new
+ *  one is ready. Called on project open, after proxies are reconciled/relinked. */
+function regenerateStaleProxies(entries: MediaManifestEntry[]): void {
+  const stale = entries.filter((e) => e.type === 'video' && e.proxyPath && e.proxyVersion !== PROXY_VERSION)
+  if (stale.length > 0) kickProxies(stale, true)
 }
 
 /** Result of the audio-offset analysis (drives the sync confirmation modal). */
@@ -486,8 +795,12 @@ export interface SyncResultState {
   offsetFrames?: number
   confidence?: number
   reliable?: boolean
-  /** How the offset was found: matched transcript words (precise) or RMS cross-correlation (fallback). */
+  /** Which estimator the reconciliation chose: transcript words (finer) or RMS cross-correlation. */
   method?: 'transcript' | 'audio'
+  /** Why that estimator won (see core/edit/syncOffset). */
+  reason?: SyncReconcileReason
+  /** True when a reliable RMS peak contradicted (and overrode) the transcript offset. */
+  transcriptRefuted?: boolean
   frontalClipId?: string
   lateralClipId?: string
   error?: string
@@ -499,12 +812,16 @@ export interface ApplySyncOptions {
   offsetSeconds: number
   keepAudioOf: 'frontal' | 'lateral'
   autoColor: boolean
+  /** Skip the blocking success alert (auto-sync inside segmentation, MCP). */
+  silent?: boolean
 }
 
 export interface SyncAnglesInput {
   clipIds?: string[]
   keepAudioOf?: 'first' | 'second'
   autoColor?: boolean
+  /** Apply even when the detected offset is low-confidence (default: fail with the candidate). */
+  force?: boolean
 }
 
 /** Live progress of a long-running operation (drives the progress modal). */
@@ -587,6 +904,14 @@ export interface TakesPlanState {
   /** The pasted guiones split into blocks (script-driven mode) — for the verification UI to show the
    *  expected text per take, paired via `PlannedTake.scriptIndex`. Empty in inference mode. */
   scriptBlocks: string[]
+  /** Outcome of the pre-segmentation auto-sync (undefined when the timeline was already synced /
+   *  single-angle). `warning` carries the non-blocking message when it could NOT sync safely. */
+  autoSync?: {
+    applied: boolean
+    offsetSeconds?: number
+    method?: 'transcript' | 'audio'
+    warning?: string
+  }
 }
 
 export interface EditorState {
@@ -614,8 +939,19 @@ export interface EditorState {
   exportQuality: ExportQuality
   /** 0..1 while an export renders, else null — drives the blocking export overlay. */
   exportProgress: number | null
-  /** Set when an export finishes (ok with path, or error) — drives the confirmation modal. */
-  exportResult: { ok: boolean; outputPath?: string; error?: string } | null
+  /** Which tab of a multi-tab batch export is rendering (index/total/name), or null outside a batch. */
+  exportBatch: { index: number; total: number; name: string } | null
+  /** Set when an export finishes (ok with path, or error) — drives the confirmation modal.
+   *  `batch` carries per-tab results after a multi-tab export (outputPath = the destination folder). */
+  exportResult: {
+    ok: boolean
+    outputPath?: string
+    error?: string
+    batch?: { name: string; ok: boolean; outputPath?: string; error?: string }[]
+  } | null
+  /** Background proxy generation progress (auto-started on import), or null when idle. Non-blocking:
+   *  the UI stays fully usable; a chip shows done/total. */
+  proxying: { done: number; total: number } | null
   /** 0..1 while an NLE handoff bakes media, else null — drives the handoff progress overlay. */
   handoffProgress: number | null
   /** Set when a handoff finishes — drives the handoff result modal. */
@@ -668,6 +1004,9 @@ export interface EditorState {
   /** Open a project. `dir` opens it headlessly (MCP); omit to pop the open dialog. */
   openProject: (dir?: string) => Promise<void>
   exportProject: () => Promise<void>
+  /** Export the given TABS: one tab → save dialog; several → pick a folder and render <tab>.mp4 each,
+   *  sequentially, with combined progress. Drives the export overlay + a per-tab result list. */
+  exportTabs: (sessionIds: string[]) => Promise<void>
   /** Render to a given path without a dialog — used by the AI `export` tool (and MCP). */
   exportToPath: (outputPath: string) => Promise<ToolCallResult>
   setResolution: (width: number, height: number) => void
@@ -713,8 +1052,15 @@ export interface EditorState {
   dismissAnglePlan: () => void
   /** Analiza el transcript de un clip crudo (transcribe si hace falta) y abre el plan de tomas (no aplica).
    *  `cleanCuts` (default false) activa el corte de muletillas/repeticiones/silencios; apagado trae el
-   *  fragmento completo de cada guión sin cortes. */
-  analyzeTakes: (clipOrAssetId?: string, scripts?: string, cleanCuts?: boolean) => Promise<ToolCallResult>
+   *  fragmento completo de cada guión sin cortes. Si la timeline tiene exactamente 2 ángulos de video sin
+   *  sincronizar, PRIMERO los sincroniza automáticamente (`opts.keepAudioClipId` elige de quién se
+   *  conserva el audio; default el frontal = pista superior). */
+  analyzeTakes: (
+    clipOrAssetId?: string,
+    scripts?: string,
+    cleanCuts?: boolean,
+    opts?: { keepAudioClipId?: string; origin?: CommandOrigin; airMs?: number }
+  ) => Promise<ToolCallResult>
   /** Construye la Timeline limpia de cada toma aceptada y exporta un MP4 por toma. */
   applyTakesPlan: () => Promise<void>
   /** Marca/desmarca una toma (por su posición en `takes`). */
@@ -774,7 +1120,9 @@ export const useEditorStore = create<EditorState>()(
     lastError: null,
     exportQuality: 'veryHigh',
     exportProgress: null,
+    exportBatch: null,
     exportResult: null,
+    proxying: null,
     handoffProgress: null,
     handoffResult: null,
     syncBusy: false,
@@ -847,6 +1195,8 @@ export const useEditorStore = create<EditorState>()(
           if (imported.length > 0) s.dirty = true
         })
         maybeAdoptProjectSettings(imported)
+        // Start proxies NOW, in the background: by the time clips are placed/synced, playback is smooth.
+        autoProxyImports(imported.map((a) => a.entry))
       } catch (e) {
         set((s) => {
           s.lastError = e instanceof Error ? e.message : String(e)
@@ -869,6 +1219,7 @@ export const useEditorStore = create<EditorState>()(
         if (imported.length > 0) s.dirty = true
       })
       maybeAdoptProjectSettings(imported)
+      autoProxyImports(imported.map((a) => a.entry))
       return imported
     },
 
@@ -968,6 +1319,9 @@ export const useEditorStore = create<EditorState>()(
             }
           })
         }
+        // Proxies built with an older recipe (e.g. coarser GOP) are regenerated in the background with the
+        // current recipe so angle-switch seeking is snappy; the old proxy keeps playing until the new lands.
+        regenerateStaleProxies(get().manifest.entries)
         const items = get()
           .manifest.entries.map((e) => {
             const path = expectedPath(get().manifest, e.id, dir)
@@ -1017,6 +1371,90 @@ export const useEditorStore = create<EditorState>()(
           ? { ok: true, outputPath: res.outputPath ?? out }
           : { ok: false, error: res.error ?? 'Export failed' }
         if (!res.ok) s.lastError = res.error ?? 'Export failed'
+      })
+    },
+
+    exportTabs: async (sessionIds) => {
+      saveActiveToSession() // capture the active tab's live edits before snapshotting timelines
+      const chosen = sessions.filter((sess) => sessionIds.includes(sess.id))
+      if (chosen.length === 0) return
+
+      // One tab → the familiar save-dialog flow (works for non-active tabs too).
+      if (chosen.length === 1) {
+        const sess = chosen[0]
+        const out = await window.editorBridge.pickExportPath(sess.name)
+        if (!out) return
+        set((s) => {
+          s.busy = 'Exportando…'
+          s.lastError = null
+          s.exportProgress = 0
+          s.exportResult = null
+        })
+        const res = await window.editorBridge.exportTimeline({
+          timeline: sess.controller.getTimeline(),
+          manifest: sess.manifest,
+          projectDir: sess.projectDir,
+          outputPath: out,
+          quality: get().exportQuality
+        })
+        set((s) => {
+          s.busy = null
+          s.exportProgress = null
+          s.exportResult = res.ok
+            ? { ok: true, outputPath: res.outputPath ?? out }
+            : { ok: false, error: res.error ?? 'Export failed' }
+          if (!res.ok) s.lastError = res.error ?? 'Export failed'
+        })
+        return
+      }
+
+      // Several tabs → pick ONE folder; each tab renders to <folder>/<tab>.mp4, sequentially (FFmpeg
+      // already saturates the machine per render; parallel renders would just thrash).
+      const dir = await window.editorBridge.pickExportDir()
+      if (!dir) return
+      set((s) => {
+        s.busy = 'Exportando pestañas…'
+        s.lastError = null
+        s.exportResult = null
+      })
+      const usedNames = new Set<string>()
+      const results: { name: string; ok: boolean; outputPath?: string; error?: string }[] = []
+      for (let i = 0; i < chosen.length; i++) {
+        const sess = chosen[i]
+        set((s) => {
+          s.exportBatch = { index: i, total: chosen.length, name: sess.name }
+          s.exportProgress = 0
+        })
+        let base = sess.name.replace(/[<>:"/\\|?*]+/g, '-').trim() || `pestana-${i + 1}`
+        if (usedNames.has(base.toLowerCase())) base = `${base}-${i + 1}`
+        usedNames.add(base.toLowerCase())
+        const outputPath = `${dir}\\${base}.mp4`
+        const res = await window.editorBridge.exportTimeline({
+          timeline: sess.controller.getTimeline(),
+          manifest: sess.manifest,
+          projectDir: sess.projectDir,
+          outputPath,
+          quality: get().exportQuality
+        })
+        results.push({
+          name: sess.name,
+          ok: res.ok,
+          outputPath: res.ok ? res.outputPath ?? outputPath : undefined,
+          error: res.error
+        })
+      }
+      set((s) => {
+        s.busy = null
+        s.exportProgress = null
+        s.exportBatch = null
+        const failed = results.filter((r) => !r.ok)
+        s.exportResult = {
+          ok: failed.length === 0,
+          outputPath: dir,
+          batch: results,
+          error: failed.length > 0 ? failed.map((r) => `${r.name}: ${r.error ?? 'falló'}`).join('\n') : undefined
+        }
+        if (failed.length > 0) s.lastError = `${failed.length} pestaña(s) fallaron al exportar`
       })
     },
 
@@ -1202,7 +1640,7 @@ export const useEditorStore = create<EditorState>()(
     },
 
     optimizePlayback: async () => {
-      const { manifest, projectDir } = get()
+      const { manifest } = get()
       const videos = manifest.entries.filter((e) => e.type === 'video' && !e.proxyPath)
       if (videos.length === 0) {
         alert('La reproducción ya está optimizada (todos los videos tienen proxy).')
@@ -1212,35 +1650,27 @@ export const useEditorStore = create<EditorState>()(
         'Optimizar reproducción (proxies)',
         videos.map((v, i) => ({ id: `proxy${i}`, label: `Proxy: ${v.name}` }))
       )
+      // ensureProxy dedups with the auto-on-import background jobs (an in-flight encode is awaited, not
+      // restarted) and runs new ones through the shared 2-at-a-time queue.
       let done = 0
-      for (let i = 0; i < videos.length; i++) {
-        const v = videos[i]
-        const srcPath = expectedPath(manifest, v.id, projectDir)
-        if (!srcPath) {
-          get().setStep(`proxy${i}`, 'error', 'archivo offline')
-          continue
-        }
-        get().setStep(`proxy${i}`, 'active')
-        const r = await window.editorBridge.generateProxy({ srcPath, outDir: projectDir })
-        if (!r.ok || !r.outputPath) {
-          get().setStep(`proxy${i}`, 'error', r.error)
-          continue
-        }
-        set((s) => {
-          const e = s.manifest.entries.find((x) => x.id === v.id)
-          if (e) e.proxyPath = r.outputPath
-          s.dirty = true
+      await Promise.all(
+        videos.map(async (v, i) => {
+          get().setStep(`proxy${i}`, 'active')
+          const out = await ensureProxy(v.id)
+          if (out) {
+            get().setStep(`proxy${i}`, 'done')
+            done++
+          } else {
+            get().setStep(`proxy${i}`, 'error', 'archivo offline o encode fallido (ver detalle técnico)')
+          }
         })
-        get().setStep(`proxy${i}`, 'done')
-        done++
-      }
+      )
       get().finishProgress()
       return { ok: true, result: { proxiesGenerated: done } }
     },
 
     analyzeSyncForSelection: async () => {
       const c = getController()
-      const { manifest, projectDir } = get()
       const videoClips = c
         .getSelectedClipIds()
         .map((id) => c.getClip(id))
@@ -1252,14 +1682,6 @@ export const useEditorStore = create<EditorState>()(
         return
       }
       const [frontal, lateral] = videoClips
-      const pathA = expectedPath(manifest, frontal.mediaRef, projectDir)
-      const pathB = expectedPath(manifest, lateral.mediaRef, projectDir)
-      if (!pathA || !pathB) {
-        set((s) => {
-          s.lastError = 'Sincronizar ángulos: un clip está offline.'
-        })
-        return
-      }
       set((s) => {
         s.syncBusy = true
         s.syncResult = null
@@ -1267,62 +1689,28 @@ export const useEditorStore = create<EditorState>()(
       })
       const fps = c.getTimeline().fps
 
-      // 1) Precise path: match the WORDS both angles spoke (validated by voice-intensity peaks). Word
-      //    timestamps are exact landmarks, so this aligns the lateral to the frontal far better than RMS.
-      let offsetSeconds: number | undefined
-      let confidence = 0
-      let reliable = false
-      let method: 'transcript' | 'audio' = 'audio'
-      try {
-        const [wa, wb] = await Promise.all([
-          transcribeCached(pathA, frontal.mediaRef),
-          transcribeCached(pathB, lateral.mediaRef)
-        ])
-        if (wa && wb) {
-          const [ia, ib] = await Promise.all([
-            window.editorBridge.analyzeIntensity(pathA),
-            window.editorBridge.analyzeIntensity(pathB)
-          ])
-          const al = alignByTranscript(wa, wb, {
-            peaksFrontalSec: ia.ok ? ia.peaks : undefined,
-            peaksLateralSec: ib.ok ? ib.peaks : undefined
-          })
-          if (al.confidence >= 0.2 && al.matched >= 5) {
-            offsetSeconds = al.offsetSeconds
-            confidence = al.confidence
-            reliable = al.confidence >= 0.35
-            method = 'transcript'
-          }
-        }
-      } catch {
-        /* fall back to cross-correlation below */
+      // Both estimators + reconciliation (transcript refines an agreeing RMS peak; a reliable RMS
+      // peak refutes a disagreeing transcript). See core/edit/syncOffset.ts for the decision table.
+      const outcome = await computeSyncOffsetFor(frontal, lateral)
+      if (!outcome.ok || !outcome.reconciled) {
+        set((s) => {
+          s.syncBusy = false
+          s.syncResult = { ok: false, error: outcome.error ?? 'Análisis de audio fallido' }
+        })
+        return
       }
-
-      // 2) Fallback: RMS envelope cross-correlation (the original method).
-      if (offsetSeconds === undefined) {
-        const r = await window.editorBridge.computeAudioOffset({ pathA, pathB, fps })
-        if (!r.ok || r.offsetSeconds === undefined) {
-          set((s) => {
-            s.syncBusy = false
-            s.syncResult = { ok: false, error: r.error ?? 'Análisis de audio fallido' }
-          })
-          return
-        }
-        offsetSeconds = r.offsetSeconds
-        confidence = r.confidence ?? 0
-        reliable = r.reliable ?? false
-        method = 'audio'
-      }
-
+      const rec = outcome.reconciled
       set((s) => {
         s.syncBusy = false
         s.syncResult = {
           ok: true,
-          offsetSeconds,
-          offsetFrames: Math.round((offsetSeconds as number) * fps),
-          confidence,
-          reliable,
-          method,
+          offsetSeconds: rec.offsetSeconds,
+          offsetFrames: Math.round(rec.offsetSeconds * fps),
+          confidence: rec.confidence,
+          reliable: rec.reliable,
+          method: rec.method,
+          reason: rec.reason,
+          transcriptRefuted: rec.transcriptRefuted,
           frontalClipId: frontal.id,
           lateralClipId: lateral.id
         }
@@ -1355,6 +1743,13 @@ export const useEditorStore = create<EditorState>()(
       }
       const imported = await get().importFromSources([ex.outputPath])
       const audioAssetId = imported[0]?.entry.id
+      // The extract is the FULL-LENGTH audio of the same source (same time axis), so the source's
+      // transcript — the sync analysis usually just made one — is valid verbatim for the new asset.
+      // Seeding the cache means segmenting right after won't re-transcribe on ElevenLabs.
+      if (audioAssetId) {
+        const keepWords = transcriptCache.get(keep.mediaRef)
+        if (keepWords) rememberTranscript(audioAssetId, keepWords)
+      }
       set((s) => {
         s.busy = null
       })
@@ -1426,7 +1821,7 @@ export const useEditorStore = create<EditorState>()(
           }
         })
       )
-      alert('¡Sincronización completada!')
+      if (!opts.silent) alert('¡Sincronización completada!')
       return {
         ok: true,
         result: { offsetSeconds: opts.offsetSeconds, offsetFrames, fps, linkGroupId, audioAssetId }
@@ -1435,38 +1830,59 @@ export const useEditorStore = create<EditorState>()(
 
     syncAnglesTool: async (input) => {
       const c = getController()
-      const { manifest, projectDir } = get()
       const ids = input.clipIds ?? c.getSelectedClipIds()
-      const clips = ids
+      let clips = ids
         .map((id) => c.getClip(id))
         .filter((cl): cl is Clip => !!cl && cl.mediaType === 'video')
+      if (clips.length !== 2) {
+        // Headless fallback: no explicit/selected pair — accept the ONE unambiguous unsynced pair.
+        const scan = findUnsyncedAnglePair(c.getTimeline())
+        if (scan.kind === 'pair') {
+          clips = [c.getClip(scan.frontalClipId), c.getClip(scan.lateralClipId)].filter(
+            (cl): cl is Clip => !!cl
+          )
+        }
+      }
       if (clips.length !== 2) return { ok: false, error: 'sync_angles: se necesitan exactamente 2 clips de video.' }
       const [frontal, lateral] = clips
-      const pathA = expectedPath(manifest, frontal.mediaRef, projectDir)
-      const pathB = expectedPath(manifest, lateral.mediaRef, projectDir)
-      if (!pathA || !pathB) return { ok: false, error: 'sync_angles: un clip está offline.' }
-      const r = await window.editorBridge.computeAudioOffset({ pathA, pathB, fps: c.getTimeline().fps })
-      if (!r.ok || r.offsetSeconds === undefined) return { ok: false, error: r.error ?? 'sync_angles: análisis fallido.' }
+      // Same reconciled compute path as the UI button (RMS always + transcript when available).
+      const outcome = await computeSyncOffsetFor(frontal, lateral)
+      if (!outcome.ok || !outcome.reconciled) return { ok: false, error: outcome.error ?? 'sync_angles: análisis fallido.' }
+      const rec = outcome.reconciled
+      const fps = c.getTimeline().fps
+      if (!rec.reliable && !input.force) {
+        // Never bake a dubious offset headlessly — return the candidate so the agent can decide.
+        return {
+          ok: false,
+          error:
+            `sync_angles: offset detectado con confianza baja y NO aplicado (candidato ${rec.offsetSeconds.toFixed(3)} s, ` +
+            `método ${rec.method}, confianza ${Math.round(rec.confidence * 100)}%, razón ${rec.reason}). ` +
+            `Pasá force: true para aplicarlo igual.`
+        }
+      }
       const applied = await get().applySyncAngles(
         {
           frontalClipId: frontal.id,
           lateralClipId: lateral.id,
-          offsetSeconds: r.offsetSeconds,
+          offsetSeconds: rec.offsetSeconds,
           keepAudioOf: input.keepAudioOf === 'second' ? 'lateral' : 'frontal',
-          autoColor: input.autoColor ?? true
+          autoColor: input.autoColor ?? true,
+          silent: true
         },
         'agent'
       )
       if (!applied.ok) return applied
-      const fps = c.getTimeline().fps
       return {
         ok: true,
         result: {
-          offsetSeconds: r.offsetSeconds,
-          offsetFrames: Math.round(r.offsetSeconds * fps),
+          offsetSeconds: rec.offsetSeconds,
+          offsetFrames: Math.round(rec.offsetSeconds * fps),
           fps,
-          confidence: r.confidence,
-          lowConfidence: !r.reliable
+          method: rec.method,
+          reason: rec.reason,
+          confidence: rec.confidence,
+          transcriptRefuted: rec.transcriptRefuted,
+          lowConfidence: !rec.reliable
         }
       }
     },
@@ -1514,9 +1930,16 @@ export const useEditorStore = create<EditorState>()(
           set((s) => { s.transcribing = false; s.lastError = res.error ?? 'Transcription failed.' })
           return { ok: false, error: res.error }
         }
-        rememberTranscript(mediaRef, res.words)
-        set((s) => { s.transcribing = false; s.transcript = res.words! })
-        return { ok: true, result: { wordCount: res.words!.length, text: res.text } }
+        const words = res.words
+        // Never cache a transcript without usable times — a poisoned cache survives every re-run.
+        if (!transcriptHasValidTimes(words)) {
+          const msg = 'La transcripción llegó sin timestamps válidos. Volvé a intentar.'
+          set((s) => { s.transcribing = false; s.lastError = msg })
+          return { ok: false, error: msg }
+        }
+        rememberTranscript(mediaRef, words)
+        set((s) => { s.transcribing = false; s.transcript = words })
+        return { ok: true, result: { wordCount: words.length, text: res.text } }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
         set((s) => { s.transcribing = false; s.lastError = msg })
@@ -1611,6 +2034,9 @@ clearTranscript: () => set((s) => { s.transcript = null }),
       const plan = get().anglePlan
       if (!plan) return
       const { applied, skipped } = applyPlanCuts(getController(), plan)
+      // Ensure every angle source has a preview proxy so switching angles plays smoothly (background;
+      // Preview only keeps proxy-backed angles "warm", so this is what makes the lateral snappy at cuts).
+      kickProxies(get().manifest.entries, false)
       set((s) => { s.anglePlan = null })
       if (applied === 0) {
         alert(
@@ -1641,7 +2067,15 @@ clearTranscript: () => set((s) => { s.transcript = null }),
 
     dismissAnglePlan: () => set((s) => { s.anglePlan = null }),
 
-    analyzeTakes: async (clipOrAssetId, scripts, cleanCuts = false) => {
+    analyzeTakes: async (clipOrAssetId, scripts, cleanCuts = false, opts) => {
+      set((s) => {
+        s.analyzingTakes = true
+        s.lastError = null
+      })
+      // AUTO-SYNC FIRST: the tabs inherit the base timeline's alignment, so two raw angles must be
+      // synced BEFORE we snapshot the timeline and pick the reference clip (the auto-pick below
+      // prefers the continuous audio track this very sync creates).
+      const sync = await ensureAnglesSynced(opts?.keepAudioClipId, opts?.origin ?? 'user')
       const c = getController()
       const tl = c.getTimeline()
       const isAudible = (cl: Clip): boolean => cl.mediaType === 'video' || cl.mediaType === 'audio'
@@ -1664,15 +2098,18 @@ clearTranscript: () => set((s) => { s.transcript = null }),
         for (const t of tl.tracks) for (const cl of t.clips) if (isAudible(cl)) audible.push(cl)
         clip = audible.find((cl) => cl.mediaType === 'audio') ?? audible[0] ?? null
       }
-      if (!clip) return { ok: false, error: 'No hay un clip de video para analizar. Importá un crudo y agregalo a la línea de tiempo.' }
+      if (!clip) {
+        set((s) => { s.analyzingTakes = false })
+        return { ok: false, error: 'No hay un clip de video para analizar. Importá un crudo y agregalo a la línea de tiempo.' }
+      }
       const raw = clip
       const mediaPath = expectedPath(get().manifest, raw.mediaRef, get().projectDir)
       if (!mediaPath) {
+        set((s) => { s.analyzingTakes = false })
         alert('El archivo del clip no se encuentra en el disco.')
         return { ok: false, error: 'El medio del clip está offline.' }
       }
 
-      set((s) => { s.analyzingTakes = true; s.lastError = null })
       get().startProgress('Detectar tomas', [
         { id: 'transcribe', label: 'Transcribir audio (ElevenLabs Scribe)' },
         { id: 'analyze', label: 'Detectar guiones y cortes (Claude)' }
@@ -1688,8 +2125,7 @@ clearTranscript: () => set((s) => { s.transcript = null }),
             return { ok: false, error: r.error }
           }
           // Never cache a transcript without usable times — a poisoned cache survives re-runs.
-          const invalid = r.words.some((w) => !Number.isFinite(w.startMs) || !Number.isFinite(w.endMs))
-          if (invalid) {
+          if (!transcriptHasValidTimes(r.words)) {
             const msg = 'La transcripción llegó sin timestamps válidos. Volvé a intentar.'
             get().finishProgress(msg)
             set((s) => { s.analyzingTakes = false })
@@ -1702,32 +2138,77 @@ clearTranscript: () => set((s) => { s.transcript = null }),
         get().setStep('transcribe', 'done')
 
         get().setStep('analyze', 'active')
-        const res = await window.editorBridge.analyzeTakes({ words, languageCode: 'es', scripts, cleanCuts })
-        if (!res.ok || !res.plan) {
-          get().finishProgress(res.error ?? 'El análisis falló.')
-          set((s) => { s.analyzingTakes = false })
-          return { ok: false, error: res.error }
+        // Reuse a prior LLM plan for the same (source + guiones + cleanCuts) — re-opening an unchanged
+        // segmentation shouldn't re-call Claude. Tweaking the guiones or the cleanCuts toggle is a new key.
+        const airMs = cleanCuts ? opts?.airMs : undefined
+        const planKey = takesPlanKey(raw.mediaRef, cleanCuts, scripts, airMs)
+        let plan = takesPlanCache.get(planKey) ?? null
+        if (plan) {
+          get().setStep('analyze', 'done', '(ya analizado)')
+        } else {
+          // Pass the transcribed clip's path so main can refine cuts against REAL acoustic silence
+          // (silencedetect on the SAME file → seconds↔ms is exact). Only used when cleanCuts is on.
+          const res = await window.editorBridge.analyzeTakes({ words, languageCode: 'es', scripts, cleanCuts, mediaPath, airMs })
+          if (!res.ok || !res.plan) {
+            get().finishProgress(res.error ?? 'El análisis falló.')
+            set((s) => { s.analyzingTakes = false })
+            return { ok: false, error: res.error }
+          }
+          plan = res.plan
+          takesPlanCache.set(planKey, plan)
         }
-        const plan = res.plan
+        const resolvedPlan = plan // non-null after the branch; `const` keeps it narrowed inside the closure
         set((s) => {
           s.analyzingTakes = false
           s.takesPlan = {
-            takes: plan.takes,
-            cuts: plan.cuts,
-            durationMs: plan.durationMs,
+            takes: resolvedPlan.takes,
+            cuts: resolvedPlan.cuts,
+            durationMs: resolvedPlan.durationMs,
             rawClipId: raw.id,
             rawMediaRef: raw.mediaRef,
             fps: tl.fps,
-            // Default-off any take whose guión was poorly matched (<50%), so a low-coverage/misaligned
-            // take isn't opened by accident; well-matched (or inference-mode) takes stay on.
-            takeAccepted: plan.takes.map((t) => (t.coverage ? t.coverage.fraction >= 0.5 : true)),
-            cutAccepted: plan.cuts.map(() => true),
-            scriptBlocks: scripts ? splitScriptBlocks(scripts) : []
+            // Never hide a guión silently: default ON for every take that was located at all (coverage > 0),
+            // and OFF only for a "no encontrado" placeholder (reconstructed with zero coverage) — which the
+            // modal flags loudly so the user can adjust its bounds instead of it just disappearing.
+            takeAccepted: resolvedPlan.takes.map((t) => !(t.reconstructed && (!t.coverage || t.coverage.fraction === 0))),
+            cutAccepted: resolvedPlan.cuts.map(() => true),
+            scriptBlocks: scripts ? splitScriptBlocks(scripts) : [],
+            autoSync:
+              sync.attempted || sync.warning
+                ? { applied: sync.applied, offsetSeconds: sync.offsetSeconds, method: sync.method, warning: sync.warning }
+                : undefined
           }
         })
+        // Behavior-only summary of the detected cuts (counts + total ms cut) — never text/paths/transcript.
+        if (cleanCuts) {
+          const byKind = { falsoInicio: 0, repeticion: 0, silencio: 0, muletilla: 0 }
+          const bySource = { deterministic: 0, llm: 0, both: 0 }
+          let cutMs = 0
+          for (const c of resolvedPlan.cuts) {
+            if (c.kind === 'falso-inicio') byKind.falsoInicio++
+            else if (c.kind === 'repeticion') byKind.repeticion++
+            else if (c.kind === 'silencio') byKind.silencio++
+            else if (c.kind === 'muletilla') byKind.muletilla++
+            if (c.source === 'deterministic') bySource.deterministic++
+            else if (c.source === 'llm') bySource.llm++
+            else if (c.source === 'both') bySource.both++
+            cutMs += Math.max(0, c.endMs - c.startMs)
+          }
+          emit('io', 'io.clean_cuts', { total: resolvedPlan.cuts.length, byKind, bySource, cutMs: Math.round(cutMs), takes: resolvedPlan.takes.length })
+        }
         get().finishProgress()
         get().dismissProgress()
-        return { ok: true, result: { takes: plan.takes.length, cuts: plan.cuts.length } }
+        return {
+          ok: true,
+          result: {
+            takes: resolvedPlan.takes.length,
+            cuts: resolvedPlan.cuts.length,
+            ...(sync.applied
+              ? { syncApplied: { offsetSeconds: sync.offsetSeconds, method: sync.method, confidence: sync.confidence } }
+              : {}),
+            ...(sync.warning ? { syncWarning: sync.warning } : {})
+          }
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
         get().finishProgress(msg)
@@ -1814,11 +2295,25 @@ clearTranscript: () => set((s) => { s.transcript = null }),
       const failed: string[] = []
       for (const take of accepted) {
         // "Ya limpia": apply ALL cuts detected inside this take (the cut list is not user-selectable).
-        const cutsForTake = plan.cuts.filter((cut) => cut.takeIndex === take.index)
+        // Only cuts inside this take AND accepted in the review UI (cutAccepted is index-aligned with plan.cuts).
+        const cutsForTake = acceptedCutsForTake(plan.cuts, plan.cutAccepted, take.index)
         const takeTimeline = buildTakeTimeline(tl, raw, take, cutsForTake)
         if (!takeTimeline) {
-          failed.push(`Guión ${take.index}: ${take.title}`)
+          failed.push(`Guión ${take.guionNumber ?? take.index}: ${take.title}`)
           continue
+        }
+        // Safety net for the multicam invariant: linked angles must stay co-aligned in the built tab
+        // (same startFrame, the base's baked trim delta). Uniform drift is corrected in place;
+        // anything non-uniform is only reported — and both cases are measured.
+        const alignReport = verifyLinkedAlignment(tl, takeTimeline)
+        if (alignReport.corrected > 0 || alignReport.uncorrectable > 0) {
+          console.warn('[reelmind] take tab alignment', { guion: take.index, ...alignReport })
+          emit('io', 'io.take_align_fix', {
+            guion: take.index,
+            groups: alignReport.groupsChecked,
+            corrected: alignReport.corrected,
+            uncorrectable: alignReport.uncorrectable
+          })
         }
         // DIAGNOSTIC (temporary): compare where the preview says the take starts vs where the built tab
         // actually starts, to pinpoint any "inicio cortado" (trim clamp vs leading cut vs other).
@@ -1837,7 +2332,7 @@ clearTranscript: () => set((s) => { s.transcript = null }),
           tabFirstClipTrimStart: firstClip?.trimStartFrame,
           edited: take.edited === true
         })
-        const id = openSession(`Guión ${take.index}`, takeTimeline, manifest, projectDir, thumbnails)
+        const id = openSession(`Guión ${take.guionNumber ?? take.index}`, takeTimeline, manifest, projectDir, thumbnails)
         if (!firstId) firstId = id
       }
       if (failed.length > 0) {
@@ -1944,6 +2439,7 @@ clearTranscript: () => set((s) => { s.transcript = null }),
       if (!r.ok) return { ok: false, error: r.error }
       if (r.plan) {
         applyPlanCuts(getController(), r.plan)
+        kickProxies(get().manifest.entries, false) // proxies for smooth angle-switch playback (background)
         return { ok: true, result: { cuts: r.plan.segments.length - 1, destructive: r.plan.destructive } }
       }
       return { ok: true }

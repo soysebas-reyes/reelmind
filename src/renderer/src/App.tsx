@@ -22,10 +22,11 @@ const RESOLUTIONS: { label: string; w: number; h: number }[] = [
   { label: '1080×1080 (1:1)', w: 1080, h: 1080 }
 ]
 const FPS_OPTIONS = [24, 25, 30, 50, 60]
+// 'high'/'veryHigh' render on the GPU when hay una usable (export mucho más rápido); 'max' siempre CPU.
 const QUALITY_OPTIONS: { value: ExportQuality; label: string }[] = [
-  { value: 'high', label: 'Alta' },
-  { value: 'veryHigh', label: 'Muy alta' },
-  { value: 'max', label: 'Máxima (sin pérdida visual)' }
+  { value: 'high', label: 'Alta (la más rápida)' },
+  { value: 'veryHigh', label: 'Muy alta (recomendada)' },
+  { value: 'max', label: 'Máxima (lenta, sin pérdida visual)' }
 ]
 
 const TYPE_ICON: Record<ClipType, IconName> = {
@@ -146,7 +147,10 @@ export default function App() {
     exportQuality,
     setExportQuality,
     exportProgress,
+    exportBatch,
     exportResult,
+    proxying,
+    tabs,
     dismissExportResult,
     revealExport,
     exportToNle,
@@ -181,6 +185,8 @@ export default function App() {
   const [syncKeepAudio, setSyncKeepAudio] = useState<'frontal' | 'lateral'>('frontal')
   const [syncAutoColor, setSyncAutoColor] = useState(true)
   const [nleMenuOpen, setNleMenuOpen] = useState(false)
+  // Multi-tab export picker ("¿cuál pestaña exportar, o todas?").
+  const [exportPickerOpen, setExportPickerOpen] = useState(false)
   useEffect(() => {
     localStorage.setItem('reelmind.layout', JSON.stringify(layout))
   }, [layout])
@@ -226,12 +232,6 @@ export default function App() {
     selectedVideoIds.map((id) => getController().getTrackOfClip(id)?.id).filter((x): x is string => !!x)
   )
   const canChangeAngles = selectedVideoTrackIds.size >= 2 && selectedVideoTrackIds.size <= 3
-  const canDeleteTrack = selectedClipIds.length > 0
-  const selectedTrackId: string | null = (() => {
-    if (selectedClipIds.length === 0) return null
-    const id = selectedClipIds[0]
-    return timeline.tracks.find((t) => t.clips.some((c) => c.id === id))?.id ?? null
-  })()
   const canTranscribe = selectedVideoIds.length >= 1
   // Enhance audio works ONLY on a single selected clip that lives on an audio track.
   const enhanceClipId = selectedClipIds.length === 1 ? selectedClipIds[0] : null
@@ -311,8 +311,13 @@ export default function App() {
               <button onClick={() => void saveProject()} disabled={!!busy} title="Guardar Proyecto">
                 <Icon name="save" /> Guardar
               </button>
-              <button className="primary" onClick={() => void exportProject()} disabled={!!busy} title="Exportar Video">
-                <Icon name="export" /> Exportar
+              <button
+                className="primary"
+                onClick={() => (tabs.length > 1 ? setExportPickerOpen(true) : void exportProject())}
+                disabled={!!busy}
+                title={tabs.length > 1 ? 'Exportar: elegí qué pestañas (o todas)' : 'Exportar Video'}
+              >
+                <Icon name="export" /> Exportar{tabs.length > 1 ? '…' : ''}
               </button>
               <div style={{ position: 'relative' }}>
                 <button
@@ -351,26 +356,35 @@ export default function App() {
           </div>
         </div>
 
-        {/* Row 2: action toolbar (Journey simplificado) */}
+        {/* Row 2: action toolbar in the real workflow order — sync → audio → color → guiones → ángulos
+            → cortes manuales. Secondary/destructive actions live on the track headers + context menus. */}
         <div className="toolbar">
           <button
             onClick={() => { setSyncSwap(false); setSyncKeepAudio('frontal'); setSyncAutoColor(true); void analyzeSyncForSelection() }}
             disabled={!canSyncAngles || !!busy || syncBusy}
-            title={canSyncAngles ? 'Sincroniza y recorta 2 ángulos por audio' : 'Selecciona exactamente 2 clips de video'}
+            title={canSyncAngles ? 'Sincroniza y recorta 2 ángulos por audio' : 'Selecciona exactamente 2 clips de video (frontal y lateral)'}
           >
-            <Icon name="sync" /> 0. Sincronizar
+            <Icon name="sync" /> 1. Sincronizar
           </button>
 
           <button
-            onClick={() => getController().razorAtPlayhead()}
-            disabled={!canRazor || !!busy || syncBusy}
+            onClick={() => setAudioOpen(true)}
+            disabled={!canEnhanceAudio || !!busy}
             title={
-              canRazor
-                ? 'Cortar (split) en el cursor: frontal + lateral + audio a la vez. Cortá al inicio y al final del tartamudeo/repetición, seleccioná el tramo y borralo (Ripple delete).'
-                : 'Agrega clips de video a la línea de tiempo'
+              canEnhanceAudio
+                ? 'Abrir el explorador de realce de audio (preview A/B + ajustes)'
+                : 'Selecciona el clip de la pista de audio (la que creó Sincronizar)'
             }
           >
-            <Icon name="cut" /> 1. Cortar tomas
+            <Icon name="waveform" /> 2. Realzar audio
+          </button>
+
+          <button
+            onClick={() => setColorOpen(true)}
+            disabled={selectedClipIds.length === 0}
+            title={selectedClipIds.length === 0 ? 'Selecciona un clip de video para colorizar' : 'Abrir explorador de colorización'}
+          >
+            <Icon name="wand" /> 3. Colorizar
           </button>
 
           <button
@@ -381,17 +395,9 @@ export default function App() {
               syncBusy ||
               !timeline.tracks.some((t) => t.clips.some((c) => c.mediaType === 'video' || c.mediaType === 'audio'))
             }
-            title="Segmentar el crudo por guiones con IA y abrir un video por guión en pestañas (ya recortados y limpios)"
+            title="Segmentar el crudo por guiones con IA: pegá tus guiones y se abre una pestaña por guión, ya recortada"
           >
-            <Icon name="wand" /> {analyzingTakes ? 'Segmentando…' : 'Segmentar por guiones (IA)'}
-          </button>
-
-          <button
-            onClick={() => setColorOpen(true)}
-            disabled={selectedClipIds.length === 0}
-            title={selectedClipIds.length === 0 ? 'Selecciona un clip para colorizar' : 'Abrir explorador de colorización'}
-          >
-            <Icon name="wand" /> 2. Colorizar
+            <Icon name="wand" /> {analyzingTakes ? 'Segmentando…' : '4. Guiones (IA)'}
           </button>
 
           <button
@@ -399,50 +405,46 @@ export default function App() {
             disabled={!canChangeAngles || !!busy}
             title={
               canChangeAngles
-                ? 'Analizar el volumen de cada ángulo y previsualizar los cambios antes de aplicarlos'
+                ? 'Analizar el volumen y previsualizar los cambios de ángulo. Antes, verificá los chips F/L en las cabeceras de pista (clic para cambiar el rol).'
                 : 'Haz clic en el nombre de cada pista de video (frontal, lateral y opcional b-roll) para seleccionarla completa'
             }
           >
-            <Icon name="angles" /> 3. Cambios de Ángulo
+            <Icon name="angles" /> 5. Ángulos
           </button>
 
           <button
-            onClick={() => {
-              if (!selectedTrackId) return
-              const tk = timeline.tracks.find((t) => t.id === selectedTrackId)
-              if (tk && tk.clips.length > 1 && !window.confirm(`Eliminar la pista y sus ${tk.clips.length} clips?`)) return
-              getController().removeTrack(selectedTrackId)
-            }}
-            disabled={!canDeleteTrack || !!busy}
-            title={canDeleteTrack ? 'Eliminar la pista del clip seleccionado (o usa el chip ✕ en la cabecera)' : 'Selecciona un clip primero'}
-            style={{ color: canDeleteTrack ? 'var(--danger, #e05555)' : undefined }}
-          >
-            <Icon name="trash" /> Eliminar pista
-          </button>
-
-          <button
-            onClick={() => setAudioOpen(true)}
-            disabled={!canEnhanceAudio || !!busy}
+            onClick={() => getController().razorAtPlayhead()}
+            disabled={!canRazor || !!busy || syncBusy}
             title={
-              canEnhanceAudio
-                ? 'Abrir el explorador de realce de audio (preview A/B + ajustes)'
-                : 'Selecciona un clip en una pista de audio'
+              canRazor
+                ? 'Cortar (split) en el cursor: todas las pistas a la vez. Para un tartamudeo/repetición: cortá al inicio y al final, seleccioná el tramo y borralo.'
+                : 'Agrega clips de video a la línea de tiempo'
             }
           >
-            <Icon name="waveform" /> Realzar audio
+            <Icon name="cut" /> 6. Cortar
           </button>
 
-          <button
-            onClick={() => void useEditorStore.getState().optimizePlayback()}
-            disabled={videosNeedingProxy === 0 || !!busy}
-            title={
-              videosNeedingProxy === 0
-                ? 'Reproducción ya optimizada (todos los videos tienen proxy)'
-                : `Genera proxies 1080p para ${videosNeedingProxy} video(s) → reproducción fluida (el export usa el original)`
-            }
-          >
-            <Icon name="bolt" /> Optimizar reproducción{videosNeedingProxy > 0 ? ` (${videosNeedingProxy})` : ''}
-          </button>
+          <span className="spacer" style={{ flex: 1 }} />
+
+          {/* Proxies now start automatically on import; this chip shows the background progress.
+              The button only appears for footage that still lacks a proxy (e.g. an old project). */}
+          {proxying ? (
+            <span
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.85em', color: 'var(--fg-muted, #8e8e93)' }}
+              title="Generando proxies de reproducción en segundo plano — podés seguir editando"
+            >
+              <Reelo state="loading" size={20} ariaLabel="Generando proxies" />
+              Optimizando reproducción… {proxying.done}/{proxying.total}
+            </span>
+          ) : videosNeedingProxy > 0 ? (
+            <button
+              onClick={() => void useEditorStore.getState().optimizePlayback()}
+              disabled={!!busy}
+              title={`Genera proxies para ${videosNeedingProxy} video(s) → reproducción fluida (el export usa el original)`}
+            >
+              <Icon name="bolt" /> Optimizar reproducción ({videosNeedingProxy})
+            </button>
+          ) : null}
         </div>
       </header>
 
@@ -551,7 +553,13 @@ export default function App() {
         <div className="modal-backdrop">
           <div className="modal export-modal" onMouseDown={(e) => e.stopPropagation()}>
             <Reelo state={exportProgress >= 1 ? 'success' : 'progress'} size={72} progress={exportProgress} ariaLabel="Reelo exportando" />
-            <h2>{exportProgress >= 1 ? '¡Y… corten!' : 'Exportando tu video…'}</h2>
+            <h2>
+              {exportProgress >= 1
+                ? '¡Y… corten!'
+                : exportBatch
+                  ? `Exportando ${exportBatch.index + 1}/${exportBatch.total}: ${exportBatch.name}`
+                  : 'Exportando tu video…'}
+            </h2>
             <div className="export-bar">
               <div className="export-bar-fill" style={{ width: `${Math.round(exportProgress * 100)}%` }} />
             </div>
@@ -574,32 +582,41 @@ export default function App() {
             {exportResult.ok ? (
               <>
                 <div className="export-check">✓</div>
-                <h2>Exportación completa</h2>
+                <h2>{exportResult.batch ? `Exportación completa (${exportResult.batch.length} videos)` : 'Exportación completa'}</h2>
                 <p className="export-path" title={exportResult.outputPath}>
                   {exportResult.outputPath}
                 </p>
-                <div className="export-actions">
-                  {exportResult.outputPath && (
-                    <button className="primary" onClick={() => revealExport(exportResult.outputPath as string)}>
-                      Mostrar en carpeta
-                    </button>
-                  )}
-                  <button onClick={() => dismissExportResult()}>Cerrar</button>
-                </div>
               </>
             ) : (
               <>
                 <div className="export-fail">✗</div>
-                <h2>La exportación falló</h2>
-                <p className="export-err">{exportResult.error}</p>
-                <div className="export-actions">
-                  <button onClick={() => dismissExportResult()}>Cerrar</button>
-                </div>
+                <h2>{exportResult.batch ? 'Exportación con errores' : 'La exportación falló'}</h2>
+                {!exportResult.batch && <p className="export-err">{exportResult.error}</p>}
               </>
             )}
+            {exportResult.batch && (
+              <ul style={{ listStyle: 'none', padding: 0, margin: '0.5rem 0', textAlign: 'left', maxHeight: '30vh', overflowY: 'auto' }}>
+                {exportResult.batch.map((b, i) => (
+                  <li key={i} style={{ padding: '2px 0', color: b.ok ? undefined : 'var(--danger, #e05555)' }}>
+                    {b.ok ? '✓' : '✗'} {b.name}
+                    {!b.ok && b.error ? ` — ${b.error.split('\n')[0]}` : ''}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="export-actions">
+              {exportResult.outputPath && (exportResult.ok || exportResult.batch) && (
+                <button className="primary" onClick={() => revealExport(exportResult.outputPath as string)}>
+                  Mostrar en carpeta
+                </button>
+              )}
+              <button onClick={() => dismissExportResult()}>Cerrar</button>
+            </div>
           </div>
         </div>
       )}
+
+      {exportPickerOpen && <ExportPickerModal onClose={() => setExportPickerOpen(false)} />}
 
       {/* NLE handoff: baking media (color + audio) then writing the editable XML. */}
       {handoffProgress !== null && (
@@ -744,6 +761,12 @@ export default function App() {
                   Método: {syncResult.method === 'transcript' ? 'transcript (palabras)' : 'audio (correlación)'} · Confianza:{' '}
                   {Math.round((syncResult.confidence ?? 0) * 100)}%
                 </p>
+                {syncResult.transcriptRefuted && (
+                  <p className="export-note">
+                    ℹ️ El transcript sugería otro desfase y fue descartado: la correlación de audio fue más confiable en
+                    este material (típico con guiones repetidos en varias tomas).
+                  </p>
+                )}
                 {!syncResult.reliable && (
                   <p className="export-note">
                     ⚠️ Confianza baja: revisa la alineación tras aplicar; quizá debas ajustar manualmente arrastrando un
@@ -795,6 +818,66 @@ export default function App() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+/** Multi-tab export picker: choose which tabs to render (default: all). One tab → save dialog;
+ *  several → one folder, a <tab>.mp4 per selection, sequential with combined progress. */
+function ExportPickerModal({ onClose }: { onClose: () => void }) {
+  const tabs = useEditorStore((s) => s.tabs)
+  const activeTabId = useEditorStore((s) => s.activeTabId)
+  const exportTabs = useEditorStore((s) => s.exportTabs)
+  const [checked, setChecked] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(tabs.map((t) => [t.id, true]))
+  )
+  const selectedIds = tabs.filter((t) => checked[t.id]).map((t) => t.id)
+  const allChecked = selectedIds.length === tabs.length
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div className="modal export-modal" onMouseDown={(e) => e.stopPropagation()}>
+        <h2>¿Qué querés exportar?</h2>
+        <p className="export-note">
+          Cada pestaña se exporta como su propio .mp4. Una sola → elegís el archivo; varias → elegís una
+          carpeta y se renderizan una por una.
+        </p>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 2px', borderBottom: '1px solid var(--border, #3a3a3c)', marginBottom: 4 }}>
+          <input
+            type="checkbox"
+            checked={allChecked}
+            onChange={(e) => setChecked(Object.fromEntries(tabs.map((t) => [t.id, e.target.checked])))}
+          />
+          <strong>Todas las pestañas ({tabs.length})</strong>
+        </label>
+        <div style={{ maxHeight: '38vh', overflowY: 'auto', textAlign: 'left' }}>
+          {tabs.map((t) => (
+            <label key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 2px' }}>
+              <input
+                type="checkbox"
+                checked={!!checked[t.id]}
+                onChange={(e) => setChecked((c) => ({ ...c, [t.id]: e.target.checked }))}
+              />
+              <span>
+                {t.name}
+                {t.id === activeTabId && <span style={{ color: 'var(--fg-muted, #8e8e93)' }}> (actual)</span>}
+              </span>
+            </label>
+          ))}
+        </div>
+        <div className="export-actions">
+          <button
+            className="primary"
+            disabled={selectedIds.length === 0}
+            onClick={() => {
+              onClose()
+              void exportTabs(selectedIds)
+            }}
+          >
+            Exportar {selectedIds.length === tabs.length ? 'todas' : `(${selectedIds.length})`}
+          </button>
+          <button onClick={onClose}>Cancelar</button>
+        </div>
+      </div>
     </div>
   )
 }

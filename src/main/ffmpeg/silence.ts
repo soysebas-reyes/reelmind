@@ -46,6 +46,7 @@ export async function detectSilences(path: string, opts: DetectSilenceOptions = 
     '-nostats',
     '-i',
     path,
+    '-vn', // audio-only: skip video decode (silencedetect ignores it anyway) — much faster on 4K raws
     '-af',
     `silencedetect=noise=${noiseDb}dB:d=${minDur}`,
     '-f',

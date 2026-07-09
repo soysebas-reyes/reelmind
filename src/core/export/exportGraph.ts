@@ -29,6 +29,9 @@ export interface ExportOptions {
   crf?: number
   preset?: string
   audioBitrate?: string
+  /** Full video-encoder argument vector (e.g. hardware encoders whose rate control isn't crf/preset).
+   *  When set, it REPLACES the `-c:v/-pix_fmt/-crf/-preset` block; videoCodec/crf/preset are ignored. */
+  videoEncoderArgs?: string[]
 }
 
 export interface ExportGraph {
@@ -395,6 +398,17 @@ export function buildExportGraph(
     // Non-destructive voice/loudness enhancement (the exact chain the live preview approximates). Skipped
     // when disabled/identity so the render stays byte-identical to an un-enhanced one.
     if (!audioEnhanceIsIdentity(c.audioEnhance)) filters.push(buildEnhanceChain(c.audioEnhance))
+    // Anti-click micro-fade at each clip edge (clean-take timelines only): every audio seam there is a
+    // real cut, so an ~8ms in/out fade removes the pop. `st` is on the clip's own 0-based stream (post
+    // atempo, pre adelay). Clamped for very short cut fragments so the two fades never overlap.
+    if (timeline.antiClickAudioFades) {
+      const outDur = c.durationFrames / fps
+      const d = Math.min(0.008, outDur / 2)
+      if (d > 0) {
+        filters.push(`afade=t=in:st=0:d=${fmt(d)}`)
+        filters.push(`afade=t=out:st=${fmt(outDur - d)}:d=${fmt(d)}`)
+      }
+    }
     if (startMs > 0) filters.push(`adelay=${startMs}:all=1`)
     chains.push(`${src}${filters.join(',')}[a${k}]`)
     audioOutLabels.push(`[a${k}]`)
@@ -409,7 +423,11 @@ export function buildExportGraph(
   const maps = ['-map', '[vout]']
   if (hasAudio) maps.push('-map', '[aout]')
 
-  const enc = ['-r', String(fps), '-c:v', videoCodec, '-pix_fmt', 'yuv420p', '-crf', String(crf), '-preset', preset]
+  const enc = [
+    '-r',
+    String(fps),
+    ...(opts.videoEncoderArgs ?? ['-c:v', videoCodec, '-pix_fmt', 'yuv420p', '-crf', String(crf), '-preset', preset])
+  ]
   if (hasAudio) enc.push('-c:a', audioCodec, '-b:a', audioBitrate)
   enc.push('-t', fmt(totalSec))
 

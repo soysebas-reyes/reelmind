@@ -6,7 +6,8 @@
 //  4. assign each cut to the take containing its midpoint (drop cuts outside all takes),
 //  5. fill preview text from the transcript. Pure and unit-testable.
 
-import { type CleanCut, type CleanCutKind, mergeCleanCuts } from '../edit/transcriptClean'
+import { type CleanCut, type CleanCutKind, describeCut, mergeCleanCuts } from '../edit/transcriptClean'
+import { alignScriptToTranscript } from './scriptAlign'
 import type { SerialWord, WordMs } from './transcriptSerialize'
 import {
   type CutKind,
@@ -22,19 +23,90 @@ import {
  *  (window overlap makes the boundary take pair overlap in index space; open-ended takes extend). */
 export function stitchTakePlans(chunks: TakesPlanInput[]): TakesPlanInput {
   const cuts = chunks.flatMap((c) => c.cuts)
-  const sorted = chunks.flatMap((c) => c.takes).sort((a, b) => a.startWordIndex - b.startWordIndex)
-  const takes: TakeInput[] = []
-  for (const t of sorted) {
-    const last = takes[takes.length - 1]
+  const all = chunks.flatMap((c) => c.takes)
+
+  // Script-driven: collapse fragments of the SAME guión (scriptIndex) into ONE take even if their word-
+  // index spans don't overlap — e.g. a guión split across the planWindows boundary, or the model emitting
+  // two takes for one script. The overlap merge below is scriptIndex-unaware and would leave that as two
+  // takes (over-segmentation → an extra low-coverage tab). Fragments WITHOUT a scriptIndex (inference
+  // mode) keep the original overlap-merge, so that golden behavior is unchanged.
+  const byScript = new Map<number, TakeInput>()
+  const rest: TakeInput[] = []
+  for (const t of all) {
+    if (t.scriptIndex == null) {
+      rest.push(t)
+      continue
+    }
+    const cur = byScript.get(t.scriptIndex)
+    if (!cur) {
+      byScript.set(t.scriptIndex, { ...t })
+      continue
+    }
+    cur.startWordIndex = Math.min(cur.startWordIndex, t.startWordIndex)
+    if (t.endWordIndex >= cur.endWordIndex) {
+      cur.endWordIndex = t.endWordIndex
+      cur.openEnded = t.openEnded
+    }
+    if (!cur.title && t.title) cur.title = t.title
+    if (!cur.summary && t.summary) cur.summary = t.summary
+  }
+
+  const sortedRest = [...rest].sort((a, b) => a.startWordIndex - b.startWordIndex)
+  const mergedRest: TakeInput[] = []
+  for (const t of sortedRest) {
+    const last = mergedRest[mergedRest.length - 1]
     if (last && t.startWordIndex <= last.endWordIndex) {
       last.endWordIndex = Math.max(last.endWordIndex, t.endWordIndex)
       if (!last.summary && t.summary) last.summary = t.summary
       last.openEnded = t.openEnded
     } else {
-      takes.push({ ...t })
+      mergedRest.push({ ...t })
     }
   }
+
+  const takes = [...byScript.values(), ...mergedRest].sort((a, b) => a.startWordIndex - b.startWordIndex)
   return { takes, cuts }
+}
+
+/** First non-empty line of a pasted guión, capped — used as a synthesized take's title. */
+function scriptTitle(block: string): string {
+  const line = (block.split('\n').find((l) => l.trim() !== '') ?? '').trim()
+  return line.slice(0, 60) || 'Guión'
+}
+
+/** Guarantee ONE take per pasted guión (script-driven mode). For each `scriptIndex` in 0..N-1 missing
+ *  from `merged.takes`, deterministically locate the guión by hintless alignment and add a take; if even
+ *  that fails, add a small NON-DEGENERATE placeholder at the guión's approximate position so it survives
+ *  `resolveAndValidatePlan`'s degenerate-drop and stays VISIBLE + editable (never silently omitted — the
+ *  old behavior that made guiones "disappear"). Returns the augmented input and the scriptIndexes that
+ *  were reconstructed (→ `reconstructed` flag / review badge). Pure; unit-testable without the LLM. */
+export function fillMissingScripts(
+  merged: TakesPlanInput,
+  scriptBlocks: string[],
+  W: SerialWord[],
+  wordIndexToMs: WordMs[]
+): { input: TakesPlanInput; reconstructed: number[] } {
+  const N = scriptBlocks.length
+  const lastIndex = wordIndexToMs.length - 1
+  if (N === 0 || lastIndex < 1) return { input: merged, reconstructed: [] }
+  const present = new Set<number>()
+  for (const t of merged.takes) if (t.scriptIndex != null) present.add(t.scriptIndex)
+  const takes = [...merged.takes]
+  const reconstructed: number[] = []
+  for (let si = 0; si < N; si++) {
+    if (present.has(si)) continue
+    const al = alignScriptToTranscript(scriptBlocks[si], W, wordIndexToMs)
+    if (al.matchedCount > 0 && al.endWordIndex > al.trueStartWordIndex) {
+      takes.push({ startWordIndex: al.trueStartWordIndex, endWordIndex: al.endWordIndex, title: scriptTitle(scriptBlocks[si]), summary: '', scriptIndex: si })
+    } else {
+      // Not locatable — small placeholder at the guión's proportional position; user drags it to place.
+      const start = Math.max(0, Math.min(lastIndex - 1, Math.round(((si + 0.5) / N) * lastIndex)))
+      const end = Math.min(lastIndex, start + 5)
+      takes.push({ startWordIndex: start, endWordIndex: end, title: scriptTitle(scriptBlocks[si]), summary: '', scriptIndex: si })
+    }
+    reconstructed.push(si)
+  }
+  return { input: { takes, cuts: merged.cuts }, reconstructed }
 }
 
 const clampIndex = (i: number, n: number): number => Math.max(0, Math.min(n - 1, Math.round(i)))
@@ -72,6 +144,11 @@ export interface ResolveOptions {
 const overlapsMs = (a: { startMs: number; endMs: number }, list: CleanCut[]): boolean =>
   list.some((b) => a.startMs < b.endMs && b.startMs < a.endMs)
 
+/** The reason of the same-kind cut (in `list`) overlapping `m`, if any carries one — used to keep the
+ *  human-readable explanation alive through the det∪llm merge (which doesn't track per-cut reason). */
+const pickReason = (m: CleanCut, list: CleanCut[]): string | undefined =>
+  list.find((c) => c.kind === m.kind && m.startMs < c.endMs && c.startMs < m.endMs && (c.reason ?? '').trim())?.reason?.trim()
+
 export function resolveAndValidatePlan(
   input: TakesPlanInput,
   wordIndexToMs: WordMs[],
@@ -92,7 +169,10 @@ export function resolveAndValidatePlan(
       title: t.title.trim() || 'Toma',
       summary: t.summary.trim(),
       // Carry the pasted-script index through the ms sort so the renderer can pair take↔guión.
-      scriptIndex: t.scriptIndex
+      scriptIndex: t.scriptIndex,
+      // Display number = guión the user pasted (1-based). Independent of `index` (the resolve-order join
+      // key), so "Guión 4" is always the 4th pasted script regardless of where it landed in time.
+      guionNumber: t.scriptIndex != null ? t.scriptIndex + 1 : undefined
     })
   }
   takes.sort((a, b) => a.startMs - b.startMs)
@@ -107,7 +187,8 @@ export function resolveAndValidatePlan(
       startMs: span.startMs,
       endMs: span.endMs,
       kind: c.kind as CleanCutKind,
-      text: (c.text ?? '').trim() || textForSpan(span.startMs, span.endMs, W)
+      text: (c.text ?? '').trim() || textForSpan(span.startMs, span.endMs, W),
+      reason: (c.reason ?? '').trim() || undefined
     })
   }
   const detCuts = opts.deterministicCuts ?? []
@@ -124,11 +205,15 @@ export function resolveAndValidatePlan(
     const inDet = overlapsMs(m, detCuts)
     const inLlm = overlapsMs(m, llmCuts)
     const source: CutSource = inDet && inLlm ? 'both' : inDet ? 'deterministic' : 'llm'
+    // Keep the explanation alive through the merge: prefer the LLM's own reason, then the deterministic
+    // detector's synthetic reason, then derive one from the merged span.
+    const reason =
+      pickReason(m, llmCuts) ?? pickReason(m, detCuts) ?? describeCut(m.kind as CleanCutKind, m.startMs, m.endMs, m.text)
     cuts.push({
       startMs: m.startMs,
       endMs: m.endMs,
       kind: m.kind as CutKind,
-      reason: '',
+      reason,
       text: m.text || textForSpan(m.startMs, m.endMs, W),
       takeIndex: take.index,
       source

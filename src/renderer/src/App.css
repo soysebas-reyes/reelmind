@@ -907,6 +907,8 @@ button.primary:hover:not(:disabled) {
   width: 100%;
   min-height: 110px;
   display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
   align-items: center;
   justify-content: center;
   text-align: center;
@@ -916,6 +918,12 @@ button.primary:hover:not(:disabled) {
   border-radius: var(--radius-md);
   color: var(--label-2);
   font-size: var(--text-sm);
+}
+.takes-preview-poster {
+  max-width: 100%;
+  max-height: 180px;
+  border-radius: var(--radius-sm);
+  object-fit: contain;
 }
 .takes-preview-transport {
   display: flex;
@@ -999,7 +1007,77 @@ button.primary:hover:not(:disabled) {
   top: 0;
   bottom: 0;
   background: repeating-linear-gradient(45deg, rgba(0, 0, 0, 0.5) 0 3px, transparent 3px 6px);
-  pointer-events: none;
+  pointer-events: auto; /* clickable: toggles the cut's accepted flag */
+  cursor: pointer;
+  z-index: 2; /* above the region, below handles (z=4) and playhead (z=5) */
+}
+.takes-preview-cut.rejected {
+  opacity: 0.28;
+  background: none;
+  border-left: 1px dashed var(--label-3, #888);
+  border-right: 1px dashed var(--label-3, #888);
+}
+/* Cut review list (per take, under its checkbox) */
+.cutlist {
+  margin: 6px 0 2px 26px;
+  border-left: 2px solid var(--hairline, #333);
+  padding-left: 8px;
+}
+.cutlist-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.cutlist-title {
+  font-size: 12px;
+  opacity: 0.75;
+}
+.cutlist-actions {
+  display: flex;
+  gap: 6px;
+}
+.cutlist-actions button {
+  background: none;
+  border: none;
+  color: var(--accent, #0a84ff);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  font-size: 11.5px;
+}
+.cutlist-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.cutlist-item label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.cutlist-item.rejected label {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+.cutlist-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+.cutlist-time {
+  flex: 0 0 auto;
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
 }
 .takes-preview-playhead {
   position: absolute;

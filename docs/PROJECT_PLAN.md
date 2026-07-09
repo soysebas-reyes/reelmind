@@ -1,8 +1,10 @@
 # ReelMind — Project Plan & State
 
-> **For anyone (or any AI chat) picking this up fresh:** read this file top to bottom, then
+> **For anyone (or any AI chat) picking this up fresh:** read [`../CLAUDE.md`](../CLAUDE.md) **first**
+> (it states the non-negotiable measurement contract), then this file top to bottom, then
 > [`ATTRIBUTION.md`](../ATTRIBUTION.md) and [`README.md`](../README.md). This is the single source
-> of truth for what's built, why, and what comes next.
+> of truth for what's built, why, and what comes next. **Toda feature nueva o cambio de UI DEBE
+> instrumentarse en el sistema de medición** — ver [`TOTAL_MEASUREMENT_PLAN.md`](./TOTAL_MEASUREMENT_PLAN.md).
 
 ---
 
@@ -69,8 +71,9 @@ rebuild the platform layers on cross-platform tech (Electron, FFmpeg, ONNX, whis
 | **P11** | Agentic copilot workflow: `import_folder` · `export` · `remove_silences` · recipes | 🚧 in progress — `import_folder` + `export` + `remove_silences` shipped; recipes pending; see [`AGENTIC_WORKFLOW_PLAN.md`](./AGENTIC_WORKFLOW_PLAN.md) |
 | **P12** | CapCut parity — MCP tool surface + manual UX | ✅ core pass done (5 milestones, merged to `main`): widened `set_clip_properties` (text/transform/crop/audioEnhance) + `set_clips_properties`, `inspect_clip`, `list_assets`, `list/apply_color_preset`, `batch_operations` (1 IPC = 1 undo), keyframe tools, `ripple_delete_range`, `add_text_clip`, `get_frame_preview` (composited frame as a REAL image block in both transports), per-tool timeouts, `sync_angles` frames; UX: Space play/pause + `[`/`]`/Home/End/±zoom, Ctrl+C/X/V/D clipboard, right-click context menus (clip/track/empty), ClipInspector "Propiedades" tab (transform/opacity/speed/fades/volume, coalesced-undo sliders), multi-select group drag, OS drag-and-drop, inline fade handles, bigger transport + frame-step + preview rate. Pending (bigger core work): text rendering in preview-style + export (drawtext), transitions, keyframe curve UI, markers |
 | **P13** | Multicam sync + audio enhancement + angle switching | ✅ done (merged to `main`): sync two angles by audio cross-correlation (no FFT); non-destructive per-clip voice-cleanup/loudness chain (Web Audio live + FFmpeg on export); non-destructive & ripple angle cuts with `linkGroupId` + track roles |
-| **P14** | "Segmentar por guiones" (take detection) | ✅ done (merged to `main`): ElevenLabs Scribe transcript + `claude-sonnet-5` forced-tool aligns each pasted guión to its span → opens each take as a clean, editable tab (multi-session tabs, persisted in `sessions.json`); editable take-boundary preview. Unit + integration green; **pending full on-footage E2E** |
+| **P14** | "Segmentar por guiones" (take detection) | ✅ done (merged to `main`): ElevenLabs Scribe transcript + `claude-sonnet-5` forced-tool aligns each pasted guión to its span → opens each take as a clean, editable tab (multi-session tabs, persisted in `sessions.json`); editable take-boundary preview. **Sync robusto**: el offset multicám se calcula con RMS **y** transcript reconciliados (`core/edit/syncOffset.ts` — un pico RMS confiable refuta un transcript que discrepa) y la segmentación **auto-sincroniza** 2 ángulos crudos antes de armar los tabs (+ `verifyLinkedAlignment` como red de seguridad por tab). Unit + integration green |
 | **P15** | Editor-workflow handoff + MCP flow | ✅ done (merged to `main`, see §12): "Enviar a editor" → FCP7 xmeml + per-source **baked media** (grade + audio applied) for Premiere / DaVinci / Final Cut; MCP workflow tools `segment_by_scripts` · `export_to_nle` · `new/open/save_project`; platform-URL import via `yt-dlp`. Unit + ffmpeg-integration green; **pending real-NLE + on-device MCP E2E** |
+| **P16** | Medición total — telemetría de **comportamiento** (nunca contenido) | ✅ P16.0 local hecho (ver §14): 3 capas de captura (física DOM · comandos vía `EditorController.run` · IO/IA vía `runEditorTool`) + core Zod (`src/core/telemetry/`) + sink **JSONL** en `userData` detrás de `TelemetrySink` + identidad `anonymousId`/`sessionId` + **guardrail** (`taxonomy.test.ts`) que rompe la build si un comando/tool nuevo no se registra. Arquitectura lista para **Supabase + cuentas**. Ver [`TOTAL_MEASUREMENT_PLAN.md`](./TOTAL_MEASUREMENT_PLAN.md). **Pending on-device E2E** (verificar JSONL + auditoría de redacción) |
 
 **Verification bar (all green):** `npm run typecheck` (node + web), `npm run build` (main + preload + renderer),
 `npm test` — **436 tests**, incl. EditorController command/undo, compositor, export-graph, AI-tool + agent-loop,
@@ -316,6 +319,17 @@ a still-editable project to a finishing editor. All merged to `main`.
   are a multi-session registry mirrored by the Zustand store and persisted in **`sessions.json`**. UI: input
   modal (paste guiones + `cleanCuts` toggle) → verification modal with an **editable take-boundary preview**
   (`renderer/src/takes/TakesPreview.tsx`, drag handles over a proxy `<video>`, `setTakeBounds`).
+  - *Sync robusto (fix del "lateral con lag"):* el offset entre ángulos se estima SIEMPRE con los dos
+    métodos — correlación RMS (`computeAudioOffset`) **y** alineación por transcript (`alignByTranscript`) —
+    y se **reconcilia** en `core/edit/syncOffset.ts`: si un pico RMS confiable contradice al transcript, gana
+    el RMS (`transcript-refuted`; antes un transcript envenenado con offset 0 y confianza alta se horneaba
+    silencioso). El botón "Sincronizar" y el tool `sync_angles` comparten ese camino (`computeSyncOffsetFor`),
+    y el tool ya **no aplica** offsets de baja confianza sin `force: true`.
+  - *Auto-sync al segmentar:* `analyzeTakes` corre `ensureAnglesSynced` primero — con exactamente 2 ángulos
+    de video sin `linkGroupId` compartido y solapados (`findUnsyncedAnglePair`), sincroniza solo (audio del
+    clip elegido en el modal; default pista superior) antes de transcribir/armar tabs; estados ambiguos solo
+    avisan. Red de seguridad por tab: `verifyLinkedAlignment` re-impone la co-alineación de los clips
+    vinculados (mismo startFrame + delta de trim de la base) y mide `io.take_align_fix` si corrigió algo.
 - **P15 — NLE handoff + MCP flow.** The **"Enviar a editor"** button writes an editable project + baked media.
   - *Format:* **FCP7 legacy XML (`xmeml`)**, chosen over FCPXML because Premiere's FCPXML importer is
     deprecated while Premiere + DaVinci Resolve + Final Cut all import xmeml reliably — and our frame-based
@@ -340,3 +354,42 @@ a still-editable project to a finishing editor. All merged to `main`.
 - Full original architecture/plan (private, owner's machine): `~/.claude/plans/cosmic-mapping-swan.md`
 - Upstream agent tool contract (for P5/P6): `reference/.../Agent/Tools/ToolDefinitions.swift` (~30 tools)
 - Higgs Field SDK (for P7): `@higgsfield/client` — confirm endpoint ids/params before coding.
+
+## 14. Phase 16 ✅ P16.0 done — Medición total (telemetría de comportamiento)
+
+**Por qué existe.** Queremos saber cómo se usa la herramienta de verdad (qué se toca, qué se
+ignora, dónde hay fricción, cuánto se queda la gente, user vs agente) para poder optimizar — y que
+esa medición **no se degrade** cuando la app cambie. Medimos **comportamiento**, jamás **contenido**
+(nunca frames/audio, rutas, nombres de medios/proyecto, transcripciones ni texto de chat/prompt).
+El contrato de "toda feature debe instrumentarse" vive en [`../CLAUDE.md`](../CLAUDE.md); el detalle
+técnico y la privacidad, en [`TOTAL_MEASUREMENT_PLAN.md`](./TOTAL_MEASUREMENT_PLAN.md).
+
+**Las 3 capas de captura** (cuelgan de invariantes que no cambian → "always-valid"):
+1. **Física** — listeners globales en fase de captura (`src/renderer/src/telemetry/physical.ts`):
+   clics, `pointermove` muestreado, teclas (nunca el texto tecleado), rueda, dwell por panel.
+   Cualquier UI nueva se mide sola.
+2. **Comandos** — el hook IoC `setCommitObserver` en `EditorController.run()` (@core, sin importar
+   telemetría): cada edición commit-eada se normaliza a un id estable (`command.split_clip`; libre →
+   `command.other`) con `origin` user/agent. `src/renderer/src/telemetry/semantic.ts`.
+3. **IO / IA** — auto-wrap de las acciones del store + el único seam `runEditorTool` (todas las ~47
+   tools de agente/MCP). `src/renderer/src/telemetry/{io.ts, ../ai/runTool.ts}`.
+
+**Core + sink + identidad.** Core puro en `src/core/telemetry/` (schema Zod + `taxonomy` + `redact`).
+El renderer envía lotes por IPC fire-and-forget (`telemetry:events`); main valida con Zod (es el
+límite de confianza, sobre-escribe identidad/versión) y escribe **JSONL append-only** en
+`userData/telemetry/` detrás de `TelemetrySink` (`src/main/telemetry/`). Identidad = `anonymousId`
+persistente (la FK futura a la cuenta) + `sessionId` por lanzamiento.
+
+**El guardrail (obligatorio).** `src/core/telemetry/taxonomy.test.ts` rompe `npm test` si una tool
+de `editorTools` o un literal de comando en `EditorController.ts` no está registrado en el taxonomy.
+Los IDs de taxonomy son unión cerrada → referenciar uno inexistente rompe compilación. Por eso
+instrumentar es parte de la *definition of done* (ver `CLAUDE.md`).
+
+**Privacidad y opt-out.** Redacción por *allowlist*/scrub (rutas/URLs/emails/`data:` → `[redacted]`)
+en el renderer y re-validación en main. Local hoy = habilitado por defecto, cero egress; kill switch
+`REELMIND_NO_TELEMETRY=1`. **El futuro upload a la nube será opt-IN** con consentimiento + política.
+
+**Roadmap.** P16.0 captura local + JSONL ✅ · P16.1 inspección/dashboard local + auditoría de
+redacción · P16.2 Supabase (tabla `events`/`identities`, RLS por `user_id`, Auth vía main +
+`safeStorage`, outbox/cursor offline-first, linkage `anonymousId → user_id`). Diseño completo en
+[`TOTAL_MEASUREMENT_PLAN.md`](./TOTAL_MEASUREMENT_PLAN.md).

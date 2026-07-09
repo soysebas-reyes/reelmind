@@ -17,6 +17,7 @@ import {
 } from '@core'
 import type { NleTarget } from '../../../shared/ipc'
 import { type SyncAnglesInput, getController, getFrameCapturer, useEditorStore } from '../store'
+import { emit } from '../telemetry/client'
 
 /** Import sources (file paths, http(s) URLs, or folders) through the store and report asset ids. */
 async function importAndReport(sources: string[]): Promise<ToolCallResult> {
@@ -121,7 +122,7 @@ async function removeSilences(input: RemoveSilencesInput): Promise<ToolCallResul
   }
 }
 
-export async function runEditorTool(name: string, input: unknown): Promise<ToolCallResult> {
+async function runEditorToolCore(name: string, input: unknown): Promise<ToolCallResult> {
   if (name === 'import_media') {
     const sources = (input as { sources?: unknown }).sources
     if (!Array.isArray(sources) || sources.length === 0) {
@@ -162,13 +163,19 @@ export async function runEditorTool(name: string, input: unknown): Promise<ToolC
   }
 
   if (name === 'segment_by_scripts') {
-    const { clipId, scripts, cleanCuts, apply } = (input ?? {}) as {
+    const { clipId, scripts, cleanCuts, apply, keepAudioClipId, airMs } = (input ?? {}) as {
       clipId?: string
       scripts?: string
       cleanCuts?: boolean
       apply?: boolean
+      keepAudioClipId?: string
+      airMs?: number
     }
-    const res = await useEditorStore.getState().analyzeTakes(clipId, scripts, cleanCuts ?? false)
+    const res = await useEditorStore.getState().analyzeTakes(clipId, scripts, cleanCuts ?? false, {
+      keepAudioClipId,
+      airMs,
+      origin: 'agent'
+    })
     if (!res.ok) return res
     const summary = (res.result ?? {}) as Record<string, unknown>
     if (apply === false) {
@@ -287,4 +294,30 @@ export async function runEditorTool(name: string, input: unknown): Promise<ToolC
   }
 
   return executeTool(getController(), name, input)
+}
+
+/**
+ * The single AI/MCP tool seam (Pilar II). Both the in-app agent (origin 'agent') and the MCP bridge
+ * (origin 'mcp') call this, so every tool — current and future — is measured once here with outcome
+ * + duration + arg NAMES only (never values). Telemetry never alters the tool result or throws.
+ */
+export async function runEditorTool(
+  name: string,
+  input: unknown,
+  origin: 'agent' | 'mcp' = 'agent'
+): Promise<ToolCallResult> {
+  const t0 = performance.now()
+  try {
+    const res = await runEditorToolCore(name, input)
+    emit('tool', `tool.${name}`, {
+      origin,
+      ok: res.ok,
+      ms: Math.round(performance.now() - t0),
+      args: input && typeof input === 'object' ? Object.keys(input as object).slice(0, 12).join('|') : typeof input
+    })
+    return res
+  } catch (e) {
+    emit('tool', `tool.${name}`, { origin, ok: false, ms: Math.round(performance.now() - t0), error: 'exception' })
+    throw e
+  }
 }

@@ -7,13 +7,17 @@
 
 import { z } from 'zod'
 import {
+  DEFAULT_FILLERS,
+  FILLER_PHRASES,
   type CleanCut,
   type TakesPlanInput,
   type WordMs,
   alignScriptToTranscript,
   detectTranscriptCleanCuts,
   extractSpokenWords,
+  fillMissingScripts,
   planWindows,
+  refineCutsWithSilence,
   resolveAndValidatePlan,
   serializeWindow,
   splitScriptBlocks,
@@ -22,6 +26,7 @@ import {
 } from '@core'
 import type { AnalyzeTakesRequest, AnalyzeTakesResult } from '../../shared/ipc'
 import { complete } from './anthropic'
+import { detectSilences } from '../ffmpeg/silence'
 
 // Sonnet 5 omits `thinking` → runs adaptive by default (unlike Opus 4.8, where omitting = off).
 // Forcing a single tool via tool_choice is compatible with that on the direct Claude API (only
@@ -29,57 +34,77 @@ import { complete } from './anthropic'
 const ANALYZE_MODEL = 'claude-sonnet-5'
 const TOOL_NAME = 'emitir_plan'
 
-/** Aggressive deterministic floor: short silence threshold + repeats. The LLM does the context-aware
- *  aggressive filler/repeat cutting; the blunt detector stays on its default (safe) filler list to
- *  avoid false positives on meaningful words. */
-const AGGRESSIVE_CLEAN = { maxGapMs: 350, gapPaddingMs: 60, minRepeatRun: 2 }
+/** Aggressive deterministic floor: short silence threshold + repeats. Uses transcriptClean's improved
+ *  default filler lists (DEFAULT_FILLERS + FILLER_PHRASES) — single source of truth in @core. The LLM
+ *  adds context-aware aggressive cutting on top; the audio-silence pass refines the geometry.
+ *  `gapPaddingMs`/`microPadMs` come from the user's "aire" preset (see DEFAULT_AIR_MS). */
+const AGGRESSIVE_CLEAN = { maxGapMs: 350, minRepeatRun: 2 }
+/** Default "aire" (ms of silence kept between phrases) when the request doesn't specify one — Natural. */
+const DEFAULT_AIR_MS = 250
 
-const ANALYZE_TAKES_SYSTEM = [
-  'Sos un asistente de edición de video que analiza la TRANSCRIPCIÓN de un clip crudo en español.',
-  'El clip contiene VARIOS "guiones" o tomas grabados de corrido en un mismo archivo. Tu trabajo:',
-  '1) SEGMENTAR en tomas: detectá dónde EMPIEZA y TERMINA cada guion (cambio de tema, "arranco de nuevo",',
-  '   "esto es para otro video", "listo, ahora otra cosa"). Por cada toma devolvé startWordIndex,',
-  '   endWordIndex, un title corto y un summary de 1-2 frases, en español.',
-  '2) DETECTAR CORTES a eliminar DENTRO de cada toma, de forma AGRESIVA (ritmo tipo redes sociales):',
-  '   falsos inicios, repeticiones (quedate con la MEJOR versión, normalmente la última), muletillas',
-  '   ("eh", "este", "o sea", "digamos", "tipo", "nada" y "bueno" cuando son relleno), trabas/tartamudeos',
-  '   y silencios largos. Por cada corte devolvé startWordIndex, endWordIndex, kind',
-  '   (falso-inicio | repeticion | silencio | muletilla) y un reason breve en español.',
-  '',
-  'REGLAS DE PRECISIÓN (obligatorias):',
-  '- Referenciá SIEMPRE por índice #N tal como aparece en el texto (#0, #1, ...). NUNCA inventes',
-  '  milisegundos: el sistema convierte los índices a tiempo exacto.',
-  '- Los rangos son inclusivos: endWordIndex es la última palabra incluida.',
-  '- Un corte SIEMPRE cae dentro de una sola toma; nunca cruces el borde entre dos tomas.',
-  '- Revisá los CANDIDATOS mecánicos que te paso: confirmalos, reetiquetalos o descartalos, y agregá los que falten.',
-  '- Recortá agresivo muletillas y pausas, pero NUNCA cortes a mitad de una idea válida ni elimines contenido con sentido.',
-  '- Devolvé el resultado ÚNICAMENTE llamando a la herramienta emitir_plan (no escribas texto).'
+// ── Shared cut instructions (single source of truth for both segmentation modes) ──────────────────
+// The muletilla list is DERIVED from the core constants so the prompt never drifts from the detector.
+const MULETILLAS_LIST = [...DEFAULT_FILLERS, ...FILLER_PHRASES].join(', ')
+
+const REGLAS_DE_CORTE = [
+  'DENTRO de cada toma, marcá CORTES a eliminar de forma AGRESIVA (ritmo tipo reels/redes):',
+  `- Muletillas de relleno: ${MULETILLAS_LIST} (y variantes), cuando no aportan significado.`,
+  '- Falsos inicios y repeticiones/tomas repetidas: quedate SIEMPRE con la MEJOR versión (normalmente la última).',
+  '- Tartamudeos/trabas (palabra repetida) y silencios/pausas largas.',
+  'Por cada corte devolvé startWordIndex, endWordIndex, kind (falso-inicio | repeticion | silencio | muletilla) y un reason breve en español.',
+  'Priorizá ritmo ágil, pero NUNCA cortes a mitad de una idea válida ni elimines contenido con sentido.',
+  'Revisá los CANDIDATOS mecánicos que te paso: confirmalos, reetiquetalos o descartalos, y agregá los que falten.'
 ].join('\n')
 
-// Script-driven variant: the user pasted the actual guiones; the model aligns each one to its span.
-const ANALYZE_TAKES_SYSTEM_SCRIPTS = [
+const SIN_CORTES = 'NO marques cortes: devolvé "cuts": []. Solo segmentá/alineá las tomas completas (sin recortar muletillas ni silencios).'
+
+const INFER_INTRO = [
+  'Sos un asistente de edición de video que analiza la TRANSCRIPCIÓN de un clip crudo en español.',
+  'El clip contiene VARIOS "guiones" o tomas grabados de corrido en un mismo archivo.',
+  'SEGMENTÁ en tomas: detectá dónde EMPIEZA y TERMINA cada guion (cambio de tema, "arranco de nuevo",',
+  '"esto es para otro video", "listo, ahora otra cosa"). Por cada toma devolvé startWordIndex, endWordIndex,',
+  'un title corto y un summary de 1-2 frases, en español.'
+].join('\n')
+
+const SCRIPTS_INTRO = [
   'Sos un asistente de edición de video. Tenés (a) la TRANSCRIPCIÓN de un clip crudo en español (varios',
   'guiones grabados de corrido) y (b) los GUIONES que el usuario grabó, pegados como texto (uno por bloque).',
-  'Tu trabajo: para CADA guión, en el mismo orden en que aparece, ubicá en la transcripción el TRAMO donde',
-  'ese guión fue dicho (la mejor/última versión completa) y devolvé UNA toma con startWordIndex y endWordIndex',
-  '(inclusive), un title corto tomado del guión, un summary de 1-2 frases en español y scriptIndex = la',
-  'posición 0-based del guión pegado al que corresponde la toma (el primer bloque es 0, el segundo 1, etc.).',
-  'startWordIndex debe apuntar a la PRIMERA palabra del guión (incluí el saludo/intro; no arranques a mitad).',
-  'Además, DENTRO de cada toma, marcá cortes a eliminar de forma AGRESIVA (falsos inicios, repeticiones —quedate',
-  'con la mejor—, muletillas, trabas, silencios largos) con kind (falso-inicio | repeticion | silencio | muletilla)',
-  'y un reason breve.',
-  '',
+  'Para CADA guión, en el mismo orden, ubicá en la transcripción el TRAMO donde ese guión fue dicho (la',
+  'mejor/última versión completa) y devolvé UNA toma con startWordIndex y endWordIndex (inclusive), un title',
+  'corto tomado del guión, un summary de 1-2 frases en español y scriptIndex = la posición 0-based del guión',
+  'pegado (el primer bloque es 0, el segundo 1, etc.). startWordIndex debe apuntar a la PRIMERA palabra del',
+  'guión (incluí el saludo/intro; no arranques a mitad).'
+].join('\n')
+
+const PRECISION_INFER = [
   'REGLAS DE PRECISIÓN (obligatorias):',
-  '- La transcripción es hablada: NO coincide palabra por palabra con el guión (hay titubeos, repeticiones,',
-  '  muletillas, orden distinto). Alineá por CONTENIDO/significado, no por texto exacto.',
-  '- Lo que quede ENTRE guiones (charla, coordinación entre personas, "esto es para otro video") NO pertenece a',
-  '  ninguna toma: dejalo AFUERA (no lo incluyas en ningún span).',
-  '- Devolvé una toma por guión, en orden. Si un guión no aparece en la transcripción, omitilo.',
-  '- Referenciá SIEMPRE por índice #N tal como aparece en el texto. NUNCA inventes milisegundos.',
-  '- endWordIndex es la última palabra incluida; un corte SIEMPRE cae dentro de una sola toma.',
-  '- Revisá los CANDIDATOS mecánicos: confirmalos, reetiquetalos o descartalos, y agregá los que falten.',
+  '- Referenciá SIEMPRE por índice #N tal como aparece en el texto (#0, #1, ...). NUNCA inventes milisegundos.',
+  '- Los rangos son inclusivos: endWordIndex es la última palabra incluida.',
+  '- Un corte SIEMPRE cae dentro de una sola toma; nunca cruces el borde entre dos tomas.',
   '- Devolvé el resultado ÚNICAMENTE llamando a la herramienta emitir_plan (no escribas texto).'
 ].join('\n')
+
+const PRECISION_SCRIPTS = [
+  'REGLAS DE PRECISIÓN (obligatorias):',
+  '- La transcripción es hablada: NO coincide palabra por palabra con el guión (titubeos, repeticiones,',
+  '  muletillas, orden distinto). Alineá por CONTENIDO/significado, no por texto exacto.',
+  '- Lo que quede ENTRE guiones (charla, coordinación, "esto es para otro video") NO pertenece a ninguna toma: dejalo AFUERA.',
+  '- Devolvé una toma por guión, en orden. Si un guión no aparece en la transcripción, omitilo.',
+  '- Referenciá SIEMPRE por índice #N. NUNCA inventes milisegundos. endWordIndex es la última palabra incluida.',
+  '- Un corte SIEMPRE cae dentro de una sola toma.',
+  '- Devolvé el resultado ÚNICAMENTE llamando a la herramienta emitir_plan (no escribas texto).'
+].join('\n')
+
+/** Assemble the system prompt: segmentation intro + cut section (cleanCuts-aware) + precision rules. */
+function buildSystem(scripts: boolean, cleanCuts: boolean): string {
+  return [
+    scripts ? SCRIPTS_INTRO : INFER_INTRO,
+    '',
+    cleanCuts ? REGLAS_DE_CORTE : SIN_CORTES,
+    '',
+    scripts ? PRECISION_SCRIPTS : PRECISION_INFER
+  ].join('\n')
+}
 
 /** The plan schema as an Anthropic tool (JSON Schema, `$schema` stripped like `anthropicTools()`). */
 function forcedTool(): { name: string; description: string; input_schema: Record<string, unknown> } {
@@ -133,15 +158,40 @@ export async function analyzeTakes(
     // Cuts are opt-in: when off, bring each guión's whole fragment uncut (repeats and all). Skip the
     // deterministic detector entirely and strip any LLM cuts below.
     const cleanCuts = req.cleanCuts ?? false
-    const det = cleanCuts ? detectTranscriptCleanCuts(req.words, AGGRESSIVE_CLEAN) : []
+    // "Aire" entre frases: la mitad se conserva a cada lado de cada corte de silencio (total ≈ airMs).
+    const pad = Math.max(0, Math.round((req.airMs ?? DEFAULT_AIR_MS) / 2))
+    let det = cleanCuts ? detectTranscriptCleanCuts(req.words, { ...AGGRESSIVE_CLEAN, gapPaddingMs: pad }) : []
+    // Refine the deterministic cuts against REAL acoustic silence (ffmpeg silencedetect on the SAME file
+    // that was transcribed): tighten silence cuts to the actual quiet, add pauses the transcript missed,
+    // and snap filler edges into silence (anti-click). Optional — if the IO fails, keep the transcript cuts.
+    if (cleanCuts && req.mediaPath) {
+      try {
+        onProgress?.('Analizando silencios reales…')
+        const durationMs = wordIndexToMs.length ? wordIndexToMs[wordIndexToMs.length - 1].endMs : 0
+        const sec = await detectSilences(req.mediaPath, { noiseDb: -30, minDurationSec: 0.3 })
+        const silMs = sec.map((s) => ({
+          startMs: s.start * 1000,
+          endMs: Number.isFinite(s.end) ? s.end * 1000 : durationMs
+        }))
+        det = refineCutsWithSilence(det, silMs, { microPadMs: pad })
+      } catch {
+        /* audio refinement is best-effort; the transcript-derived cuts already work */
+      }
+    }
     const windows = planWindows(W)
     const tool = forcedTool()
     const chunks: TakesPlanInput[] = []
 
     // Script-driven when the user pasted guiones; otherwise infer take boundaries.
     const scripts = req.scripts?.trim()
-    const system = scripts ? ANALYZE_TAKES_SYSTEM_SCRIPTS : ANALYZE_TAKES_SYSTEM
-    const scriptsSection = scripts ? `GUIONES (pegados por el usuario, en orden):\n${scripts}\n\n` : ''
+    const scriptBlocks = scripts ? splitScriptBlocks(scripts) : []
+    const system = buildSystem(!!scripts, cleanCuts)
+    // Tell the model EXACTLY how many guiones there are so it doesn't over-/under-segment. This is only a
+    // nudge — one-take-per-guión is guaranteed downstream by fillMissingScripts + scriptIndex-aware stitch.
+    const scriptsSection = scripts
+      ? `GUIONES (${scriptBlocks.length} en total, en orden). Devolvé EXACTAMENTE ${scriptBlocks.length} tomas, ` +
+        `una por guión, con scriptIndex de 0 a ${scriptBlocks.length - 1}, sin repetir ni omitir:\n${scripts}\n\n`
+      : ''
 
     for (let wi = 0; wi < windows.length; wi++) {
       const { startIndex, endIndex } = windows[wi]
@@ -172,24 +222,33 @@ export async function analyzeTakes(
       chunks.push(parsed.data)
     }
 
-    const merged = stitchTakePlans(chunks)
+    let merged = stitchTakePlans(chunks)
+    // Guarantee ONE take per pasted guión: recover/synthesize any scriptIndex the model omitted so a
+    // guión is never silently dropped — it becomes a visible, editable, flagged take instead.
+    let reconstructed = new Set<number>()
+    if (scripts && scriptBlocks.length > 0) {
+      const filled = fillMissingScripts(merged, scriptBlocks, W, wordIndexToMs)
+      merged = filled.input
+      reconstructed = new Set(filled.reconstructed)
+    }
     const plan = resolveAndValidatePlan(merged, wordIndexToMs, W, { deterministicCuts: det })
     if (plan.takes.length === 0) return { ok: false, error: 'No se detectaron tomas en la transcripción.' }
     // Cuts off → discard any the model volunteered, so each take keeps its full recorded fragment.
     if (!cleanCuts) plan.cuts = []
 
-    // Script-driven mode: deterministically verify each take against its pasted guión — measure coverage
-    // and, when the opening tokens anchor confidently, snap the start to the guión's real first word so a
-    // take can't begin mid-intro. Only touches metadata + startMs; leaves inference-mode plans untouched.
+    // Script-driven mode: deterministically verify each take against its pasted guión — measure coverage,
+    // set the display guión number, flag reconstructed takes, and (when the opening tokens anchor
+    // confidently) snap the start to the guión's real first word. Leaves inference-mode plans untouched.
     if (scripts) {
-      const blocks = splitScriptBlocks(scripts)
       for (const take of plan.takes) {
         let si = take.scriptIndex
-        if (si == null && blocks.length === 1 && plan.takes.length === 1) si = 0
-        if (si == null || si < 0 || si >= blocks.length) continue
-        const al = alignScriptToTranscript(blocks[si], W, wordIndexToMs, msSpanToWordHint(take.startMs, take.endMs, wordIndexToMs))
+        if (si == null && scriptBlocks.length === 1 && plan.takes.length === 1) si = 0
+        if (si == null || si < 0 || si >= scriptBlocks.length) continue
+        const al = alignScriptToTranscript(scriptBlocks[si], W, wordIndexToMs, msSpanToWordHint(take.startMs, take.endMs, wordIndexToMs))
         take.scriptIndex = si
+        take.guionNumber = si + 1
         take.coverage = { matched: al.matchedCount, total: al.totalCount, fraction: al.coverage }
+        if (reconstructed.has(si)) take.reconstructed = true
         if (al.confident && al.matchedCount > 0) {
           take.startMs = wordIndexToMs[al.trueStartWordIndex].startMs
           take.startCorrected = al.startCorrected

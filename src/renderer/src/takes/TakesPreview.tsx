@@ -38,6 +38,7 @@ export function TakesPreview(): React.JSX.Element | null {
   const thumbnails = useEditorStore((s) => s.thumbnails)
   const optimizePlayback = useEditorStore((s) => s.optimizePlayback)
   const setTakeBounds = useEditorStore((s) => s.setTakeBounds)
+  const setCutAccepted = useEditorStore((s) => s.setCutAccepted)
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const trackRef = useRef<HTMLDivElement | null>(null)
@@ -104,10 +105,13 @@ export function TakesPreview(): React.JSX.Element | null {
     const visStartMs = refClip ? (refClip.trimStartFrame / f) * 1000 : 0
     const visEndMs = refClip ? ((refClip.trimStartFrame + refClip.durationFrames * refClip.speed) / f) * 1000 : 0
     const entry = displayClip ? manifest.entries.find((e) => e.id === displayClip!.mediaRef) : undefined
+    // For VIDEO, only ever feed a PROXY to <video> — camera 4K/10-bit/4:2:2 XAVC originals don't decode
+    // in Chromium (they render black). No proxy yet → url null → the UI shows the poster + a generate
+    // affordance instead of a broken/black <video>. Non-video (unused here) still resolves its source.
     const path =
       entry && displayClip
-        ? entry.type === 'video' && entry.proxyPath
-          ? entry.proxyPath
+        ? entry.type === 'video'
+          ? (entry.proxyPath ?? null)
           : expectedPath(manifest, displayClip.mediaRef, projectDir)
         : null
     const url = path ? `reelmind-media://local/${encodeURIComponent(path)}` : null
@@ -139,6 +143,7 @@ export function TakesPreview(): React.JSX.Element | null {
 
   const mediaUrl = source?.url ?? null
   const isVideo = source?.isVideo ?? false
+  const hasProxy = source?.hasProxy ?? false
   const anglesMissingProxy = source?.anglesMissingProxy ?? 0
   const deltaSec = source?.deltaSec ?? 0
   const poster = source?.mediaRef ? (thumbnails[source.mediaRef] ?? undefined) : undefined
@@ -305,7 +310,9 @@ export function TakesPreview(): React.JSX.Element | null {
     }
   }
 
-  const cutsFor = (index: number): typeof plan.cuts => plan.cuts.filter((c) => c.takeIndex === index)
+  // Keep each cut's GLOBAL index (gi) so a marker click toggles the right cutAccepted slot.
+  const cutsFor = (index: number): { c: (typeof plan.cuts)[number]; gi: number }[] =>
+    plan.cuts.map((c, gi) => ({ c, gi })).filter(({ c }) => c.takeIndex === index)
 
   const togglePlay = (): void => {
     const v = videoRef.current
@@ -369,10 +376,21 @@ export function TakesPreview(): React.JSX.Element | null {
             </div>
           )}
         </div>
+      ) : isVideo && (!hasProxy || mediaError) ? (
+        // Video angle without a usable proxy (still generating, failed, or reopened before regen). Show
+        // the poster + a generate affordance instead of a black <video> — the raw 4K won't decode here.
+        <div className="takes-preview-novideo">
+          {poster && <img className="takes-preview-poster" src={poster} alt="" />}
+          <p>Para ver la vista previa hay que generar el proxy de reproducción (el crudo 4K no se decodifica acá).</p>
+          <button className="primary" onClick={() => void optimizePlayback()}>
+            Optimizar reproducción
+          </button>
+          <p style={{ opacity: 0.7, fontSize: 12 }}>Igual podés ajustar los tiempos con los campos y el timeline.</p>
+        </div>
       ) : (
         <div className="takes-preview-novideo">
-          {mediaError || !mediaUrl
-            ? 'Vista previa de video no disponible (medio sin conexión). Podés ajustar los tiempos igual.'
+          {mediaError
+            ? 'No se pudo cargar la vista previa. Podés ajustar los tiempos igual.'
             : 'No hay un ángulo de video para previsualizar. Podés ajustar los tiempos con los campos y el timeline.'}
         </div>
       )}
@@ -409,22 +427,31 @@ export function TakesPreview(): React.JSX.Element | null {
               key={take.index}
               className={cls}
               style={regionStyle}
-              title={`Guión ${take.index}: ${take.title}`}
+              title={`Guión ${take.guionNumber ?? take.index}: ${take.title}`}
               onPointerDown={(e) => {
                 e.stopPropagation()
                 setSelectedIdx(ti)
                 seekToClientX(e.clientX)
               }}
             >
-              <span className="takes-preview-region-label">{take.index}</span>
-              {cutsFor(take.index).map((cut, ci) => (
-                <div
-                  key={ci}
-                  className="takes-preview-cut"
-                  style={{ left: `${clamp01((cut.startMs - take.startMs) / span) * 100}%`, width: `${clamp01((cut.endMs - cut.startMs) / span) * 100}%` }}
-                  title={`${cut.kind}: ${cut.reason}`}
-                />
-              ))}
+              <span className="takes-preview-region-label">{take.guionNumber ?? take.index}</span>
+              {cutsFor(take.index).map(({ c: cut, gi }) => {
+                const accepted = plan.cutAccepted[gi] ?? true
+                const secs = ((cut.endMs - cut.startMs) / 1000).toFixed(1)
+                return (
+                  <div
+                    key={gi}
+                    className={`takes-preview-cut${accepted ? '' : ' rejected'}`}
+                    style={{ left: `${clamp01((cut.startMs - take.startMs) / span) * 100}%`, width: `${clamp01((cut.endMs - cut.startMs) / span) * 100}%` }}
+                    title={`${cut.reason || cut.kind} (${secs} s) — clic para ${accepted ? 'rechazar' : 'activar'}`}
+                    data-tel="takes.cut_toggle_marker"
+                    onPointerDown={(e) => {
+                      e.stopPropagation() // don't seek/select the region when toggling a cut
+                      setCutAccepted(gi, !plan.cutAccepted[gi])
+                    }}
+                  />
+                )
+              })}
               <div
                 className="takes-preview-handle left"
                 onPointerDown={(e) => onHandleDown(e, ti, 'start')}
@@ -449,7 +476,7 @@ export function TakesPreview(): React.JSX.Element | null {
       {selected && (
         <div className="takes-preview-controls">
           <span className="takes-preview-controls-title" style={{ color: regionColor(selected, selectedIdx) }}>
-            Guión {selected.index}: {selected.title}
+            Guión {selected.guionNumber ?? selected.index}: {selected.title}
           </span>
           <div className="takes-preview-field">
             <label>Inicio</label>

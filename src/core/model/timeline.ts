@@ -375,6 +375,10 @@ export interface Timeline {
   height: number
   settingsConfigured: boolean
   tracks: Track[]
+  /** Emit a ~8ms audio micro-fade at every clip edge on export (anti-click). Set by `buildTakeTimeline`
+   *  for clean-take timelines, where every internal audio seam is a real cut. Off (undefined) elsewhere so
+   *  normal exports are byte-identical; survives save/load without migration (plain optional field). */
+  antiClickAudioFades?: boolean
 }
 
 export function makeTimeline(p: Partial<Timeline> = {}): Timeline {
@@ -383,7 +387,9 @@ export function makeTimeline(p: Partial<Timeline> = {}): Timeline {
     width: p.width ?? 1920,
     height: p.height ?? 1080,
     settingsConfigured: p.settingsConfigured ?? false,
-    tracks: p.tracks ?? []
+    tracks: p.tracks ?? [],
+    // Passed through when explicitly provided; undefined otherwise → normal exports stay byte-identical.
+    ...(p.antiClickAudioFades ? { antiClickAudioFades: true } : {})
   }
 }
 

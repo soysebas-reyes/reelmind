@@ -538,11 +538,12 @@ export const editorTools: ToolDef[] = [
   ),
   tool(
     'sync_angles',
-    "Align two camera angles of the SAME take by their audio (cross-correlation): place them on two video tracks at the matching time offset, mute both videos, add the kept angle's audio on its own track (continuous audio for cutting between angles), and tag both clips with a shared linkGroupId. Pass `clipIds` (exactly 2 video clips already on the timeline) or use the current selection; `keepAudioOf` ('first'|'second', default 'first') chooses which angle's audio to keep; `autoColor` (default true) applies the Guillermo Frontal/Lateral LUT per angle. Returns offsetSeconds, offsetFrames, fps, and confidence. NOTE: executed by the host app (FFmpeg + filesystem), not the timeline core.",
+    "Align two camera angles of the SAME take by their audio: the offset is computed by RMS cross-correlation AND (when transcribable) transcript word alignment, reconciled — a reliable correlation peak overrides a disagreeing transcript. Places both angles on two video tracks at the matching offset, mutes both videos, adds the kept angle's audio on its own track (continuous audio for cutting between angles), and tags both clips with a shared linkGroupId. Pass `clipIds` (exactly 2 video clips already on the timeline) or use the current selection (with neither, the one unambiguous unsynced pair on the timeline is used); `keepAudioOf` ('first'|'second', default 'first') chooses which angle's audio to keep; `autoColor` (default true) applies the Guillermo Frontal/Lateral LUT per angle. A LOW-CONFIDENCE offset is NOT applied and the call fails with the candidate — pass `force: true` to apply it anyway. Returns offsetSeconds, offsetFrames, fps, method, reason and confidence. NOTE: executed by the host app (FFmpeg + filesystem), not the timeline core.",
     z.object({
       clipIds: z.array(z.string()).length(2).optional(),
       keepAudioOf: z.enum(['first', 'second']).optional(),
-      autoColor: z.boolean().optional()
+      autoColor: z.boolean().optional(),
+      force: z.boolean().optional().describe('Apply even when the detected offset is low-confidence (default: fail and return the candidate).')
     }),
     () => {
       throw new Error('sync_angles is executed by the host app, not the core executor')
@@ -850,12 +851,14 @@ export const editorTools: ToolDef[] = [
   // ── Guiones / tomas + handoff a editor (host-executed) ────────────────────────────────────────
   tool(
     'segment_by_scripts',
-    'Segment a raw clip into TAKES by its spoken scripts ("guiones"). Transcribes the clip (ElevenLabs) if not cached, then uses Claude to align each pasted guión to the span where it was recorded and (optionally) cut fillers/false-starts/repeats. Pass `scripts` (the guiones as text, one block per guión, in order) to align to them, or omit to auto-detect take boundaries. `clipId` selects the raw clip (defaults to the optimized audio / first audible clip). `cleanCuts` (default false) enables aggressive filler/silence cutting. `apply` (default true) builds the take tabs; false leaves the plan for the user to review in the app. NOTE: executed by the host app (transcription + Claude), not the timeline core.',
+    'Segment a raw clip into TAKES by its spoken scripts ("guiones"). If the timeline has exactly 2 overlapping UNSYNCED video angles, they are synced automatically first (multicam sync; the result reports `syncApplied` — an unreliable offset is not applied and `syncWarning` explains why). Transcribes the clip (ElevenLabs) if not cached, then uses Claude to align each pasted guión to the span where it was recorded and (optionally) cut fillers/false-starts/repeats. Pass `scripts` (the guiones as text, one block per guión, in order) to align to them, or omit to auto-detect take boundaries. `clipId` selects the raw clip (defaults to the optimized audio / first audible clip). `keepAudioClipId` picks whose audio the auto-sync keeps (default: the clip on the top video track). `cleanCuts` (default false) enables aggressive filler/silence cutting. `apply` (default true) builds the take tabs; false leaves the plan for the user to review in the app. NOTE: executed by the host app (transcription + Claude), not the timeline core.',
     z.object({
       clipId: z.string().optional(),
       scripts: z.string().optional(),
       cleanCuts: z.boolean().optional(),
-      apply: z.boolean().optional()
+      apply: z.boolean().optional(),
+      keepAudioClipId: z.string().optional().describe('If the automatic multicam sync runs, keep the audio of this clip (default: the clip on the top video track).'),
+      airMs: z.number().optional().describe('When cleanCuts is on: ms of silence to keep between phrases (breathing room). Default 250 (natural); ~120 tighter, ~450 more relaxed.')
     }),
     () => {
       throw new Error('segment_by_scripts is executed by the host app, not the core executor')

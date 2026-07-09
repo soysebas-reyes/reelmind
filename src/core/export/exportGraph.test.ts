@@ -41,6 +41,24 @@ describe('buildExportGraph', () => {
     expect(g.args).not.toContain('[aout]')
   })
 
+  it('replaces the libx264 crf/preset block with videoEncoderArgs (hardware encoder path)', () => {
+    const clip = makeClip({ id: 'A', mediaRef: 'a', startFrame: 0, durationFrames: 60 })
+    const tl = makeTimeline({ fps: 30, width: 1920, height: 1080, tracks: [videoTrack('v', [clip])] })
+    const hw = ['-c:v', 'h264_amf', '-pix_fmt', 'nv12', '-quality', 'quality', '-rc', 'cqp', '-qp_i', '17', '-qp_p', '19']
+    const g = buildExportGraph(tl, resolve, 'out.mp4', { videoEncoderArgs: hw })!
+    expect(g.args).toContain('h264_amf')
+    for (const a of hw) expect(g.args).toContain(a)
+    // The default libx264 block must be fully absent — no stray -crf/-preset for an encoder that
+    // doesn't understand them (FFmpeg errors on unknown codec options).
+    expect(g.args).not.toContain('libx264')
+    expect(g.args).not.toContain('-crf')
+    expect(g.args).not.toContain('-preset')
+    // Omitting the override keeps the exact legacy block (golden behavior unchanged).
+    const legacy = buildExportGraph(tl, resolve, 'out.mp4')!
+    expect(legacy.args).toContain('libx264')
+    expect(legacy.args).toContain('-crf')
+  })
+
   it('carves the source window with trim (start..end) and scales source duration by speed', () => {
     const clip = makeClip({ id: 'A', mediaRef: 'a', startFrame: 0, durationFrames: 60, trimStartFrame: 30, speed: 2 })
     const tl = makeTimeline({ fps: 30, tracks: [videoTrack('v', [clip])] })
@@ -115,6 +133,27 @@ describe('buildExportGraph', () => {
     expect(g.filterComplex).toContain('amix=inputs=2:normalize=0')
     expect(g.args).toContain('[aout]')
     expect(g.args).toContain('-c:a')
+    expect(g.filterComplex).not.toContain('afade') // no anti-click fade unless the flag is set
+  })
+
+  it('emits anti-click audio micro-fades only when the timeline flag is set', () => {
+    const v = makeClip({ id: 'V', mediaRef: 'v', startFrame: 0, durationFrames: 90 })
+    const a1 = makeClip({ id: 'A1', mediaRef: 'a1', mediaType: 'audio', startFrame: 0, durationFrames: 30 })
+    const a2 = makeClip({ id: 'A2', mediaRef: 'a2', mediaType: 'audio', startFrame: 30, durationFrames: 30 })
+    const tl = makeTimeline({ fps: 30, tracks: [videoTrack('v', [v]), audioTrack('a', [a1, a2])], antiClickAudioFades: true })
+    const g = buildExportGraph(tl, resolve, 'out.mp4')!
+    expect(g.filterComplex).toContain('afade=t=in:st=0:d=0.008')
+    expect(g.filterComplex).toContain('afade=t=out:st=0.992:d=0.008') // 1s clip → out at 1.0 - 0.008
+  })
+
+  it('clamps the micro-fade to half the fragment when it is shorter than 16ms', () => {
+    // Contrived high fps so a 1-frame fragment (0.008s) forces d = min(0.008, 0.004) = 0.004 (never overlap).
+    const v = makeClip({ id: 'V', mediaRef: 'v', startFrame: 0, durationFrames: 1 })
+    const a = makeClip({ id: 'A', mediaRef: 'a', mediaType: 'audio', startFrame: 0, durationFrames: 1 })
+    const tl = makeTimeline({ fps: 125, tracks: [videoTrack('v', [v]), audioTrack('a', [a])], antiClickAudioFades: true })
+    const g = buildExportGraph(tl, resolve, 'out.mp4')!
+    expect(g.filterComplex).toContain('afade=t=in:st=0:d=0.004')
+    expect(g.filterComplex).toContain('afade=t=out:st=0.004:d=0.004')
   })
 
   it('skips clips whose media cannot be resolved', () => {

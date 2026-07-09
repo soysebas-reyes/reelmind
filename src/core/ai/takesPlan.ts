@@ -59,7 +59,8 @@ export interface TakeCoverage {
   fraction: number
 }
 
-/** A resolved take: absolute SOURCE-time span (ms) + label. `index` is 1-based display order. */
+/** A resolved take: absolute SOURCE-time span (ms) + label. `index` is the 1-based START-SORTED position
+ *  and is the JOIN KEY cuts reference via `PlannedCut.takeIndex` — do NOT reuse it for display numbering. */
 export interface PlannedTake {
   index: number
   startMs: number
@@ -68,10 +69,17 @@ export interface PlannedTake {
   summary: string
   /** Script-driven mode: which pasted guión (0-based) this take matched. */
   scriptIndex?: number
+  /** Script-driven display number = `scriptIndex + 1` (the guión the user pasted). The UI shows
+   *  `guionNumber ?? index` so "Guión 4" is always the 4th pasted script, independent of resolve order.
+   *  Undefined in inference mode (no scripts). */
+  guionNumber?: number
   /** Script-driven mode: coverage of that guión against the transcript (for the verification UI). */
   coverage?: TakeCoverage
   /** True when the deterministic aligner moved the start earlier to recover a skipped intro. */
   startCorrected?: boolean
+  /** True when this take was NOT returned by the model but recovered by deterministic alignment (or is a
+   *  low-confidence "no encontrado" placeholder for a guión the model omitted). Drives the review badge. */
+  reconstructed?: boolean
   /** True once the user manually adjusted this take's bounds in the editable preview. Invalidates the
    *  script coverage/`startCorrected` provenance (both were computed for the AI's original span). */
   edited?: boolean

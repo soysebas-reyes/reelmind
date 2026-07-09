@@ -10,6 +10,13 @@ import { EditorController } from '../controller/EditorController'
 import { type Clip, type Timeline, clipEndFrame, timelineFrameForSourceSeconds, totalFrames } from '../model/timeline'
 import type { PlannedCut, PlannedTake } from '../ai/takesPlan'
 
+/** The cuts to actually apply for a take: those inside it (by `takeIndex`) AND accepted in the review UI.
+ *  `cutAccepted` is index-aligned with the WHOLE `cuts` array (the review's per-cut checkbox state), so a
+ *  rejected cut is simply not passed to `buildTakeTimeline`. Pure — the store calls this in applyTakesPlan. */
+export function acceptedCutsForTake(cuts: PlannedCut[], cutAccepted: boolean[], takeIndex: number): PlannedCut[] {
+  return cuts.filter((cut, i) => cut.takeIndex === takeIndex && (cutAccepted[i] ?? true))
+}
+
 /** Map a SOURCE-time point (ms) of `refClip` to a timeline frame, clamped to the clip's visible range
  *  when it falls outside it (e.g. a span the multicam sync trim removed from the head/tail). */
 function frameForMs(refClip: Clip, ms: number, fps: number): number {
@@ -52,10 +59,107 @@ export function buildTakeTimeline(base: Timeline, refClip: Clip, take: PlannedTa
   // `undefined` trackIds = ALL tracks: keeps frontal/lateral/audio aligned, splits boundaries, closes gaps.
   for (const r of removals) tc.rippleDeleteRange(undefined, r.startFrame, r.endFrame)
 
+  // Clone before the in-place fixups: the controller's timeline is an immer product (frozen), so
+  // mutating it directly would throw. The clone is also what gets handed to the new tab (no sharing).
+  const out = structuredClone(tc.getTimeline())
   // Invariant: every track starts at the SAME frame (see resyncTrackHeads).
-  const out = tc.getTimeline()
   resyncTrackHeads(out)
+  // Every internal audio seam in a clean take is a real cut → ask the exporter for anti-click micro-fades.
+  out.antiClickAudioFades = true
   return out
+}
+
+export interface LinkAlignmentReport {
+  /** Link groups spanning ≥2 tracks that were checked. */
+  groupsChecked: number
+  /** Clips whose startFrame/trimStartFrame drift was corrected. */
+  corrected: number
+  /** Groups with non-uniform drift that could NOT be safely corrected (left untouched, only reported). */
+  uncorrectable: number
+}
+
+/** Fragments of one link group on one track, sorted by timeline position. */
+function groupFragmentsByTrack(tl: Timeline, groupId: string): Map<number, Clip[]> {
+  const byTrack = new Map<number, Clip[]>()
+  tl.tracks.forEach((t, ti) => {
+    const frags = t.clips.filter((c) => c.linkGroupId === groupId).sort((a, b) => a.startFrame - b.startFrame)
+    if (frags.length > 0) byTrack.set(ti, frags)
+  })
+  return byTrack
+}
+
+/** Uniform difference of `pick` across two equally-long fragment lists, or null when it varies. */
+function uniformDelta(as: Clip[], bs: Clip[], pick: (c: Clip) => number): number | null {
+  const d = pick(as[0]) - pick(bs[0])
+  for (let i = 1; i < as.length; i++) if (pick(as[i]) - pick(bs[i]) !== d) return null
+  return d
+}
+
+/** Safety net for the multicam sync invariant inside a freshly built take tab: clips sharing a
+ *  `linkGroupId` are the SAME real moment seen from two angles, so after the per-take ripple every
+ *  fragment pair must sit at the same timeline frame with the same source-in delta the BASE timeline
+ *  had (the baked sync offset). Splits clone `linkGroupId`, so a group may hold several fragments per
+ *  track. Only UNIFORM drift is corrected (whole-group shift of startFrame and/or trimStartFrame);
+ *  anything non-uniform is reported as uncorrectable and left untouched — a partial fix would replace
+ *  one desync with a subtler one. Mutates `built` in place (same style as resyncTrackHeads); no IO. */
+export function verifyLinkedAlignment(base: Timeline, built: Timeline): LinkAlignmentReport {
+  const report: LinkAlignmentReport = { groupsChecked: 0, corrected: 0, uncorrectable: 0 }
+  const groupIds = new Set<string>()
+  for (const t of built.tracks) for (const c of t.clips) if (c.linkGroupId) groupIds.add(c.linkGroupId)
+
+  for (const groupId of groupIds) {
+    const builtByTrack = groupFragmentsByTrack(built, groupId)
+    if (builtByTrack.size < 2) continue
+    report.groupsChecked++
+
+    const baseByTrack = groupFragmentsByTrack(base, groupId)
+    const trackIndexes = [...builtByTrack.keys()].sort((a, b) => a - b)
+    const refIndex = trackIndexes[0]
+    const refFrags = builtByTrack.get(refIndex) as Clip[]
+    const refBaseHead = baseByTrack.get(refIndex)?.[0]
+    // Mixed speeds make the linear source relation invalid — unverifiable, leave alone.
+    const speeds = new Set(trackIndexes.flatMap((ti) => (builtByTrack.get(ti) as Clip[]).map((c) => c.speed)))
+    if (speeds.size > 1) continue
+
+    let groupBroken = false
+    for (const ti of trackIndexes.slice(1)) {
+      const frags = builtByTrack.get(ti) as Clip[]
+      if (frags.length !== refFrags.length) {
+        groupBroken = true
+        continue
+      }
+      // 1) Positional drift: the whole angle sits `d` frames late/early vs the reference.
+      const startDelta = uniformDelta(frags, refFrags, (c) => c.startFrame)
+      if (startDelta === null) {
+        groupBroken = true
+        continue
+      }
+      if (startDelta !== 0) {
+        for (const c of frags) c.startFrame -= startDelta
+        report.corrected += frags.length
+      }
+      // 2) Source-in drift: the trim delta must still equal what the BASE (synced) timeline baked in.
+      const baseHead = baseByTrack.get(ti)?.[0]
+      const expectedTrimDelta =
+        baseHead && refBaseHead ? baseHead.trimStartFrame - refBaseHead.trimStartFrame : null
+      const trimDelta = uniformDelta(frags, refFrags, (c) => c.trimStartFrame)
+      if (expectedTrimDelta === null || trimDelta === null) {
+        if (trimDelta === null) groupBroken = true // varies per fragment → unsafe to touch
+        continue
+      }
+      const err = trimDelta - expectedTrimDelta
+      if (err !== 0) {
+        if (frags.some((c) => c.trimStartFrame - err < 0)) {
+          groupBroken = true // correction would need source material before frame 0
+          continue
+        }
+        for (const c of frags) c.trimStartFrame -= err
+        report.corrected += frags.length
+      }
+    }
+    if (groupBroken) report.uncorrectable++
+  }
+  return report
 }
 
 /** Re-sync tracks whose first clip lags behind the others. In a synced multicam take every angle + the

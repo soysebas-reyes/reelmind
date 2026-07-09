@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { describe, expect, it } from 'vitest'
-import { buildTakeTimeline, resyncTrackHeads } from './takePlan'
+import { acceptedCutsForTake, buildTakeTimeline, resyncTrackHeads, verifyLinkedAlignment } from './takePlan'
 import { type Clip, type Timeline, clipEndFrame, makeClip, makeTimeline, makeTrack, totalFrames } from '../model/timeline'
 import { IDENTITY_COLOR } from '../model/color'
 import { makeAudioEnhance } from '../model/audioEnhance'
@@ -97,6 +97,40 @@ describe('buildTakeTimeline (multicam)', () => {
     expectAllTracksContiguous(tl, 300)
   })
 
+  it('flags the built take timeline for anti-click audio fades', () => {
+    const front = videoClip('m_front')
+    const base = multicamBase(front, videoClip('m_lat'), audioClip('m_aud'))
+    const tl = buildTakeTimeline(base, front, take(2000, 8000), [])!
+    expect(tl.antiClickAudioFades).toBe(true)
+    expect(base.antiClickAudioFades).toBeUndefined() // the live base timeline is untouched
+  })
+
+  it('applies an accepted internal cut but not a rejected one', () => {
+    const front = videoClip('m_front')
+    const base = multicamBase(front, videoClip('m_lat'), audioClip('m_aud'))
+    const cuts: PlannedCut[] = [{ startMs: 4000, endMs: 5000, kind: 'muletilla', reason: '', text: '', takeIndex: 1, source: 'llm' }]
+    const withCut = buildTakeTimeline(base, front, take(2000, 8000), acceptedCutsForTake(cuts, [true], 1))!
+    const withoutCut = buildTakeTimeline(base, front, take(2000, 8000), acceptedCutsForTake(cuts, [false], 1))!
+    expect(totalFrames(withCut)).toBe(150) // 180 - 30 (the 1s cut)
+    expect(totalFrames(withoutCut)).toBe(180) // rejected cut → not removed
+  })
+})
+
+describe('acceptedCutsForTake', () => {
+  const cuts: PlannedCut[] = [
+    { startMs: 0, endMs: 1, kind: 'muletilla', reason: '', text: '', takeIndex: 1, source: 'llm' },
+    { startMs: 2, endMs: 3, kind: 'silencio', reason: '', text: '', takeIndex: 1, source: 'llm' },
+    { startMs: 4, endMs: 5, kind: 'muletilla', reason: '', text: '', takeIndex: 2, source: 'llm' }
+  ]
+  it('filters by takeIndex AND the global cutAccepted flags', () => {
+    expect(acceptedCutsForTake(cuts, [true, false, true], 1)).toHaveLength(1) // only cut #0 (index 1 & accepted)
+    expect(acceptedCutsForTake(cuts, [true, true, true], 1)).toHaveLength(2)
+    expect(acceptedCutsForTake(cuts, [true, true, false], 2)).toHaveLength(0)
+  })
+  it('defaults a missing flag to accepted', () => {
+    expect(acceptedCutsForTake(cuts, [], 1)).toHaveLength(2)
+  })
+
   it('still works on a single-track timeline', () => {
     const front = videoClip('m_front')
     const base = makeTimeline({ fps: FPS, width: 1920, height: 1080, tracks: [makeTrack({ type: 'video', clips: [front] })] })
@@ -183,5 +217,79 @@ describe('buildTakeTimeline (multicam)', () => {
     const front = videoClip('m_front', { trimStartFrame: 150 })
     const base = multicamBase(front, videoClip('m_lat'), audioClip('m_aud'))
     expect(buildTakeTimeline(base, front, take(1000, 3000), [])).toBeNull()
+  })
+})
+
+describe('verifyLinkedAlignment', () => {
+  const OFFSET = 112 // the reported project's baked sync offset (C0429 vs C0480)
+
+  /** Post-`applySyncAngles` shape: both angles linked, offset baked into the frontal's trim. */
+  function linkedBase(): Timeline {
+    const front = videoClip('c0429', { trimStartFrame: OFFSET, linkGroupId: 'g1' })
+    const lat = videoClip('c0480', { linkGroupId: 'g1' })
+    const aud = { ...audioClip('c0429_audio'), trimStartFrame: OFFSET }
+    return multicamBase(front, lat, aud)
+  }
+
+  it('reports all zeros and leaves a healthy built take untouched', () => {
+    const base = linkedBase()
+    const built = buildTakeTimeline(base, base.tracks[2].clips[0], take(6000, 12000), [])!
+    const snapshot = structuredClone(built)
+    const report = verifyLinkedAlignment(base, built)
+    expect(report).toEqual({ groupsChecked: 1, corrected: 0, uncorrectable: 0 })
+    expect(built).toEqual(snapshot)
+  })
+
+  it('pulls a positionally drifted angle back onto the reference (startFrame drift)', () => {
+    const base = linkedBase()
+    const built = buildTakeTimeline(base, base.tracks[2].clips[0], take(6000, 12000), [])!
+    built.tracks[1].clips[0].startFrame += 7 // the lateral ended up 7 frames late
+    const report = verifyLinkedAlignment(base, built)
+    expect(report.corrected).toBe(1)
+    expect(report.uncorrectable).toBe(0)
+    expect(built.tracks[1].clips[0].startFrame).toBe(built.tracks[0].clips[0].startFrame)
+    expect(built.tracks[0].clips[0].trimStartFrame - built.tracks[1].clips[0].trimStartFrame).toBe(OFFSET)
+  })
+
+  it('restores the baked trim delta when a source-in drift appears (trim drift)', () => {
+    const base = linkedBase()
+    const built = buildTakeTimeline(base, base.tracks[2].clips[0], take(6000, 12000), [])!
+    built.tracks[1].clips[0].trimStartFrame += 5 // lateral shows content 5 frames off
+    const report = verifyLinkedAlignment(base, built)
+    expect(report.corrected).toBe(1)
+    expect(built.tracks[0].clips[0].trimStartFrame - built.tracks[1].clips[0].trimStartFrame).toBe(OFFSET)
+  })
+
+  it('reports (and does not touch) a group whose fragment counts differ across tracks', () => {
+    const base = linkedBase()
+    const built = buildTakeTimeline(base, base.tracks[2].clips[0], take(6000, 12000), [cut(8000, 9000)])!
+    // The internal cut left 2 fragments per angle; drop one of the lateral's to break the pairing.
+    built.tracks[1].clips.pop()
+    const snapshot = structuredClone(built)
+    const report = verifyLinkedAlignment(base, built)
+    expect(report).toEqual({ groupsChecked: 1, corrected: 0, uncorrectable: 1 })
+    expect(built).toEqual(snapshot)
+  })
+
+  it('checks nothing when the timeline has no link groups', () => {
+    const base = multicamBase(videoClip('m_front'), videoClip('m_lat'), audioClip('m_aud'))
+    const built = buildTakeTimeline(base, base.tracks[0].clips[0], take(2000, 8000), [])!
+    expect(verifyLinkedAlignment(base, built)).toEqual({ groupsChecked: 0, corrected: 0, uncorrectable: 0 })
+  })
+
+  it('full-flow regression: a linked multicam take with an internal cut stays pairwise in sync', () => {
+    const base = linkedBase()
+    const built = buildTakeTimeline(base, base.tracks[2].clips[0], take(6000, 12000), [cut(8000, 9000)])!
+    const report = verifyLinkedAlignment(base, built)
+    expect(report).toEqual({ groupsChecked: 1, corrected: 0, uncorrectable: 0 })
+    const frontFrags = built.tracks[0].clips
+    const latFrags = built.tracks[1].clips
+    expect(frontFrags).toHaveLength(2)
+    expect(latFrags).toHaveLength(2)
+    for (let i = 0; i < frontFrags.length; i++) {
+      expect(frontFrags[i].startFrame).toBe(latFrags[i].startFrame)
+      expect(frontFrags[i].trimStartFrame - latFrags[i].trimStartFrame).toBe(OFFSET)
+      expect(frontFrags[i].linkGroupId).toBe('g1') // splits clone the group id
+    }
   })
 })

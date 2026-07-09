@@ -51,10 +51,21 @@ Final Cut).
 Nosotros hacemos lo técnico; tu editor hace subtítulos y efectos.
 
 1. `import_folder { folderPath }` — o `import_media { sources: [...] }` con URLs.
-2. `sync_angles { clipIds: [a, b], keepAudioOf, autoColor }` — sincroniza 2 ángulos por audio.
+2. `sync_angles { clipIds: [a, b], keepAudioOf, autoColor, force? }` — sincroniza 2 ángulos por audio.
+   El offset se calcula con correlación RMS **y** alineación por transcript, reconciliados (un pico
+   de correlación confiable refuta un transcript que discrepa). Si la confianza es baja **no aplica**
+   y devuelve el candidato en el error; `force: true` lo aplica igual. Sin `clipIds` ni selección usa
+   el único par de ángulos sin sincronizar de la timeline.
 3. `apply_color_preset { clipIds, presetId }` — colorización (ver `list_color_presets`).
-4. `segment_by_scripts { clipId?, scripts, cleanCuts?, apply? }` — segmenta por guiones: transcribe,
-   alinea cada guión a su tramo y arma las tomas. Pasá los guiones pegados en `scripts`.
+4. `segment_by_scripts { clipId?, scripts, cleanCuts?, apply?, keepAudioClipId?, airMs? }` — segmenta
+   por guiones: transcribe, alinea cada guión a su tramo y arma las tomas. Pasá los guiones pegados en
+   `scripts`. Con `cleanCuts: true` corta muletillas/silencios/repeticiones (revisables antes de
+   aplicar) y refina los cortes contra el silencio acústico real; `airMs` controla el "aire" que se
+   conserva entre frases (default 250 ms; ~120 más ajustado, ~450 más relajado). Si la timeline tiene
+   exactamente 2 ángulos de video sin sincronizar, los **sincroniza automáticamente** antes de
+   segmentar (`keepAudioClipId` elige de quién se conserva el audio; default el clip de la pista de
+   video superior) y el resultado reporta `syncApplied` / `syncWarning`. El paso 2 sigue siendo útil
+   para elegir audio/LUT con control fino.
 5. `export_to_nle { outDir, target?, fullLength? }` — exporta un proyecto EDITABLE (FCP7 xmeml) +
    media horneada (color + audio ya aplicados) a `outDir/handoff/<nombre>-<fecha>/`. Abrí el `.xml`
    en Premiere / DaVinci / Final Cut (ver el README dentro de la carpeta).

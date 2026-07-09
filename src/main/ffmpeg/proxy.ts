@@ -10,42 +10,41 @@ import { promises as fs } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import { expectedPath, type MediaManifest } from '../../core'
 import { ffmpegBinary } from './binary'
+import { detectH264Encoder, proxyEncodeArgs, proxyScaleFilter } from './encoders'
 
 export interface ProxyOptions {
   /** Live stderr line sink for the progress modal (mirrors silence.ts / transcript.ts). */
   onLine?: (line: string) => void
 }
 
+/** Preview proxy height. 720p benchmarked ~14% faster than 1080p on a 4K 4:2:2 10-bit source (the
+ *  decode dominates) and halves the proxy's own playback cost — plenty of resolution for the preview
+ *  canvas; the export always uses the original. */
+const PROXY_HEIGHT = 720
+
 /** Transcode `srcPath` to a preview proxy `.mp4` in `outDir`; returns the new path. Downscales to
- *  1080 on the long-enough axis, forces yuv420p 8-bit, and uses a short GOP (g=30 + scene-cut) so the
- *  preview seeks/resumes precisely. Re-encodes audio to AAC so a single-clip proxy stays playable. */
+ *  720 on the long-enough axis, forces 8-bit 4:2:0 (hardware-decodable everywhere), and uses a short
+ *  GOP (g=30) so the preview seeks/resumes precisely. Encodes on the GPU when one is usable (NVENC/QSV/
+ *  AMF) — that frees the CPU for the 4:2:2 10-bit camera-source decode, the pipeline's real bottleneck —
+ *  and skips the H.264 in-loop deblocking filter on the DECODE side (`-skip_loop_filter all`): proxy-
+ *  grade fidelity for a measurable decode speedup. Re-encodes audio to AAC so the proxy stays playable.
+ *  Measured on a Ryzen 5 4500U + 4K 4:2:2 10-bit source: 48.1 s → 36.5 s per 60 s of footage (−24%),
+ *  with the pure-decode floor at 28.8 s. */
 export async function generateProxy(srcPath: string, outDir: string, opts: ProxyOptions = {}): Promise<string> {
   await fs.mkdir(outDir, { recursive: true })
+  const encoder = await detectH264Encoder()
   const out = join(outDir, `${basename(srcPath, extname(srcPath))}-proxy-${randomUUID()}.mp4`)
+  opts.onLine?.(`Encoder de proxy: ${encoder}${encoder === 'libx264' ? ' (CPU)' : ' (GPU)'}`)
   const args = [
     '-y',
-    '-i',
-    srcPath,
-    '-vf',
-    'scale=-2:1080', // downscale to 1080 tall (even width); harmless slight upscale for tiny sources
-    '-c:v',
-    'libx264',
-    '-preset',
-    'veryfast',
-    '-crf',
-    '23',
-    '-pix_fmt',
-    'yuv420p', // 8-bit 4:2:0 → hardware-decodable everywhere
-    '-g',
-    '30', // short GOP → frequent keyframes → precise seeking / clean pause-resume
-    '-keyint_min',
-    '15',
-    '-c:a',
-    'aac',
-    '-b:a',
-    '160k',
-    '-movflags',
-    '+faststart',
+    '-skip_loop_filter', 'all', // decode-side speedup; imperceptible at proxy quality
+    '-i', srcPath,
+    '-vf', proxyScaleFilter(encoder, PROXY_HEIGHT),
+    ...proxyEncodeArgs(encoder),
+    '-color_range', 'tv', // tag the stream limited-range (VUI) to match the out_range=tv pixels above
+    '-c:a', 'aac',
+    '-b:a', '160k',
+    '-movflags', '+faststart',
     out
   ]
   // No `-v error`/`-nostats` so ffmpeg emits periodic time=/speed= lines for the progress modal.
