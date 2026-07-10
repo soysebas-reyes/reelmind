@@ -49,6 +49,11 @@ export interface MediaManifestEntry {
    *  current version on project open, the proxy is stale (e.g. built with a coarser GOP) and is
    *  regenerated in the background. Absent on proxies from before versioning → treated as stale. */
   proxyVersion?: number
+  /** Proxy path RELATIVE to the .vproj package root (POSIX, e.g. `proxies/C0480-proxy-v3.mp4`). This is
+   *  what PERSISTS: the project is self-contained + portable. On load the host resolves it back into the
+   *  absolute `proxyPath` (runtime-only); on save the host consolidates the proxy into the package and
+   *  writes this. `proxyPath` is not persisted for in-package proxies (it would be machine-specific). */
+  proxyRelativePath?: string
 }
 
 export interface MediaFolder {
@@ -84,6 +89,17 @@ export interface AssetListing {
   hasAudio?: boolean
   folderId?: string
   hasProxy: boolean
+}
+
+/** A proxy is STALE when the entry has a proxy but it was built with a different encoder-recipe version
+ *  than the current one → regenerate once (e.g. the v2→v3 limited-range fix). A missing proxy is NOT
+ *  "stale" (it's simply absent; a different code path generates it). Pure — testable without the store. */
+export function isProxyStale(
+  entry: Pick<MediaManifestEntry, 'type' | 'proxyPath' | 'proxyRelativePath' | 'proxyVersion'>,
+  currentVersion: number
+): boolean {
+  const hasProxy = entry.proxyPath !== undefined || entry.proxyRelativePath !== undefined
+  return entry.type === 'video' && hasProxy && entry.proxyVersion !== currentVersion
 }
 
 /** Serializable bin listing for the `list_assets` tool (pure — testable without the store). */

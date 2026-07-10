@@ -2,7 +2,7 @@
 // Pure bin listing for the `list_assets` tool.
 
 import { describe, expect, it } from 'vitest'
-import { makeManifest, manifestToAssetList } from './manifest'
+import { type MediaManifestEntry, isProxyStale, makeManifest, manifestToAssetList } from './manifest'
 
 const manifest = makeManifest({
   entries: [
@@ -50,5 +50,32 @@ describe('manifestToAssetList', () => {
   it('filters by type', () => {
     expect(manifestToAssetList(manifest, 'audio').map((a) => a.assetId)).toEqual(['a1'])
     expect(manifestToAssetList(manifest, 'text')).toHaveLength(0)
+  })
+})
+
+describe('isProxyStale', () => {
+  const v = (over: Partial<MediaManifestEntry>): MediaManifestEntry => ({
+    id: 'x',
+    name: 'x.mp4',
+    type: 'video',
+    source: { type: 'external', absolutePath: 'D:/x.mp4' },
+    duration: 1,
+    ...over
+  })
+  it('is stale when a proxy exists at an older recipe version', () => {
+    expect(isProxyStale(v({ proxyPath: 'C:/x-proxy-v2.mp4', proxyVersion: 2 }), 3)).toBe(true)
+  })
+  it('is not stale when the proxy version matches (by absolute or relative path)', () => {
+    expect(isProxyStale(v({ proxyPath: 'C:/x-proxy-v3.mp4', proxyVersion: 3 }), 3)).toBe(false)
+    expect(isProxyStale(v({ proxyRelativePath: 'proxies/x-proxy-v3.mp4', proxyVersion: 3 }), 3)).toBe(false)
+  })
+  it('treats a proxy with no version (pre-versioning) as stale', () => {
+    expect(isProxyStale(v({ proxyPath: 'C:/x-proxy-legacy.mp4' }), 3)).toBe(true)
+  })
+  it('is NOT "stale" when there is no proxy at all (absent ≠ stale)', () => {
+    expect(isProxyStale(v({}), 3)).toBe(false)
+  })
+  it('ignores non-video entries', () => {
+    expect(isProxyStale(v({ type: 'audio', proxyPath: 'C:/a-proxy-v2.mp4', proxyVersion: 2 }), 3)).toBe(false)
   })
 })

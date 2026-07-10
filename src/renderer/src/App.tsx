@@ -436,7 +436,8 @@ export default function App() {
               title="Generando proxies de reproducción en segundo plano — podés seguir editando"
             >
               <Reelo state="loading" size={20} ariaLabel="Generando proxies" />
-              Optimizando reproducción… {proxying.done}/{proxying.total}
+              {proxying.kind === 'upgrade' ? 'Actualizando optimización…' : 'Optimizando reproducción…'}{' '}
+              {proxying.done}/{proxying.total}
             </span>
           ) : videosNeedingProxy > 0 ? (
             <button

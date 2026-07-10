@@ -4,7 +4,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
-import { parseCubeLut } from '../core'
+import { ProjectFiles, parseCubeLut } from '../core'
 import type {
   AiCompleteRequest,
   AnalyzeTakesRequest,
@@ -248,8 +248,11 @@ export function registerIpc(): void {
   })
   ipcMain.handle('media:generateProxy', async (e, req: GenerateProxyRequest) => {
     try {
-      const outDir = req.outDir ?? join(app.getPath('userData'), 'imported')
-      const outputPath = await generateProxy(req.srcPath, outDir, {
+      // Saved project → write inside the package's proxies/ dir (portable); unsaved → the userData cache.
+      const outDir = req.projectDir
+        ? join(req.projectDir, ProjectFiles.proxiesDirectoryName)
+        : join(app.getPath('userData'), 'imported')
+      const outputPath = await generateProxy(req.srcPath, outDir, req.version, {
         onLine: (line) => e.sender.send('op:progress', { stage: 'proxy', line })
       })
       return { ok: true, outputPath }

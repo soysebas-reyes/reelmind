@@ -35,13 +35,13 @@ import {
   cutRangeToAnglesByTrack,
   expectedPath,
   findUnsyncedAnglePair,
+  isProxyStale,
   makeManifest,
   makeTimeline,
   newId,
   presetById,
   reconcileSyncOffset,
   resolvePasteTargets,
-  resyncTrackHeads,
   serializeSelection,
   splitScriptBlocks,
   totalFrames,
@@ -738,7 +738,11 @@ function ensureProxy(mediaRef: string, force = false): Promise<string | null> {
   const job = (async (): Promise<string | null> => {
     await acquireProxySlot()
     try {
-      const r = await window.editorBridge.generateProxy({ srcPath, outDir: useEditorStore.getState().projectDir })
+      const r = await window.editorBridge.generateProxy({
+        srcPath,
+        projectDir: useEditorStore.getState().projectDir,
+        version: PROXY_VERSION
+      })
       if (!r.ok || !r.outputPath) return null
       setProxyPathEverywhere(mediaRef, r.outputPath)
       return r.outputPath
@@ -756,19 +760,22 @@ function ensureProxy(mediaRef: string, force = false): Promise<string | null> {
 /** Kick BACKGROUND proxy generation for the given video entries (no blocking modal), surfacing progress
  *  via the non-blocking `proxying` counter (statusbar/toolbar chip). `force` regenerates stale-recipe
  *  proxies; without it, only entries lacking a proxy are processed. */
-function kickProxies(entries: MediaManifestEntry[], force = false): void {
+function kickProxies(entries: MediaManifestEntry[], force = false, kind: 'optimize' | 'upgrade' = 'optimize'): void {
   const videos = entries.filter((e) => e.type === 'video' && (force || !e.proxyPath) && !proxyJobs.has(e.id))
   if (videos.length === 0) return
   useEditorStore.setState((s) => {
     const p = s.proxying ?? { done: 0, total: 0 }
-    s.proxying = { done: p.done, total: p.total + videos.length }
+    // 'upgrade' (a one-time recipe re-encode of already-optimized footage) wins the label over 'optimize'
+    // so a returning user isn't told a saved project is optimizing "from scratch".
+    const nextKind = kind === 'upgrade' || p.kind === 'upgrade' ? 'upgrade' : 'optimize'
+    s.proxying = { done: p.done, total: p.total + videos.length, kind: nextKind }
   })
   for (const v of videos) {
     void ensureProxy(v.id, force).finally(() => {
       useEditorStore.setState((s) => {
         if (!s.proxying) return
         const done = s.proxying.done + 1
-        s.proxying = done >= s.proxying.total ? null : { done, total: s.proxying.total }
+        s.proxying = done >= s.proxying.total ? null : { done, total: s.proxying.total, kind: s.proxying.kind }
       })
     })
   }
@@ -784,8 +791,8 @@ function autoProxyImports(entries: MediaManifestEntry[]): void {
  *  angle switching benefits from the current recipe. Non-blocking; the old proxy plays until the new
  *  one is ready. Called on project open, after proxies are reconciled/relinked. */
 function regenerateStaleProxies(entries: MediaManifestEntry[]): void {
-  const stale = entries.filter((e) => e.type === 'video' && e.proxyPath && e.proxyVersion !== PROXY_VERSION)
-  if (stale.length > 0) kickProxies(stale, true)
+  const stale = entries.filter((e) => isProxyStale(e, PROXY_VERSION))
+  if (stale.length > 0) kickProxies(stale, true, 'upgrade')
 }
 
 /** Result of the audio-offset analysis (drives the sync confirmation modal). */
@@ -951,7 +958,7 @@ export interface EditorState {
   } | null
   /** Background proxy generation progress (auto-started on import), or null when idle. Non-blocking:
    *  the UI stays fully usable; a chip shows done/total. */
-  proxying: { done: number; total: number } | null
+  proxying: { done: number; total: number; kind?: 'optimize' | 'upgrade' } | null
   /** 0..1 while an NLE handoff bakes media, else null — drives the handoff progress overlay. */
   handoffProgress: number | null
   /** Set when a handoff finishes — drives the handoff result modal. */
@@ -1315,7 +1322,12 @@ export const useEditorStore = create<EditorState>()(
           set((s) => {
             for (const r of rec.relinked!) {
               const e = s.manifest.entries.find((x) => x.id === r.id)
-              if (e) e.proxyPath = r.proxyPath
+              if (e) {
+                e.proxyPath = r.proxyPath
+                // Re-stamp the version parsed from the filename so a still-current proxy that merely moved
+                // isn't re-flagged stale and needlessly re-encoded.
+                if (r.proxyVersion !== undefined) e.proxyVersion = r.proxyVersion
+              }
             }
           })
         }
@@ -2534,9 +2546,10 @@ function loadSessionIntoStore(sess: Session): void {
  *  the store. Used when a project was saved WITH its guión tabs (sessions.json present). */
 function restoreSessions(data: SessionsData, dir: string): void {
   const restored = data.sessions.map((ps) => {
-    // Heal a guión tab saved out of sync (per-track leading gap). Scoped to take tabs — a general project
-    // can legitimately have overlay/B-roll tracks starting at different frames, which must NOT be moved.
-    if (ps.name.startsWith('Guión ')) resyncTrackHeads(ps.timeline)
+    // Load every tab's timeline VERBATIM — persisted, user-validated data must round-trip exactly. We used
+    // to run resyncTrackHeads on 'Guión ' tabs here, but that mutated a correct saved multicam offset on
+    // reopen (pulling the lateral angle's head to the global min → desynced from frontal + audio). Head
+    // healing now happens ONLY at take-build time (buildTakeTimeline / verifyLinkedAlignment), never on load.
     const sess = makeSession({
       name: ps.name,
       projectName: ps.name,

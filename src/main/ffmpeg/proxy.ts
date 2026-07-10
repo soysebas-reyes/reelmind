@@ -5,12 +5,23 @@
 // proxy; the FFmpeg export always uses the original source, so quality is untouched.
 
 import { spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { basename, extname, join } from 'node:path'
-import { expectedPath, type MediaManifest } from '../../core'
+import { ProjectFiles, expectedPath, type MediaManifest } from '../../core'
 import { ffmpegBinary } from './binary'
 import { detectH264Encoder, proxyEncodeArgs, proxyScaleFilter } from './encoders'
+
+/** Recipe version parsed from a proxy filename `…-proxy-v<n>.mp4`, or undefined for a legacy
+ *  random-uuid name (which pre-dates versioned filenames → treated as unknown/stale). */
+export function parseProxyVersion(filename: string): number | undefined {
+  const m = /-proxy-v(\d+)\.mp4$/i.exec(filename)
+  return m ? Number(m[1]) : undefined
+}
+
+/** Source stem a proxy belongs to: strip the `-proxy-…` suffix from a proxy basename. */
+function proxyStem(proxyBasename: string): string {
+  return proxyBasename.replace(/-proxy-.*$/i, '')
+}
 
 export interface ProxyOptions {
   /** Live stderr line sink for the progress modal (mirrors silence.ts / transcript.ts). */
@@ -30,10 +41,17 @@ const PROXY_HEIGHT = 720
  *  grade fidelity for a measurable decode speedup. Re-encodes audio to AAC so the proxy stays playable.
  *  Measured on a Ryzen 5 4500U + 4K 4:2:2 10-bit source: 48.1 s → 36.5 s per 60 s of footage (−24%),
  *  with the pure-decode floor at 28.8 s. */
-export async function generateProxy(srcPath: string, outDir: string, opts: ProxyOptions = {}): Promise<string> {
+export async function generateProxy(
+  srcPath: string,
+  outDir: string,
+  version: number,
+  opts: ProxyOptions = {}
+): Promise<string> {
   await fs.mkdir(outDir, { recursive: true })
   const encoder = await detectH264Encoder()
-  const out = join(outDir, `${basename(srcPath, extname(srcPath))}-proxy-${randomUUID()}.mp4`)
+  // Deterministic, version-keyed name so a regen OVERWRITES the same file instead of accumulating a new
+  // random-named orphan on every reopen (the bug this replaces).
+  const out = join(outDir, `${basename(srcPath, extname(srcPath))}-proxy-v${version}.mp4`)
   opts.onLine?.(`Encoder de proxy: ${encoder}${encoder === 'libx264' ? ' (CPU)' : ' (GPU)'}`)
   const args = [
     '-y',
@@ -73,24 +91,28 @@ export async function generateProxy(srcPath: string, outDir: string, opts: Proxy
   return out
 }
 
-/** Re-link preview proxies that already exist on disk in `projectDir`. `generateProxy` writes the proxy
- *  .mp4 immediately, so a proxy survives on disk even if its `proxyPath` was lost from a saved/reopened
- *  manifest (or now points at a stale/missing file). For each VIDEO entry: keep a `proxyPath` that still
- *  resolves; otherwise look for a `<sourceStem>-proxy-*.mp4` beside the project and adopt the newest match.
- *  Returns ONLY the entries whose `proxyPath` should change, so a reopened project reuses an existing proxy
- *  instead of prompting to regenerate. Reads the filesystem; writes nothing. */
+/** Re-link preview proxies that already exist on disk. `generateProxy` writes the proxy .mp4 immediately,
+ *  so a proxy survives on disk even if its `proxyPath` was lost / points at a stale or missing file. For
+ *  each VIDEO entry: keep a `proxyPath` that still resolves; otherwise look for a `<sourceStem>-proxy-*.mp4`
+ *  inside the package's `proxies/` dir (and the package root, for legacy files) and adopt the best match —
+ *  preferring the highest recipe version, then the newest mtime. Returns ONLY the entries whose `proxyPath`
+ *  should change, WITH the version parsed from the filename so the caller re-stamps `proxyVersion` (else a
+ *  still-current proxy that merely moved would be re-flagged stale). Reads the filesystem; writes nothing. */
 export async function reconcileProxies(
   manifest: MediaManifest,
   projectDir: string | null
-): Promise<{ id: string; proxyPath: string }[]> {
+): Promise<{ id: string; proxyPath: string; proxyVersion?: number }[]> {
   if (!projectDir) return []
-  let dirFiles: string[]
-  try {
-    dirFiles = await fs.readdir(projectDir)
-  } catch {
-    return []
+  const dirs = [join(projectDir, ProjectFiles.proxiesDirectoryName), projectDir]
+  const listing: { dir: string; files: string[] }[] = []
+  for (const dir of dirs) {
+    try {
+      listing.push({ dir, files: await fs.readdir(dir) })
+    } catch {
+      /* dir may not exist (e.g. no proxies/ yet) → skip */
+    }
   }
-  const relinked: { id: string; proxyPath: string }[] = []
+  const relinked: { id: string; proxyPath: string; proxyVersion?: number }[] = []
   for (const e of manifest.entries) {
     if (e.type !== 'video') continue
     // A proxyPath that still points at a real file is fine — leave it untouched.
@@ -105,18 +127,96 @@ export async function reconcileProxies(
     const src = expectedPath(manifest, e.id, projectDir)
     if (!src) continue
     const stem = basename(src, extname(src))
-    const candidates = dirFiles.filter((f) => f.startsWith(`${stem}-proxy-`) && f.toLowerCase().endsWith('.mp4'))
-    let best: { path: string; mtime: number } | null = null
-    for (const name of candidates) {
-      const p = join(projectDir, name)
-      try {
-        const st = await fs.stat(p)
-        if (!best || st.mtimeMs > best.mtime) best = { path: p, mtime: st.mtimeMs }
-      } catch {
-        /* unreadable candidate → skip */
+    let best: { path: string; version: number | undefined; mtime: number } | null = null
+    for (const { dir, files } of listing) {
+      for (const f of files) {
+        if (!f.startsWith(`${stem}-proxy-`) || !f.toLowerCase().endsWith('.mp4')) continue
+        const p = join(dir, f)
+        try {
+          const st = await fs.stat(p)
+          const version = parseProxyVersion(f)
+          // Rank: higher version wins; tie → newer mtime.
+          if (
+            !best ||
+            (version ?? -1) > (best.version ?? -1) ||
+            ((version ?? -1) === (best.version ?? -1) && st.mtimeMs > best.mtime)
+          ) {
+            best = { path: p, version, mtime: st.mtimeMs }
+          }
+        } catch {
+          /* unreadable candidate → skip */
+        }
       }
     }
-    if (best && best.path !== e.proxyPath) relinked.push({ id: e.id, proxyPath: best.path })
+    if (best && best.path !== e.proxyPath) relinked.push({ id: e.id, proxyPath: best.path, proxyVersion: best.version })
   }
   return relinked
+}
+
+/** Resolve each entry's persisted `proxyRelativePath` (package-relative) into an absolute runtime
+ *  `proxyPath` under `projectDir`. Mutates in place. Called on load so the renderer gets ready-to-use
+ *  absolute paths and never sees the package-relative form. */
+export function resolveProxyPaths(projectDir: string, manifest: MediaManifest): void {
+  for (const e of manifest.entries) {
+    if (e.proxyRelativePath) e.proxyPath = join(projectDir, e.proxyRelativePath)
+  }
+}
+
+/** Bring every referenced proxy INTO the package's `proxies/` dir and rewrite each entry to a
+ *  package-relative path, clearing the machine-specific absolute path — so a saved project is
+ *  self-contained + portable. Copies are idempotent (skip when the deterministic target already exists).
+ *  Then sweeps orphan proxy files (old-recipe or legacy random-named, unreferenced) from `proxies/` and the
+ *  package root, so reopening no longer accumulates duplicates. Mutates the given manifests in place;
+ *  best-effort (per-file IO errors are swallowed so a save never fails on proxy housekeeping). */
+export async function consolidateProxies(
+  projectDir: string,
+  manifests: MediaManifest[],
+  currentVersion: number
+): Promise<void> {
+  const proxiesDir = join(projectDir, ProjectFiles.proxiesDirectoryName)
+  await fs.mkdir(proxiesDir, { recursive: true })
+  const kept = new Set<string>() // basenames we keep inside proxies/
+  for (const manifest of manifests) {
+    for (const e of manifest.entries) {
+      if (e.type !== 'video' || !e.proxyPath) continue
+      const version = e.proxyVersion ?? currentVersion
+      const targetName = `${proxyStem(basename(e.proxyPath))}-proxy-v${version}.mp4`
+      const target = join(proxiesDir, targetName)
+      if (e.proxyPath !== target) {
+        try {
+          await fs.access(target) // already consolidated → skip the (large) copy
+        } catch {
+          try {
+            await fs.copyFile(e.proxyPath, target)
+          } catch {
+            continue // source gone / unreadable → leave the entry's absolute path as a fallback
+          }
+        }
+      }
+      kept.add(targetName)
+      e.proxyRelativePath = `${ProjectFiles.proxiesDirectoryName}/${targetName}`
+      e.proxyVersion = version
+      e.proxyPath = undefined // do not persist a machine-specific absolute path for an in-package proxy
+    }
+  }
+  // Sweep orphans: unreferenced proxy files that are NOT the current recipe (protects in-flight regens +
+  // the kept targets). Legacy random-named files (no parseable version) are always eligible.
+  for (const dir of [proxiesDir, projectDir]) {
+    let files: string[]
+    try {
+      files = await fs.readdir(dir)
+    } catch {
+      continue
+    }
+    for (const f of files) {
+      if (!/-proxy-.*\.mp4$/i.test(f)) continue
+      if (dir === proxiesDir && kept.has(f)) continue
+      if (parseProxyVersion(f) === currentVersion) continue
+      try {
+        await fs.rm(join(dir, f))
+      } catch {
+        /* best-effort */
+      }
+    }
+  }
 }

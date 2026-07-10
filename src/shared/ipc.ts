@@ -235,11 +235,15 @@ export interface AudioPreviewResult {
   error?: string
 }
 
-/** media:generateProxy — transcode a video to a preview-friendly 1080p H.264 proxy. */
+/** media:generateProxy — transcode a video to a preview-friendly 720p H.264 proxy. */
 export interface GenerateProxyRequest {
   srcPath: string
-  /** Where to write the proxy; null → the host's userData/imported folder. */
-  outDir: string | null
+  /** The project root. When set, the proxy is written inside `<projectDir>/proxies/` (self-contained
+   *  project); null → the host's userData/imported cache (project not saved yet). */
+  projectDir: string | null
+  /** Encoder-recipe version, baked into the deterministic filename (`…-proxy-v<version>.mp4`) so a
+   *  regen OVERWRITES the same file instead of accumulating a new random-named one. */
+  version: number
 }
 export interface GenerateProxyResult {
   ok: boolean
@@ -255,7 +259,9 @@ export interface ReconcileProxiesRequest {
 }
 export interface ReconcileProxiesResult {
   ok: boolean
-  relinked?: { id: string; proxyPath: string }[]
+  /** `proxyVersion` (parsed from the `…-proxy-v<n>.mp4` filename) travels with the relink so the caller
+   *  re-stamps it — otherwise a still-current proxy that merely moved would be re-flagged as stale. */
+  relinked?: { id: string; proxyPath: string; proxyVersion?: number }[]
   error?: string
 }
 

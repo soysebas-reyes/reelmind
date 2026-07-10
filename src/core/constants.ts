@@ -47,6 +47,8 @@ export const ProjectFiles = {
   thumbnailFilename: 'thumbnail.jpg',
   mediaDirectoryName: 'media',
   cacheDirectoryName: 'cache',
+  /** Preview proxies live here inside the package so a saved project is self-contained + portable. */
+  proxiesDirectoryName: 'proxies',
   defaultProjectName: 'Untitled Project'
 } as const
 
