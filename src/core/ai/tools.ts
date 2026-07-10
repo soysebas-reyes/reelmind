@@ -866,10 +866,10 @@ export const editorTools: ToolDef[] = [
   ),
   tool(
     'export_to_nle',
-    'Export an EDITABLE project for Premiere Pro / DaVinci Resolve / Final Cut (FCP7 xmeml) PLUS baked media with our color grade + audio enhancement already applied, so the editor finishes subtitles/effects there. Writes a `handoff/<name>-<timestamp>/` folder (the .xml + media/ + luts/ + README) inside `outDir`. `outDir` is REQUIRED (absolute path). `target` is a label (premiere|resolve|finalcut|universal; default universal — all emit the same xmeml). `fullLength` (default false) bakes whole sources instead of just the used range (bigger files, wider re-trim). Returns the folder path + counts + warnings. NOTE: executed by the host app (FFmpeg + filesystem), not the timeline core.',
+    'Export an EDITABLE project PLUS baked media with our color grade + audio enhancement already applied, so the editor finishes subtitles/effects there. Two families: `premiere`/`resolve`/`finalcut`/`universal` write an FCP7 xmeml package (`handoff/<name>-<timestamp>/` = .xml + media/ + luts/ + README) inside `outDir`; `capcut` writes a CapCut draft folder (draft_content.json + draft_meta_info.json + media/) that CapCut can open directly (placed in CapCut’s auto-detected draft root when available, else inside `outDir` with move instructions). `outDir` is REQUIRED (absolute path). `target` default = universal. `fullLength` (default false) bakes whole sources instead of just the used range. Returns the folder path + counts + warnings. NOTE: executed by the host app (FFmpeg + filesystem), not the timeline core.',
     z.object({
       outDir: z.string().min(1),
-      target: z.enum(['premiere', 'resolve', 'finalcut', 'universal']).optional(),
+      target: z.enum(['premiere', 'resolve', 'finalcut', 'universal', 'capcut']).optional(),
       fullLength: z.boolean().optional()
     }),
     () => {

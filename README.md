@@ -8,9 +8,9 @@ does the technical, repetitive work fast and hands the result off to them.**
 > the core editor + AI + MCP are working: import, timeline editing, real-time
 > preview, FFmpeg export, colorization, multicam sync, audio enhancement, angle
 > switching, script-based take segmentation, and an "export to Premiere / DaVinci
-> / Final Cut" handoff. Some end-to-end flows (take detection, the NLE handoff)
-> are implemented and unit/integration-tested but still pending verification on
-> real footage / in a real NLE. AI media **generation** and a Windows **installer**
+> / Final Cut / CapCut" handoff. Some end-to-end flows (take detection, the NLE +
+> CapCut handoff) are implemented and unit/integration-tested but still pending
+> verification on real footage / in a real NLE / in real CapCut. AI media **generation** and a Windows **installer**
 > are next. **Full plan & state:** [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md).
 
 ---
@@ -38,21 +38,24 @@ finishing editor:
 - **Export** — one flat MP4 (FFmpeg), **or** a handoff to a finishing editor (see
   below).
 
-### Handoff to a finishing editor (Premiere / DaVinci Resolve / Final Cut)
+### Handoff to a finishing editor (Premiere / DaVinci Resolve / Final Cut / CapCut)
 
 Subtitles and effects aren't ReelMind's job — they're the editor's. So instead of
 only rendering a flat MP4, the **"Enviar a editor"** button writes an **editable
 project** the editor opens in their **NLE** (*Non-Linear Editor* — Premiere Pro,
-DaVinci Resolve, Final Cut):
+DaVinci Resolve, Final Cut) **or in CapCut**:
 
-- A **Final Cut Pro 7 XML** (`xmeml`) sequence — the one interchange format all
-  three import reliably.
+- A **Final Cut Pro 7 XML** (`xmeml`) sequence — the one interchange format
+  Premiere / DaVinci / Final Cut all import reliably — **or** a **CapCut draft
+  folder** (`draft_content.json` + `draft_meta_info.json`) CapCut opens directly.
 - **Baked media** with our color grade + audio enhancement already in the
   pixels/audio, but with clips still **separate and re-editable** — so the editor
   keeps your look and just adds titles/effects/transitions.
 
-Output lands in a `handoff/<project>-<timestamp>/` folder (`.xml` + `media/` +
-`luts/` + a README with per-NLE import steps).
+The xmeml handoff lands in a `handoff/<project>-<timestamp>/` folder (`.xml` +
+`media/` + `luts/` + a README with per-NLE import steps). The CapCut draft lands
+straight in CapCut's draft folder when it's detected (so it shows up in CapCut with
+no manual step), otherwise in the folder you pick with move instructions.
 
 ## Drive it from Claude Code (MCP)
 
@@ -142,11 +145,11 @@ Done:
 - **Audio enhancement** (voice cleanup / loudness) ✅
 - **Segment by scripts** (transcription + take tabs) ✅ *(pending on-footage E2E)*
 - **NLE handoff** (FCP7 XML + baked media → Premiere / Resolve / FCP) ✅ *(pending real-NLE verification)*
+- **CapCut handoff** (CapCut draft JSON + baked media, auto-placed in CapCut's draft folder) ✅ *(pending real-CapCut verification)*
 
 Next:
 
 - **Generation** — Higgs Field, then fal.ai / Replicate (multi-provider, BYOK)
-- **CapCut handoff** — experimental draft-JSON writer
 - **Packaging** — Windows installer (electron-builder) + auto-update
 
 ## Getting started (development)

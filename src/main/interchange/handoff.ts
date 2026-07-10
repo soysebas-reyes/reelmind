@@ -11,13 +11,16 @@ import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import {
   type BakeJob,
+  type Clip,
   type InterchangeSource,
   buildBakeCommand,
+  buildCapCutDraft,
   buildFcp7Xml,
   clipJobIndex,
   displayName,
   entryFor,
   expectedPath,
+  newId,
   planBakes,
   totalFrames,
   windowsPathToFileUrl
@@ -79,8 +82,33 @@ function runFfmpeg(args: string[], durationSeconds: number, onFrac?: (f: number)
   })
 }
 
-const README = (name: string, target: string, warnings: string[]): string =>
-  [
+const README = (name: string, target: string, warnings: string[], capcutAutoPlaced: boolean): string => {
+  const warn = warnings.length ? `\nAvisos de esta exportación:\n${warnings.map((w) => `  - ${w}`).join('\n')}` : ''
+  if (target === 'capcut') {
+    return [
+      `ReelMind → borrador (draft) de CapCut`,
+      `Proyecto: ${name}`,
+      ``,
+      `Esta carpeta ES un borrador de CapCut (draft_content.json + draft_meta_info.json + media/).`,
+      capcutAutoPlaced
+        ? `Ya la dejamos dentro de la carpeta de borradores de CapCut: abrí CapCut y va a aparecer en`
+        : `Para abrirla en CapCut, MOVÉ esta carpeta completa a tu carpeta de borradores de CapCut`,
+      capcutAutoPlaced ? `  "Borradores/Drafts". Si no aparece, reiniciá CapCut.` : `  (por defecto en Windows):`,
+      capcutAutoPlaced ? `` : `    %LOCALAPPDATA%\\CapCut\\User Data\\Projects\\com.lveditor.draft\\`,
+      capcutAutoPlaced ? `` : `  Luego reiniciá CapCut y el borrador aparecerá en "Borradores".`,
+      ``,
+      `Qué ya está hecho por ReelMind (horneado en los archivos de media/):`,
+      `  colorización · realce de audio · sincronización · cambios de ángulo · cortes.`,
+      ``,
+      `Qué hacés vos en CapCut: subtítulos, efectos, transiciones y el toque creativo.`,
+      ``,
+      `Importante:`,
+      `  - NO muevas ni renombres la subcarpeta media/ — el borrador la referencia por ruta absoluta.`,
+      `  - CapCut es experimental como destino: si un borrador no abre, avisanos con tu versión de CapCut.`,
+      warn
+    ].join('\n')
+  }
+  return [
     `ReelMind → handoff a editor (${target})`,
     `Proyecto: ${name}`,
     ``,
@@ -102,8 +130,9 @@ const README = (name: string, target: string, warnings: string[]): string =>
     `    entrar como dual-mono (es lo esperado).`,
     `  - Premiere: importa como una secuencia nueva + un bin con la media.`,
     `  - Si algún clip aparece "offline", re-vinculá a la carpeta media/ de este paquete.`,
-    warnings.length ? `\nAvisos de esta exportación:\n${warnings.map((w) => `  - ${w}`).join('\n')}` : ''
+    warn
   ].join('\n')
+}
 
 export async function runHandoff(req: HandoffRequest, hooks: HandoffHooks = {}): Promise<HandoffResult> {
   try {
@@ -113,7 +142,11 @@ export async function runHandoff(req: HandoffRequest, hooks: HandoffHooks = {}):
       return { ok: false, error: 'Nada para exportar — agregá clips a la línea de tiempo primero.' }
     }
 
-    const folder = join(req.outDir, 'handoff', `${safeName(projectName)}-${stamp()}`)
+    // A CapCut draft must be a DIRECT child of the draft root (CapCut lists immediate subfolders); the
+    // xmeml handoff nests under `handoff/` inside the picked folder.
+    const isCapCut = target === 'capcut'
+    const draftName = `${safeName(projectName)}-${stamp()}`
+    const folder = isCapCut ? join(req.outDir, draftName) : join(req.outDir, 'handoff', draftName)
     const mediaDir = join(folder, 'media')
     const lutsDir = join(folder, 'luts')
     await fs.mkdir(mediaDir, { recursive: true })
@@ -150,6 +183,7 @@ export async function runHandoff(req: HandoffRequest, hooks: HandoffHooks = {}):
           bakeKey: job.bakeKey,
           name,
           fileUrl: windowsPathToFileUrl(inputPath),
+          filePath: inputPath,
           durationFrames: Math.max(1, Math.round((entry?.duration ?? 0) * fps)),
           width,
           height,
@@ -205,6 +239,7 @@ export async function runHandoff(req: HandoffRequest, hooks: HandoffHooks = {}):
         bakeKey: job.bakeKey,
         name,
         fileUrl: windowsPathToFileUrl(outputPath),
+        filePath: outputPath,
         durationFrames: job.mode === 'image' ? Math.max(1, Math.round((entry?.duration ?? 5) * fps)) : bakedFrames,
         width,
         height,
@@ -215,22 +250,54 @@ export async function runHandoff(req: HandoffRequest, hooks: HandoffHooks = {}):
       })
     }
 
-    // Clip → source lookup for the XML builder.
+    // Clip → source lookup shared by both writers.
     const clipToJob = clipJobIndex(jobs)
+    const clipFile = (clip: Clip): InterchangeSource | null => {
+      const job: BakeJob | undefined = clipToJob.get(clip.id)
+      return job ? sources.get(job.bakeKey) ?? null : null
+    }
+    const sourceList = [...sources.values()]
+    await fs.writeFile(join(folder, 'handoff.ffdebug.txt'), debugLines.join('\n'), 'utf8').catch(() => {})
+
+    if (isCapCut) {
+      const { content, meta, warnings, segmentCount } = buildCapCutDraft({
+        timeline,
+        draftName,
+        draftFolderPath: folder,
+        draftRootPath: req.outDir,
+        sources: sourceList,
+        clipFile,
+        newId,
+        nowMs: Date.now()
+      })
+      await fs.writeFile(join(folder, 'draft_content.json'), JSON.stringify(content), 'utf8')
+      await fs.writeFile(join(folder, 'draft_meta_info.json'), JSON.stringify(meta), 'utf8')
+      await fs.writeFile(
+        join(folder, 'README.txt'),
+        README(projectName || 'ReelMind', target, warnings, !!req.capcutAutoPlaced),
+        'utf8'
+      )
+      return {
+        ok: true,
+        folder,
+        bakedCount: baked,
+        referencedCount: referenced,
+        clipItemCount: segmentCount,
+        warnings,
+        isCapCut: true,
+        placedInCapCut: !!req.capcutAutoPlaced
+      }
+    }
+
     const { xml, warnings, clipItemCount } = buildFcp7Xml({
       timeline,
       sequenceName: projectName || 'ReelMind',
-      sources: [...sources.values()],
-      clipFile: (clip) => {
-        const job: BakeJob | undefined = clipToJob.get(clip.id)
-        return job ? sources.get(job.bakeKey) ?? null : null
-      }
+      sources: sourceList,
+      clipFile
     })
-
     const xmlPath = join(folder, `${safeName(projectName)}.xml`)
     await fs.writeFile(xmlPath, xml, 'utf8')
-    await fs.writeFile(join(folder, 'README.txt'), README(projectName || 'ReelMind', target, warnings), 'utf8')
-    await fs.writeFile(join(folder, 'handoff.ffdebug.txt'), debugLines.join('\n'), 'utf8').catch(() => {})
+    await fs.writeFile(join(folder, 'README.txt'), README(projectName || 'ReelMind', target, warnings, false), 'utf8')
 
     return { ok: true, xmlPath, folder, bakedCount: baked, referencedCount: referenced, clipItemCount, warnings }
   } catch (e) {

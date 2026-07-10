@@ -72,15 +72,15 @@ rebuild the platform layers on cross-platform tech (Electron, FFmpeg, ONNX, whis
 | **P12** | CapCut parity — MCP tool surface + manual UX | ✅ core pass done (5 milestones, merged to `main`): widened `set_clip_properties` (text/transform/crop/audioEnhance) + `set_clips_properties`, `inspect_clip`, `list_assets`, `list/apply_color_preset`, `batch_operations` (1 IPC = 1 undo), keyframe tools, `ripple_delete_range`, `add_text_clip`, `get_frame_preview` (composited frame as a REAL image block in both transports), per-tool timeouts, `sync_angles` frames; UX: Space play/pause + `[`/`]`/Home/End/±zoom, Ctrl+C/X/V/D clipboard, right-click context menus (clip/track/empty), ClipInspector "Propiedades" tab (transform/opacity/speed/fades/volume, coalesced-undo sliders), multi-select group drag, OS drag-and-drop, inline fade handles, bigger transport + frame-step + preview rate. Pending (bigger core work): text rendering in preview-style + export (drawtext), transitions, keyframe curve UI, markers |
 | **P13** | Multicam sync + audio enhancement + angle switching | ✅ done (merged to `main`): sync two angles by audio cross-correlation (no FFT); non-destructive per-clip voice-cleanup/loudness chain (Web Audio live + FFmpeg on export); non-destructive & ripple angle cuts with `linkGroupId` + track roles |
 | **P14** | "Segmentar por guiones" (take detection) | ✅ done (merged to `main`): ElevenLabs Scribe transcript + `claude-sonnet-5` forced-tool aligns each pasted guión to its span → opens each take as a clean, editable tab (multi-session tabs, persisted in `sessions.json`); editable take-boundary preview. **Sync robusto**: el offset multicám se calcula con RMS **y** transcript reconciliados (`core/edit/syncOffset.ts` — un pico RMS confiable refuta un transcript que discrepa) y la segmentación **auto-sincroniza** 2 ángulos crudos antes de armar los tabs (+ `verifyLinkedAlignment` como red de seguridad por tab). Unit + integration green |
-| **P15** | Editor-workflow handoff + MCP flow | ✅ done (merged to `main`, see §12): "Enviar a editor" → FCP7 xmeml + per-source **baked media** (grade + audio applied) for Premiere / DaVinci / Final Cut; MCP workflow tools `segment_by_scripts` · `export_to_nle` · `new/open/save_project`; platform-URL import via `yt-dlp`. Unit + ffmpeg-integration green; **pending real-NLE + on-device MCP E2E** |
+| **P15** | Editor-workflow handoff + MCP flow | ✅ done (merged to `main`, see §12): "Enviar a editor" → FCP7 xmeml **or a CapCut draft folder** + per-source **baked media** (grade + audio applied) for Premiere / DaVinci / Final Cut / **CapCut**; MCP workflow tools `segment_by_scripts` · `export_to_nle` (now incl. `target: 'capcut'`) · `new/open/save_project`; platform-URL import via `yt-dlp`. Unit + ffmpeg-integration green; **pending real-NLE + real-CapCut + on-device MCP E2E** |
 | **P16** | Medición total — telemetría de **comportamiento** (nunca contenido) | ✅ P16.0 local hecho (ver §14): 3 capas de captura (física DOM · comandos vía `EditorController.run` · IO/IA vía `runEditorTool`) + core Zod (`src/core/telemetry/`) + sink **JSONL** en `userData` detrás de `TelemetrySink` + identidad `anonymousId`/`sessionId` + **guardrail** (`taxonomy.test.ts`) que rompe la build si un comando/tool nuevo no se registra. Arquitectura lista para **Supabase + cuentas**. Ver [`TOTAL_MEASUREMENT_PLAN.md`](./TOTAL_MEASUREMENT_PLAN.md). **Pending on-device E2E** (verificar JSONL + auditoría de redacción) |
 
 **Verification bar (all green):** `npm run typecheck` (node + web), `npm run build` (main + preload + renderer),
-`npm test` — **436 tests**, incl. EditorController command/undo, compositor, export-graph, AI-tool + agent-loop,
-color/LUT, take-detection (transcript serialize / postprocess / script-align / take-plan), and the new
-**interchange** golden tests (fcp7xml / bakePlan / bakeCommand); plus ffmpeg/MCP integration suites — export
-render, media pipeline, the **NLE-handoff** end-to-end (bakes graded media + writes valid xmeml), and a real
-MCP client↔server HTTP test — that self-skip if their deps are absent. The app boot-smoke-tests via
+`npm test` — **533 tests**, incl. EditorController command/undo, compositor, export-graph, AI-tool + agent-loop,
+color/LUT, take-detection (transcript serialize / postprocess / script-align / take-plan), and the
+**interchange** golden tests (fcp7xml / bakePlan / bakeCommand / **capcutDraft**); plus ffmpeg/MCP integration
+suites — export render, media pipeline, the **NLE-handoff** end-to-end (bakes graded media + writes valid xmeml
+**and a valid CapCut draft**), and a real MCP client↔server HTTP test — that self-skip if their deps are absent. The app boot-smoke-tests via
 `npm run dev`: the AI panel + Anthropic SDK load in main, the media protocol serves video, and the MCP server
 logs `listening at http://127.0.0.1:4399/mcp`.
 
@@ -90,8 +90,9 @@ logs `listening at http://127.0.0.1:4399/mcp`.
 > the embedded MCP server both drive the *same* EditorController commands (BYOK Anthropic key, encrypted via
 > safeStorage). Everything is merged to `main` (single branch, pushed). **P7 (generation) is descoped to
 > import-based** — scenes are generated externally (e.g. Higgsfield) and imported, which the P1 pipeline handles.
-> **Remaining:** real-world verification of take detection (on footage) and the NLE handoff (in a real NLE) +
-> the MCP flow with Claude Code; then a CapCut writer and shipping the packaged installer.
+> **Remaining:** real-world verification of take detection (on footage), the NLE handoff (in a real NLE) and
+> the **CapCut draft** (in a real CapCut build) + the MCP flow with Claude Code; then shipping the packaged
+> installer.
 
 ## 5. What exists today (file map)
 
@@ -120,6 +121,7 @@ src/
     export/colorFilters.ts      # ColorAdjustments → FFmpeg grade chain (shared by export + bake)
     interchange/                # NLE handoff (P15): pure + golden-tested
       fcp7xml.ts                #   Timeline → FCP7 xmeml (Premiere/Resolve/FCP), file:// encoding, A/V link
+      capcutDraft.ts            #   Timeline → CapCut draft JSON (draft_content + draft_meta_info, µs timeranges)
       bakePlan.ts               #   plan one baked file per source (grade+audio); per-clip on speed
       bakeCommand.ts            #   ffmpeg args to bake a source (reuses buildColorFilterChain/EnhanceChain)
     ai/tools.ts                 # Zod tool contract + executeTool over EditorController (P5);
@@ -138,8 +140,9 @@ src/
     ffmpeg/ {binary,probe,thumbnail,index}.ts   # ffprobe/ffmpeg integration
     ffmpeg/exporter.ts          # runs buildExportGraph + spawns ffmpeg (P4)
     ffmpeg/exporter.test.ts     # renders a 3-track project end-to-end (self-skips if no ffmpeg)
-    interchange/handoff.ts      # runHandoff: bake per-source media + write the xmeml package (P15)
-    interchange/handoff.test.ts # ffmpeg integration: bakes graded media + valid xmeml (self-skips)
+    interchange/handoff.ts      # runHandoff: bake per-source media + write the xmeml package OR CapCut draft (P15)
+    interchange/capcutLocate.ts #   detect CapCut's Windows draft root (auto-place the draft)
+    interchange/handoff.test.ts # ffmpeg integration: bakes graded media + valid xmeml + valid CapCut draft (self-skips)
     media/importer.ts           # classify → probe → thumbnail → manifest entry
     media/importSources.ts      # import from paths / folders / URLs (+ yt-dlp for platform links)
     media/mediaProtocol.ts      # reelmind-media:// — streams local files to the renderer (P3 video)
@@ -348,7 +351,19 @@ a still-editable project to a finishing editor. All merged to `main`.
     (direct URLs still use `fetch`). Connection + full flow: [`../MCP.md`](../MCP.md); smoke script `mcp_flow.mjs`.
   - *Pending (needs the owner's environment):* import the `.xml` into a real Premiere/Resolve/FCP and confirm
     timing/color/audio (tune per-NLE quirks in the README); run the MCP flow with the app open + Claude Code.
-  - *Next:* an experimental **CapCut** draft-JSON writer plugs in as another `export_to_nle` target.
+  - **CapCut writer (done).** `export_to_nle` now takes `target: 'capcut'` too. `core/interchange/capcutDraft.ts`
+    (pure, golden-tested) turns the timeline + the SAME per-source baked media into a CapCut **draft folder**
+    (`draft_content.json` + `draft_meta_info.json` + `media/`): integer-microsecond `target/source_timerange`,
+    one `material` per baked source, one `segment` per clip, per-segment `speed`/`canvas`/`sound_channel_mapping`
+    helpers, `render_index` back-to-front, transform/alpha/volume carried (a video segment plays its own
+    embedded audio, so no linked audio segment). Text/lottie/keyframes/fades **and non-identity crop** are
+    dropped as warnings (parity note: xmeml keeps crop). `main/interchange/capcutLocate.ts` auto-detects
+    CapCut's Windows draft root (`%LOCALAPPDATA%\CapCut\User Data\Projects\com.lveditor.draft`, +JianYing,
+    `REELMIND_CAPCUT_DRAFT_DIR` override) so "Enviar a editor ▸ CapCut" drops the draft straight where CapCut
+    lists it — no picker; if CapCut isn't found it falls back to a picked folder + README move instructions.
+    `runHandoff` branches on target (draft folder is a DIRECT child of the root, no `handoff/` wrapper).
+    Unit + ffmpeg-integration green; **pending on-device verification** that a real CapCut build opens the
+    draft (version stamps in `capcutDraft.ts` may need tuning per CapCut release).
 
 ## 13. Reference docs
 - Full original architecture/plan (private, owner's machine): `~/.claude/plans/cosmic-mapping-swan.md`

@@ -323,7 +323,7 @@ export default function App() {
                 <button
                   onClick={() => setNleMenuOpen((o) => !o)}
                   disabled={!!busy}
-                  title="Enviar a Premiere / DaVinci / Final Cut (proyecto editable + media con color y audio ya aplicados)"
+                  title="Enviar a Premiere / DaVinci / Final Cut / CapCut (proyecto editable + media con color y audio ya aplicados)"
                 >
                   <Icon name="export" /> Enviar a editor ▾
                 </button>
@@ -335,11 +335,13 @@ export default function App() {
                         [
                           ['premiere', 'Premiere Pro'],
                           ['resolve', 'DaVinci Resolve'],
-                          ['finalcut', 'Final Cut Pro']
+                          ['finalcut', 'Final Cut Pro'],
+                          ['capcut', 'CapCut']
                         ] as const
                       ).map(([target, label]) => (
                         <button
                           key={target}
+                          data-tel={`topbar.export_${target}`}
                           onClick={() => {
                             setNleMenuOpen(false)
                             void exportToNle(target)
@@ -641,13 +643,18 @@ export default function App() {
             {handoffResult.ok ? (
               <>
                 <div className="export-check">✓</div>
-                <h2>Proyecto listo para tu editor</h2>
+                <h2>{handoffResult.isCapCut ? 'Borrador de CapCut listo' : 'Proyecto listo para tu editor'}</h2>
                 <p className="export-path" title={handoffResult.folder}>
                   {handoffResult.folder}
                 </p>
                 <p className="export-note">
-                  {handoffResult.clipItemCount ?? 0} clips · {handoffResult.bakedCount ?? 0} horneados ·{' '}
-                  {handoffResult.referencedCount ?? 0} referenciados. Importá el .xml desde tu editor (ver README).
+                  {handoffResult.clipItemCount ?? 0} {handoffResult.isCapCut ? 'segmentos' : 'clips'} ·{' '}
+                  {handoffResult.bakedCount ?? 0} horneados · {handoffResult.referencedCount ?? 0} referenciados.{' '}
+                  {handoffResult.isCapCut
+                    ? handoffResult.placedInCapCut
+                      ? 'Abrí CapCut: el borrador ya aparece en «Borradores» (reiniciá CapCut si no lo ves).'
+                      : 'Mové esta carpeta a la carpeta de borradores de CapCut (ver README).'
+                    : 'Importá el .xml desde tu editor (ver README).'}
                 </p>
                 {handoffResult.warnings && handoffResult.warnings.length > 0 && (
                   <ul className="handoff-warnings">
@@ -657,8 +664,11 @@ export default function App() {
                   </ul>
                 )}
                 <div className="export-actions">
-                  {handoffResult.xmlPath && (
-                    <button className="primary" onClick={() => revealExport(handoffResult.xmlPath as string)}>
+                  {(handoffResult.xmlPath ?? handoffResult.folder) && (
+                    <button
+                      className="primary"
+                      onClick={() => revealExport((handoffResult.xmlPath ?? handoffResult.folder) as string)}
+                    >
                       Mostrar en carpeta
                     </button>
                   )}

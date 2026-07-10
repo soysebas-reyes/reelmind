@@ -82,6 +82,38 @@ describe.skipIf(!haveFfmpeg)('NLE handoff (integration, requires ffmpeg)', () =>
     await expect(fs.stat(join(res.folder!, 'README.txt'))).resolves.toBeTruthy()
   }, 120_000)
 
+  it('writes a CapCut draft (draft_content + draft_meta_info) referencing baked media', async () => {
+    const manifest = manifestOf()
+    const clip = { ...makeClip({ id: 'A', mediaRef: 'cam', startFrame: 0, durationFrames: 60 }), color: makeColorAdjustments({ saturation: 1.6 }) }
+    const timeline = makeTimeline({ fps: 30, width: 320, height: 240, tracks: [makeTrack({ type: 'video', clips: [clip] })] })
+
+    const res = await runHandoff({ timeline, manifest, projectDir: null, projectName: 'CapCut', outDir: dir, target: 'capcut' })
+    expect(res.ok, res.error).toBe(true)
+    expect(res.isCapCut).toBe(true)
+    expect(res.bakedCount).toBe(1)
+    expect(res.clipItemCount).toBe(1) // one segment; the video segment carries its own audio
+
+    // The draft folder is a DIRECT child of outDir (so CapCut lists it), no `handoff/` wrapper, no .xml.
+    expect(res.xmlPath).toBeUndefined()
+    const media = await fs.readdir(join(res.folder!, 'media'))
+    expect(media.filter((f) => f.endsWith('.mp4')).length).toBe(1)
+
+    const content = JSON.parse(await fs.readFile(join(res.folder!, 'draft_content.json'), 'utf8'))
+    expect(content.materials.videos).toHaveLength(1)
+    expect(content.materials.videos[0].path).toContain('/media/')
+    expect(content.tracks[0].segments).toHaveLength(1)
+    expect(content.tracks[0].segments[0].target_timerange.duration).toBe(2_000_000)
+    // The referenced baked file actually exists on disk.
+    await expect(fs.stat(content.materials.videos[0].path)).resolves.toBeTruthy()
+
+    const meta = JSON.parse(await fs.readFile(join(res.folder!, 'draft_meta_info.json'), 'utf8'))
+    expect(meta.draft_name).toBe(res.folder!.replace(/\\/g, '/').split('/').pop())
+    const mediaList = meta.draft_materials.find((m: { type: number }) => m.type === 0)
+    expect(mediaList.value).toHaveLength(1)
+
+    await expect(fs.stat(join(res.folder!, 'README.txt'))).resolves.toBeTruthy()
+  }, 120_000)
+
   it('references the original (no bake) when the source needs no grade or enhancement', async () => {
     const manifest = manifestOf()
     const clip = makeClip({ id: 'A', mediaRef: 'cam', startFrame: 0, durationFrames: 60 })

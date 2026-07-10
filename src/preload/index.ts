@@ -84,6 +84,8 @@ const editorBridge = {
 
   // NLE handoff (interchange): pick a folder, then write an editable XML + baked media.
   pickHandoffDir: (): Promise<string | null> => ipcRenderer.invoke('project:pickHandoffDir'),
+  /** CapCut's auto-detected draft root, or null when CapCut isn't installed in a default location. */
+  capcutDraftDir: (): Promise<string | null> => ipcRenderer.invoke('project:capcutDraftDir'),
   runHandoff: (req: HandoffRequest): Promise<HandoffResult> => ipcRenderer.invoke('project:handoff', req),
   /** Subscribe to handoff progress (0..1) across all baked files. */
   onHandoffProgress: (cb: (fraction: number) => void): void => {

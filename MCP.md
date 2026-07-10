@@ -3,7 +3,7 @@
 ReelMind expone su editor por **MCP** (Model Context Protocol) para que puedas manejarlo en
 lenguaje natural desde **Claude Code** u otro cliente MCP: cargar una carpeta, descargar videos,
 sincronizar ángulos, colorizar, segmentar por guiones y exportar a tu editor (Premiere / DaVinci /
-Final Cut).
+Final Cut / CapCut).
 
 ## Conectar Claude Code
 
@@ -66,9 +66,12 @@ Nosotros hacemos lo técnico; tu editor hace subtítulos y efectos.
    segmentar (`keepAudioClipId` elige de quién se conserva el audio; default el clip de la pista de
    video superior) y el resultado reporta `syncApplied` / `syncWarning`. El paso 2 sigue siendo útil
    para elegir audio/LUT con control fino.
-5. `export_to_nle { outDir, target?, fullLength? }` — exporta un proyecto EDITABLE (FCP7 xmeml) +
-   media horneada (color + audio ya aplicados) a `outDir/handoff/<nombre>-<fecha>/`. Abrí el `.xml`
-   en Premiere / DaVinci / Final Cut (ver el README dentro de la carpeta).
+5. `export_to_nle { outDir, target?, fullLength? }` — exporta un proyecto EDITABLE + media horneada
+   (color + audio ya aplicados). Con `target` en `premiere`/`resolve`/`finalcut`/`universal` escribe un
+   FCP7 xmeml en `outDir/handoff/<nombre>-<fecha>/` (abrí el `.xml` en Premiere/DaVinci/Final Cut). Con
+   `target: 'capcut'` escribe un **borrador de CapCut** (`<nombre>-<fecha>/` con `draft_content.json` +
+   `draft_meta_info.json` + `media/`) que CapCut abre directo — se coloca en la carpeta de borradores de
+   CapCut si se detecta, si no en `outDir` con instrucciones en el README.
 
 Ejemplo de humo end-to-end: `node mcp_flow.mjs` (con la app abierta). Ver también `mcp_import.mjs`
 y `call_mcp.mjs`.

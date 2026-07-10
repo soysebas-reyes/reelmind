@@ -32,8 +32,11 @@ export interface InterchangeSource {
   /** BakeJob.bakeKey this source came from (used by the caller's clip→source lookup). */
   bakeKey: string
   name: string
-  /** Absolute `file://` URL of the media on disk (baked file or original). */
+  /** Absolute `file://` URL of the media on disk (baked file or original). Used by the xmeml writer. */
   fileUrl: string
+  /** Absolute OS path of the media on disk (baked file or original). Used by the CapCut draft writer,
+   *  which stores plain forward-slashed paths rather than `file://` URLs. Optional for back-compat. */
+  filePath?: string
   /** File length in timeline frames. */
   durationFrames: number
   width: number

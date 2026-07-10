@@ -104,9 +104,9 @@ export interface ExportResult {
   durationSeconds?: number
 }
 
-/** Handoff (interchange) target. v1 emits one FCP7 xmeml (`universal`) that opens in all three;
- *  the specific labels drive UI copy and leave room for a future CapCut writer. */
-export type NleTarget = 'premiere' | 'resolve' | 'finalcut' | 'universal'
+/** Handoff (interchange) target. `premiere`/`resolve`/`finalcut`/`universal` all emit one FCP7 xmeml
+ *  (the labels drive UI copy); `capcut` emits a CapCut draft folder (draft_content + draft_meta_info). */
+export type NleTarget = 'premiere' | 'resolve' | 'finalcut' | 'universal' | 'capcut'
 
 /** Export an EDITABLE NLE project (XML) + baked media (our grade + audio enhancement pre-applied). */
 export interface HandoffRequest {
@@ -119,6 +119,9 @@ export interface HandoffRequest {
   target: NleTarget
   /** Bake whole sources instead of just the used range (bigger files, wider re-trim). */
   fullLength?: boolean
+  /** CapCut only: `outDir` is CapCut's auto-detected draft root, so the draft lands inside CapCut
+   *  directly (drives README wording). false/undefined → the user picked an arbitrary folder. */
+  capcutAutoPlaced?: boolean
 }
 
 export interface HandoffResult {
@@ -129,9 +132,14 @@ export interface HandoffResult {
   folder?: string
   bakedCount?: number
   referencedCount?: number
+  /** Clips laid out in the project (xmeml clipitems or CapCut segments). */
   clipItemCount?: number
   warnings?: string[]
   error?: string
+  /** True when the target was CapCut (a draft folder, not an xmeml package) — drives result UI copy. */
+  isCapCut?: boolean
+  /** CapCut only: the draft landed inside CapCut's auto-detected draft root (appears in CapCut directly). */
+  placedInCapCut?: boolean
 }
 
 /** AI completion proxy. The renderer builds Anthropic-shaped `messages`/`tools` and the main

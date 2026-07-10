@@ -1494,8 +1494,17 @@ export const useEditorStore = create<EditorState>()(
     revealExport: (filePath) => void window.editorBridge.showItemInFolder(filePath),
 
     exportToNle: async (target, opts) => {
-      const dir = await window.editorBridge.pickHandoffDir()
-      if (!dir) return
+      // CapCut: drop the draft straight into CapCut's auto-detected draft root (no picker) when we find
+      // it; otherwise fall back to a picked folder the user then moves into CapCut. Other targets always
+      // pick a folder for the xmeml package.
+      let outDir: string | null = null
+      let capcutAutoPlaced = false
+      if (target === 'capcut') {
+        outDir = await window.editorBridge.capcutDraftDir()
+        capcutAutoPlaced = !!outDir
+      }
+      if (!outDir) outDir = await window.editorBridge.pickHandoffDir()
+      if (!outDir) return
       set((s) => {
         s.busy = 'Preparando handoff…'
         s.lastError = null
@@ -1507,9 +1516,10 @@ export const useEditorStore = create<EditorState>()(
         manifest: get().manifest,
         projectDir: get().projectDir,
         projectName: get().projectName,
-        outDir: dir,
+        outDir,
         target,
-        fullLength: opts?.fullLength
+        fullLength: opts?.fullLength,
+        capcutAutoPlaced
       })
       set((s) => {
         s.busy = null

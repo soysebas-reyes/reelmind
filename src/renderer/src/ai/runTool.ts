@@ -234,7 +234,9 @@ async function runEditorToolCore(name: string, input: unknown): Promise<ToolCall
             bakedCount: res.bakedCount,
             referencedCount: res.referencedCount,
             clipItemCount: res.clipItemCount,
-            warnings: res.warnings
+            warnings: res.warnings,
+            isCapCut: res.isCapCut,
+            placedInCapCut: res.placedInCapCut
           }
         }
       : { ok: false, error: res.error ?? 'Handoff falló' }

@@ -50,6 +50,7 @@ import {
 } from './ffmpeg'
 import { exportTimeline } from './ffmpeg/exporter'
 import { runHandoff } from './interchange/handoff'
+import { capcutDraftRoot } from './interchange/capcutLocate'
 import { detectSilences } from './ffmpeg/silence'
 import { importMedia } from './media/importer'
 import { importMediaFromSources } from './media/importSources'
@@ -183,6 +184,10 @@ export function registerIpc(): void {
       : await dialog.showOpenDialog({ properties: props })
     return res.canceled || !res.filePaths[0] ? null : res.filePaths[0]
   })
+
+  // CapCut's auto-detected draft root (or null). Lets the renderer skip the folder picker and drop the
+  // draft straight where CapCut lists it.
+  ipcMain.handle('project:capcutDraftDir', () => capcutDraftRoot())
 
   // Export an EDITABLE NLE project (FCP7 xmeml) + baked media (our grade + audio enhancement pre-applied).
   ipcMain.handle('project:handoff', (e, req: HandoffRequest) =>
