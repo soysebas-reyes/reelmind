@@ -39,8 +39,11 @@ await new Promise((resolve, reject) => {
 console.log('Extracting…')
 rmSync(tmpDir, { recursive: true, force: true })
 mkdirSync(tmpDir, { recursive: true })
-// Windows 10+ ships tar.exe, which extracts .zip archives.
-execFileSync('tar', ['-xf', tmpZip, '-C', tmpDir], { stdio: 'inherit' })
+// Windows 10+ ships bsdtar (extracts .zip and understands C:\ paths). Use its absolute path:
+// a Git-Bash/MSYS tar earlier in PATH treats "C:\…" as a remote host and fails.
+const tar =
+  process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar'
+execFileSync(tar, ['-xf', tmpZip, '-C', tmpDir], { stdio: 'inherit' })
 
 function findExe(dir, name) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
