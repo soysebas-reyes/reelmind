@@ -65,6 +65,14 @@ for (const exe of ['ffmpeg.exe', 'ffprobe.exe']) {
   console.log(`  → resources/ffmpeg/${exe}`)
 }
 
+// GPL compliance when redistributing the binaries: ship the build's license text alongside them
+// (the BtbN zip includes it; sources are linked from https://github.com/BtbN/FFmpeg-Builds).
+const license = findExe(tmpDir, 'license.txt')
+if (license) {
+  copyFileSync(license, join(outDir, 'LICENSE.txt'))
+  console.log('  → resources/ffmpeg/LICENSE.txt')
+}
+
 rmSync(tmpZip, { force: true })
 rmSync(tmpDir, { recursive: true, force: true })
 console.log('Done. FFmpeg bundled for packaging.')

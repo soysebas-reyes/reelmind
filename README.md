@@ -150,7 +150,25 @@ Done:
 Next:
 
 - **Generation** — Higgs Field, then fal.ai / Replicate (multi-provider, BYOK)
-- **Packaging** — Windows installer (electron-builder) + auto-update
+
+## Install (Windows)
+
+1. Download `ReelMind-<version>-setup.exe` from the latest
+   [GitHub Release](https://github.com/soysebas-reyes/reelmind/releases).
+2. Windows SmartScreen will warn about an unknown publisher (the installer is not
+   code-signed yet): click **More info → Run anyway**.
+3. Follow the installer (per-user install, no admin needed). FFmpeg ships inside —
+   no separate install required.
+4. On first launch, set your API keys in **Ajustes → Claves API** (both optional,
+   bring-your-own-key, stored encrypted on your machine):
+   - **Anthropic (Claude)** — the AI editing chat and script segmentation.
+   - **ElevenLabs** — transcription, transcript-aware silence cutting, voice isolation.
+5. Optional: install [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) and put it on your
+   `PATH` to import from YouTube/Instagram/TikTok links.
+
+The app updates itself from GitHub Releases. Local usage measurement (never content)
+can be turned off in **Ajustes → Privacidad**. To release a new version, see
+[`docs/RELEASE.md`](./docs/RELEASE.md).
 
 ## Getting started (development)
 
@@ -162,8 +180,9 @@ Next:
   bundled binary ships with packaging (`npm run fetch:ffmpeg`)
 - Optional: [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) on your `PATH` to import
   from YouTube/Instagram/TikTok/… links
-- Optional keys (bring-your-own): `ANTHROPIC` key (set in the app's AI panel) for
-  the agent; `ELEVENLABS_API_KEY` in `.env` for transcription
+- Optional keys (bring-your-own), set in **Ajustes → Claves API** (or, in dev,
+  `ELEVENLABS_API_KEY` via `.env` — see `.env.example`): Anthropic for the agent,
+  ElevenLabs for transcription
 
 **Run**
 
