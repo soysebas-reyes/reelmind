@@ -10,6 +10,8 @@ import ColorInspector from './color/ColorInspector'
 import AudioInspector from './audio/AudioInspector'
 import ClipInspector from './inspector/ClipInspector'
 import { TakesPlanModal } from './takes/TakesPlanModal'
+import { SettingsModal } from './settings/SettingsModal'
+import { TelemetryConsentDialog } from './settings/TelemetryConsentDialog'
 import { SessionTabs } from './tabs/SessionTabs'
 import { Icon, type IconName } from './ui/Icon'
 import { Reelo, REELO_MESSAGES } from './ui/Reelo'
@@ -179,6 +181,8 @@ export default function App() {
   const rightTab = useEditorStore((s) => s.rightTab)
   const setRightTab = useEditorStore((s) => s.setRightTab)
   const analyzingTakes = useEditorStore((s) => s.analyzingTakes)
+  const settingsOpen = useEditorStore((s) => s.settingsOpen)
+  const setSettingsOpen = useEditorStore((s) => s.setSettingsOpen)
   const [transcriptOpen, setTranscriptOpen] = useState(false)
   // Sync confirmation modal options (frontal/lateral swap, which audio to keep, per-angle color).
   const [syncSwap, setSyncSwap] = useState(false)
@@ -354,6 +358,9 @@ export default function App() {
                   </>
                 )}
               </div>
+              <button data-tel="topbar.settings" onClick={() => setSettingsOpen(true)} title="Ajustes">
+                <Icon name="gear" /> Ajustes
+              </button>
             </div>
           </div>
         </div>
@@ -578,6 +585,8 @@ export default function App() {
       <ProgressModal />
       <AnglePlanModal />
       <TakesPlanModal />
+      <TelemetryConsentDialog />
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
 
       {exportResult && (
         <div className="modal-backdrop" onMouseDown={() => dismissExportResult()}>
@@ -747,7 +756,7 @@ export default function App() {
             ) : (
               <div style={{ padding: '1.5rem', color: 'var(--fg-muted)' }}>
                 <p>No hay transcript. Selecciona un clip de video y haz clic en "Transcribir".</p>
-                <p style={{ marginTop: 8, fontSize: '0.85em' }}>Requiere <code>ELEVENLABS_API_KEY</code> en .env</p>
+                <p style={{ marginTop: 8, fontSize: '0.85em' }}>Configurá tu clave de ElevenLabs en Ajustes → Claves API.</p>
               </div>
             )}
           </div>

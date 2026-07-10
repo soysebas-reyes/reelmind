@@ -3,7 +3,7 @@
 // timeline and preview update live as the agent works. The API key is BYOK and lives only in main.
 
 import { useEffect, useRef, useState } from 'react'
-import { getController } from '../store'
+import { getController, useEditorStore } from '../store'
 import { type ContentBlock, type MessageParam, type ModelCaller, runAgent } from './agent'
 import { runEditorTool } from './runTool'
 
@@ -35,9 +35,12 @@ export default function ChatPanel(): React.JSX.Element {
   const convoRef = useRef<MessageParam[]>([])
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
+  const settingsOpen = useEditorStore((s) => s.settingsOpen)
+
   useEffect(() => {
-    void window.editorBridge.aiHasKey().then(setKeyPresent)
-  }, [])
+    // Re-check on Ajustes close too — the key can be saved/cleared from there.
+    if (!settingsOpen) void window.editorBridge.aiHasKey().then(setKeyPresent)
+  }, [settingsOpen])
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
@@ -49,11 +52,6 @@ export default function ChatPanel(): React.JSX.Element {
     await window.editorBridge.aiSetKey(k)
     setKeyInput('')
     setKeyPresent(await window.editorBridge.aiHasKey())
-  }
-
-  async function clearKey(): Promise<void> {
-    await window.editorBridge.aiClearKey()
-    setKeyPresent(false)
   }
 
   async function send(): Promise<void> {
@@ -96,7 +94,12 @@ export default function ChatPanel(): React.JSX.Element {
       <div className="chat-head">
         <h2>Editor IA</h2>
         {keyPresent && (
-          <button className="link" onClick={() => void clearKey()} title="Quitar la clave de API guardada">
+          <button
+            className="link"
+            data-tel="chat.manage_key"
+            onClick={() => useEditorStore.getState().setSettingsOpen(true)}
+            title="Gestionar la clave de API en Ajustes"
+          >
             Clave activa
           </button>
         )}

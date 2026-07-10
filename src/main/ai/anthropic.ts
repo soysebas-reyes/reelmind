@@ -4,12 +4,12 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 import type { AiCompleteRequest, AiCompleteResponse } from '../../shared/ipc'
-import { getApiKey } from './secrets'
+import { getSecret } from './secrets'
 
 export const DEFAULT_MODEL = 'claude-sonnet-4-6'
 
 export async function complete(req: AiCompleteRequest): Promise<AiCompleteResponse> {
-  const apiKey = await getApiKey()
+  const apiKey = await getSecret('anthropic')
   if (!apiKey) return { ok: false, error: 'No Anthropic API key set. Add one in the AI panel.' }
 
   try {

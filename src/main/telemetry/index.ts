@@ -61,7 +61,8 @@ export function initTelemetry(): void {
     anonymousId: identity.anonymousId,
     userId: identity.userId,
     appVersion: app.getVersion(),
-    platform: process.platform
+    platform: process.platform,
+    noticeAckAt: config.noticeAckAt
   }))
 
   ipcMain.handle('telemetry:setConfig', (_e, patch: Partial<TelemetryConfig>): TelemetryConfig => {

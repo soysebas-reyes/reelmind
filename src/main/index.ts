@@ -3,9 +3,9 @@ import 'dotenv/config'
 import { app, BrowserWindow } from 'electron'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { autoUpdater } from 'electron-updater'
 import { editorToolsByName } from '@core'
 import { registerIpc } from './ipc'
+import { initUpdates } from './updates'
 import { initTelemetry } from './telemetry'
 import { handleMediaProtocol, registerMediaScheme } from './media/mediaProtocol'
 import { executeToolInRenderer } from './mcp/bridge'
@@ -70,6 +70,7 @@ app.whenReady().then(() => {
   configureBundledFfmpeg()
   handleMediaProtocol()
   registerIpc()
+  initUpdates()
   initTelemetry() // behavioral measurement sink — see docs/TOTAL_MEASUREMENT_PLAN.md
   createWindow()
 
@@ -82,15 +83,11 @@ app.whenReady().then(() => {
   if (!process.env.REELMIND_NO_MCP) {
     createMcpHttpServer({
       port: MCP_PORT,
+      version: app.getVersion(),
       execute: (name, input) => executeToolInRenderer(name, input, editorToolsByName.get(name)?.timeoutMs ?? 300_000)
     })
       .then((h) => console.log(`[reelmind] MCP server listening at ${h.url}`))
       .catch((e) => console.error('[reelmind] MCP server failed to start:', e))
-  }
-
-  // Auto-update from GitHub Releases (packaged builds only).
-  if (app.isPackaged) {
-    autoUpdater.checkForUpdatesAndNotify().catch((e) => console.error('[reelmind] update check failed:', e))
   }
 
   app.on('activate', () => {

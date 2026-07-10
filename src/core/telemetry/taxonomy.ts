@@ -122,6 +122,9 @@ const FIXED_ENTRIES: readonly TaxonomyEntry[] = [
   { id: 'session.resume', category: 'session', description: 'Primera interacción tras estar inactivo' },
   { id: 'session.visibility', category: 'session', description: 'Cambio de visibilidad/foco de la ventana' },
   { id: 'session.end', category: 'session', description: 'Cierre de la sesión (pagehide/quit)' },
+  { id: 'session.consent_shown', category: 'session', description: 'Aviso de medición mostrado en el primer arranque' },
+  { id: 'session.consent_choice', category: 'session', description: 'Decisión del aviso de medición (props.enabled: seguir midiendo o desactivar)' },
+  { id: 'session.telemetry_toggle', category: 'session', description: 'Cambio del interruptor de medición en Ajustes (props.enabled)' },
   { id: 'physical.click', category: 'physical', description: 'Clic/contextmenu: coordenadas normalizadas + panel/objetivo' },
   { id: 'physical.pointer', category: 'physical', description: 'Muestra de movimiento del puntero (muestreada)' },
   { id: 'physical.key', category: 'physical', description: 'Tecla de atajo o bucket de tecleo (nunca el texto)' },
@@ -130,7 +133,8 @@ const FIXED_ENTRIES: readonly TaxonomyEntry[] = [
   { id: 'error.exception', category: 'error', description: 'Error no controlado capturado en el renderer (categoría, nunca contenido)' },
   { id: 'io.sync_offset', category: 'io', description: 'Reconciliación del offset multicám (RMS vs transcript): método elegido, razón y confiabilidad — nunca contenido' },
   { id: 'io.take_align_fix', category: 'io', description: 'Corrección post-build de la co-alineación de clips vinculados en una pestaña de toma' },
-  { id: 'io.clean_cuts', category: 'io', description: 'Resumen de cortes limpios al segmentar: conteos por tipo/fuente y ms totales cortados — solo comportamiento, nunca texto/paths' }
+  { id: 'io.clean_cuts', category: 'io', description: 'Resumen de cortes limpios al segmentar: conteos por tipo/fuente y ms totales cortados — solo comportamiento, nunca texto/paths' },
+  { id: 'io.update_check', category: 'io', description: 'Chequeo manual de actualizaciones: props.status (checking/none/available/downloaded/error/dev) — nunca URLs ni contenido' }
 ]
 
 // ── Assembled taxonomy ──────────────────────────────────────────────────────────────────────

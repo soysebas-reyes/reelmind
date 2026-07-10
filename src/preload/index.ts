@@ -16,6 +16,7 @@ import type {
   ExportResult,
   HandoffRequest,
   HandoffResult,
+  ElevenLabsKeyStatus,
   EnhanceAudioRequest,
   EnhanceAudioResult,
   ExtractAudioRequest,
@@ -44,7 +45,8 @@ import type {
   ThumbnailRequest,
   ThumbnailResult,
   TranscribeRequest,
-  TranscribeResult
+  TranscribeResult,
+  UpdateStatusEvent
 } from '../shared/ipc'
 
 /**
@@ -132,6 +134,9 @@ const editorBridge = {
   aiHasKey: (): Promise<boolean> => ipcRenderer.invoke('ai:hasKey'),
   aiSetKey: (key: string): Promise<void> => ipcRenderer.invoke('ai:setKey', key),
   aiClearKey: (): Promise<void> => ipcRenderer.invoke('ai:clearKey'),
+  elevenLabsKeyStatus: (): Promise<ElevenLabsKeyStatus> => ipcRenderer.invoke('elevenlabs:keyStatus'),
+  elevenLabsSetKey: (key: string): Promise<void> => ipcRenderer.invoke('elevenlabs:setKey', key),
+  elevenLabsClearKey: (): Promise<void> => ipcRenderer.invoke('elevenlabs:clearKey'),
   aiComplete: (req: AiCompleteRequest): Promise<AiCompleteResponse> => ipcRenderer.invoke('ai:complete', req),
   analyzeTakes: (req: AnalyzeTakesRequest): Promise<AnalyzeTakesResult> =>
     ipcRenderer.invoke('ai:analyzeTakes', req),
@@ -144,6 +149,18 @@ const editorBridge = {
     ipcRenderer.invoke('telemetry:setConfig', patch),
   getRecentTelemetry: (limit: number): Promise<TelemetryEvent[]> =>
     ipcRenderer.invoke('telemetry:recent', limit),
+
+  // App identity + updates (Ajustes → Acerca de).
+  getAppVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
+  checkForUpdates: (): Promise<UpdateStatusEvent> => ipcRenderer.invoke('update:check'),
+  installUpdate: (): Promise<void> => ipcRenderer.invoke('update:install'),
+  /** Subscribe to updater state. Returns an unsubscribe — the Ajustes modal mounts/unmounts per open,
+   *  so listeners must not accumulate (unlike the app-lifetime progress subscriptions above). */
+  onUpdateStatus: (cb: (ev: UpdateStatusEvent) => void): (() => void) => {
+    const listener = (_e: unknown, ev: UpdateStatusEvent): void => cb(ev)
+    ipcRenderer.on('update:status', listener)
+    return () => ipcRenderer.removeListener('update:status', listener)
+  },
 
   // MCP tool execution requested by the main-process server, run against the renderer controller.
   onMcpExecute: (cb: (payload: { requestId: string; name: string; input: unknown }) => void): void => {

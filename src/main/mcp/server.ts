@@ -24,10 +24,12 @@ export interface CreateMcpServerOptions {
   execute: (name: string, input: unknown) => Promise<ToolCallResult>
   /** DNS-rebinding protection (on by default). Disable in tests that bind an ephemeral port. */
   enableDnsProtection?: boolean
+  /** App version to report (injected by the caller — this module stays Electron-free). */
+  version?: string
 }
 
-function buildMcpServer(execute: CreateMcpServerOptions['execute']): McpServer {
-  const mcp = new McpServer({ name: 'reelmind', version: '0.0.1' })
+function buildMcpServer(execute: CreateMcpServerOptions['execute'], version?: string): McpServer {
+  const mcp = new McpServer({ name: 'reelmind', version: version ?? '0.0.0' })
   for (const t of editorTools) {
     const shape = (t.input as ZodObject<ZodRawShape>).shape ?? {}
     mcp.registerTool(t.name, { description: t.description, inputSchema: shape }, async (args: unknown) => {
@@ -78,7 +80,7 @@ export async function createMcpHttpServer(opts: CreateMcpServerOptions): Promise
           transport.onclose = () => {
             if (transport?.sessionId) transports.delete(transport.sessionId)
           }
-          await buildMcpServer(opts.execute).connect(transport)
+          await buildMcpServer(opts.execute, opts.version).connect(transport)
         }
         await transport.handleRequest(req, res, await readJson(req))
       } else if ((req.method === 'GET' || req.method === 'DELETE') && sessionId && transports.has(sessionId)) {

@@ -31,6 +31,25 @@ export interface FfmpegStatus {
   ffmpegVersion?: string
 }
 
+/** elevenlabs:keyStatus — whether an ElevenLabs key is available and where it comes from.
+ *  'env' (dev .env / process env, takes precedence) or 'stored' (safeStorage via Ajustes). */
+export interface ElevenLabsKeyStatus {
+  present: boolean
+  source: 'env' | 'stored' | null
+}
+
+/** update:status — normalized electron-updater state broadcast to all windows. */
+export type UpdateStatus = 'checking' | 'available' | 'downloading' | 'downloaded' | 'none' | 'error' | 'dev'
+
+export interface UpdateStatusEvent {
+  status: UpdateStatus
+  /** Remote version (available/downloaded) or the current one (none). */
+  version?: string
+  /** Download progress 0..100 (downloading). */
+  percent?: number
+  error?: string
+}
+
 export interface ImportedAsset {
   entry: MediaManifestEntry
   /** base64 data URL (poster frame, image thumb, or audio waveform), or null if none. */

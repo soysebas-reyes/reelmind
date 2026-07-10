@@ -16,13 +16,17 @@ function cfgPath(): string {
 }
 
 export function readConfig(): TelemetryConfig {
-  if (process.env.REELMIND_NO_TELEMETRY) return { ...DEFAULT, enabled: false }
+  // Read the stored file even under the kill switch — otherwise a writeConfig() while
+  // REELMIND_NO_TELEMETRY is set would clobber persisted fields (noticeAckAt, sampleRates).
+  let cfg: TelemetryConfig
   try {
     const raw = JSON.parse(readFileSync(cfgPath(), 'utf8')) as Partial<TelemetryConfig>
-    return { ...DEFAULT, ...raw }
+    cfg = { ...DEFAULT, ...raw }
   } catch {
-    return { ...DEFAULT }
+    cfg = { ...DEFAULT }
   }
+  if (process.env.REELMIND_NO_TELEMETRY) cfg.enabled = false
+  return cfg
 }
 
 export function writeConfig(patch: Partial<TelemetryConfig>): TelemetryConfig {

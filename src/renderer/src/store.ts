@@ -994,6 +994,8 @@ export interface EditorState {
   activeTabId: string
   /** True while the take-detection input modal (pegar guiones) is open. */
   takesInputOpen: boolean
+  /** True while the Ajustes modal is open (also openable from ChatPanel). */
+  settingsOpen: boolean
 
   init: () => Promise<void>
   newProject: () => void
@@ -1003,6 +1005,8 @@ export interface EditorState {
   closeSession: (id: string) => void
   /** Open/close the "pegar guiones" input modal (take detection). */
   setTakesInputOpen: (open: boolean) => void
+  /** Open/close the Ajustes modal. */
+  setSettingsOpen: (open: boolean) => void
   importFiles: () => Promise<void>
   importFromSources: (sources: string[]) => Promise<ImportedAsset[]>
   /** Save the project. `dir` (absolute .vproj path) saves there headlessly (MCP); omit to use the
@@ -1148,6 +1152,7 @@ export const useEditorStore = create<EditorState>()(
     tabs: [{ id: sessions[0].id, name: sessions[0].name, dirty: false }],
     activeTabId: sessions[0].id,
     takesInputOpen: false,
+    settingsOpen: false,
 
     init: async () => {
       window.editorBridge.onExportProgress((fraction) =>
@@ -2454,6 +2459,8 @@ clearTranscript: () => set((s) => { s.transcript = null }),
     },
 
     setTakesInputOpen: (open) => set((s) => { s.takesInputOpen = open }),
+
+    setSettingsOpen: (open) => set((s) => { s.settingsOpen = open }),
 
     applyAutoAngles: async (opts) => {
       // One-shot path (AI/MCP): analyze then apply immediately, no preview.

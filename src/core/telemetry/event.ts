@@ -52,12 +52,16 @@ export interface TelemetryContext {
   userId?: string
   appVersion: string
   platform: string
+  /** ISO timestamp of when the first-run measurement notice was acknowledged; absent → show it. */
+  noticeAckAt?: string
 }
 
 /** Persisted config (userData/telemetryConfig.json). */
 export interface TelemetryConfig {
   enabled: boolean
   sampleRates?: Record<string, number>
+  /** ISO timestamp of the first-run measurement notice acknowledgement (consent UX, not a gate). */
+  noticeAckAt?: string
 }
 
 const categoryEnum = z.enum(['session', 'physical', 'command', 'tool', 'io', 'error', 'perf'])

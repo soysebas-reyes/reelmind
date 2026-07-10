@@ -2226,3 +2226,76 @@ button.primary:hover:not(:disabled) {
 .preview-stage {
   cursor: pointer;
 }
+
+/* Ajustes (SettingsModal) + aviso de medición (TelemetryConsentDialog) */
+.settings-modal {
+  width: min(560px, 92vw);
+  max-height: 84vh;
+}
+.settings-body {
+  overflow-y: auto;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  text-align: left;
+}
+.settings-section h3 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-md);
+}
+.settings-section > .settings-hint {
+  display: block;
+  margin-bottom: var(--space-3);
+}
+.settings-hint {
+  color: var(--label-2);
+  font-size: var(--text-sm);
+}
+.settings-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--separator);
+}
+.settings-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-key-status {
+  font-size: var(--text-sm);
+  color: var(--label-2);
+}
+.settings-key-status.ok {
+  color: var(--green, #30d158);
+}
+.settings-row-controls {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+.settings-row-controls input[type='password'] {
+  flex: 1;
+  min-width: 0;
+}
+.settings-toggle {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+  cursor: pointer;
+}
+.settings-toggle input {
+  margin-top: 3px;
+}
+.settings-toggle .settings-hint {
+  display: block;
+  margin-top: 2px;
+}
+.settings-about {
+  margin: 0 0 var(--space-3);
+}
+.consent-modal {
+  max-width: min(480px, 92vw);
+}

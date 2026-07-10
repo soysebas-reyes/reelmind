@@ -31,7 +31,7 @@ import { complete } from './ai/anthropic'
 import { analyzeTakes } from './ai/analyzeTakes'
 import { transcribeMedia } from './elevenlabs/transcript'
 import { isolateVoice, isolateVoiceSnippet } from './elevenlabs/voiceIsolation'
-import { clearApiKey, hasApiKey, setApiKey } from './ai/secrets'
+import { clearSecret, elevenLabsKeyStatus, hasSecret, resolveElevenLabsKey, setSecret } from './ai/secrets'
 import { getLutLibraryDir, profileLutDir, setLutLibraryDir } from './color/colorSettings'
 import { resolveLut } from './color/lutResolver'
 import {
@@ -359,8 +359,8 @@ export function registerIpc(): void {
 
   // ElevenLabs Speech-to-Text: extract audio → Scribe v1 → word-level timestamps.
   ipcMain.handle('ai:transcribe', async (e, req: TranscribeRequest) => {
-    const apiKey = process.env.ELEVENLABS_API_KEY
-    if (!apiKey) return { ok: false, error: 'ELEVENLABS_API_KEY not set. Add it to .env or app settings.' }
+    const apiKey = await resolveElevenLabsKey()
+    if (!apiKey) return { ok: false, error: 'Falta la clave de ElevenLabs. Configurala en Ajustes → Claves API.' }
     try {
       const outDir = join(app.getPath('userData'), 'imported')
       const result = await transcribeMedia(req.mediaPath, apiKey, outDir, {
@@ -376,8 +376,8 @@ export function registerIpc(): void {
 
   // ElevenLabs Audio Isolation: ML voice cleanup (noise/music/reverb removal) → new .m4a.
   ipcMain.handle('ai:isolateVoice', async (e, req: IsolateVoiceRequest) => {
-    const apiKey = process.env.ELEVENLABS_API_KEY
-    if (!apiKey) return { ok: false, error: 'ELEVENLABS_API_KEY not set. Add it to .env or app settings.' }
+    const apiKey = await resolveElevenLabsKey()
+    if (!apiKey) return { ok: false, error: 'Falta la clave de ElevenLabs. Configurala en Ajustes → Claves API.' }
     try {
       const outDir = req.outDir ?? join(app.getPath('userData'), 'imported')
       const outputPath = await isolateVoice(req.srcPath, apiKey, outDir, {
@@ -394,8 +394,8 @@ export function registerIpc(): void {
   // Isolate a short WINDOW for the modal A/B preview (cheap per-click ElevenLabs call). Returns the raw +
   // isolated window as base64 data URLs; temp files are cleaned immediately (no clip is touched).
   ipcMain.handle('ai:previewIsolateVoice', async (_e, req: PreviewIsolateRequest) => {
-    const apiKey = process.env.ELEVENLABS_API_KEY
-    if (!apiKey) return { ok: false, error: 'ELEVENLABS_API_KEY not set. Add it to .env or app settings.' }
+    const apiKey = await resolveElevenLabsKey()
+    if (!apiKey) return { ok: false, error: 'Falta la clave de ElevenLabs. Configurala en Ajustes → Claves API.' }
     let rawPath: string | undefined
     let isolatedPath: string | undefined
     try {
@@ -418,10 +418,15 @@ export function registerIpc(): void {
     }
   })
 
-  ipcMain.handle('ai:hasKey', () => hasApiKey())
-  ipcMain.handle('ai:setKey', (_e, key: string) => setApiKey(key))
-  ipcMain.handle('ai:clearKey', () => clearApiKey())
+  ipcMain.handle('ai:hasKey', () => hasSecret('anthropic'))
+  ipcMain.handle('ai:setKey', (_e, key: string) => setSecret('anthropic', key))
+  ipcMain.handle('ai:clearKey', () => clearSecret('anthropic'))
   ipcMain.handle('ai:complete', (_e, req: AiCompleteRequest) => complete(req))
+
+  // ElevenLabs BYOK (mirrors the ai:* trio; the key itself never reaches the renderer).
+  ipcMain.handle('elevenlabs:keyStatus', () => elevenLabsKeyStatus())
+  ipcMain.handle('elevenlabs:setKey', (_e, key: string) => setSecret('elevenlabs', key))
+  ipcMain.handle('elevenlabs:clearKey', () => clearSecret('elevenlabs'))
 
   // Segment a raw clip's transcript into takes (guiones) + cuts via the LLM (forced-tool structured JSON).
   ipcMain.handle('ai:analyzeTakes', (e, req: AnalyzeTakesRequest) =>

@@ -1,6 +1,6 @@
 {
   "name": "reelmind",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "An open-source, AI-native video editor for Windows. Independent derivative of palmier-io/palmier-pro (macOS).",
   "license": "GPL-3.0-or-later",
   "main": "./out/main/index.js",
