@@ -19,6 +19,7 @@ import {
 } from '@core'
 import { getController, timelineTotalFrames, useEditorStore } from '../store'
 import ContextMenu, { type MenuEntry, type MenuItem } from '../ui/ContextMenu'
+import { delKey, mod } from '../ui/shortcutLabel'
 import {
   type ClipBox,
   type TimelineLayout,
@@ -326,7 +327,7 @@ export default function Timeline(): React.JSX.Element {
           roundRect(ctx, chip.box.x, chip.box.y, chip.box.w, chip.box.h, 4)
           ctx.fill()
           ctx.globalAlpha = trackAudio ? 1 : 0.5
-          ctx.font = '11px Segoe UI, system-ui, sans-serif'
+          ctx.font = '11px -apple-system, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif'
           ctx.textBaseline = 'middle'
           ctx.textAlign = 'center'
           ctx.fillText(chip.label, cx, cy)
@@ -344,7 +345,7 @@ export default function Timeline(): React.JSX.Element {
           roundRect(ctx, chip.box.x + 0.5, chip.box.y + 0.5, chip.box.w - 1, chip.box.h - 1, 4)
           ctx.stroke()
           ctx.fillStyle = col
-          ctx.font = '700 10px Segoe UI, system-ui, sans-serif'
+          ctx.font = '700 10px -apple-system, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif'
           ctx.textBaseline = 'middle'
           ctx.textAlign = 'center'
           ctx.fillText(chip.label, cx, cy)
@@ -356,7 +357,7 @@ export default function Timeline(): React.JSX.Element {
           roundRect(ctx, chip.box.x, chip.box.y, chip.box.w, chip.box.h, 4)
           ctx.fill()
           ctx.fillStyle = '#f87171'
-          ctx.font = '600 10px Segoe UI, system-ui, sans-serif'
+          ctx.font = '600 10px -apple-system, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif'
           ctx.textBaseline = 'middle'
           ctx.textAlign = 'center'
           ctx.fillText(chip.label, cx, cy)
@@ -368,7 +369,7 @@ export default function Timeline(): React.JSX.Element {
         roundRect(ctx, chip.box.x, chip.box.y, chip.box.w, chip.box.h, 4)
         ctx.fill()
         ctx.fillStyle = on ? (chip.flag === 'syncLocked' ? '#38bdf8' : '#f87171') : '#71717a'
-        ctx.font = '600 10px Segoe UI, system-ui, sans-serif'
+        ctx.font = '600 10px -apple-system, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif'
         ctx.textBaseline = 'middle'
         ctx.textAlign = 'center'
         ctx.fillText(chip.label, cx, cy)
@@ -514,7 +515,7 @@ export default function Timeline(): React.JSX.Element {
       roundRect(ctx, box.x, box.y, box.w, box.h, 6)
       ctx.clip()
       ctx.fillStyle = '#f2f2f8'
-      ctx.font = '11px Segoe UI, system-ui, sans-serif'
+      ctx.font = '11px -apple-system, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif'
       ctx.textBaseline = 'alphabetic'
       ctx.fillText(name, box.x + 7, box.y + box.h - 8, box.w - 12)
       ctx.restore()
@@ -1040,10 +1041,10 @@ export default function Timeline(): React.JSX.Element {
         onClick: () => c.setClipSpeed(clip.id, v)
       })
       const items: MenuItem[] = [
-        { label: 'Cortar', shortcut: 'Ctrl+X', onClick: () => store.cutSelection() },
-        { label: 'Copiar', shortcut: 'Ctrl+C', onClick: () => store.copySelection() },
-        { label: 'Pegar', shortcut: 'Ctrl+V', disabled: !store.hasClipboard, onClick: () => store.pasteAtFrame(frame) },
-        { label: 'Duplicar', shortcut: 'Ctrl+D', onClick: () => store.duplicateSelection() },
+        { label: 'Cortar', shortcut: mod('X'), onClick: () => store.cutSelection() },
+        { label: 'Copiar', shortcut: mod('C'), onClick: () => store.copySelection() },
+        { label: 'Pegar', shortcut: mod('V'), disabled: !store.hasClipboard, onClick: () => store.pasteAtFrame(frame) },
+        { label: 'Duplicar', shortcut: mod('D'), onClick: () => store.duplicateSelection() },
         'separator',
         {
           label: 'Dividir aquí',
@@ -1052,7 +1053,7 @@ export default function Timeline(): React.JSX.Element {
             if (c.splitClip(clip.id, frame) === null) c.splitAtPlayhead()
           }
         },
-        { label: 'Eliminar', shortcut: 'Supr', onClick: () => c.removeClips(c.getSelectedClipIds()) },
+        { label: 'Eliminar', shortcut: delKey(), onClick: () => c.removeClips(c.getSelectedClipIds()) },
         {
           label: 'Eliminar y cerrar hueco',
           onClick: () => {
@@ -1079,7 +1080,7 @@ export default function Timeline(): React.JSX.Element {
 
     // Empty area / ruler → paste + track creation.
     const items: MenuItem[] = [
-      { label: 'Pegar aquí', shortcut: 'Ctrl+V', disabled: !store.hasClipboard, onClick: () => store.pasteAtFrame(frame) },
+      { label: 'Pegar aquí', shortcut: mod('V'), disabled: !store.hasClipboard, onClick: () => store.pasteAtFrame(frame) },
       'separator',
       { label: 'Añadir pista de video', onClick: () => c.addTrack('video') },
       { label: 'Añadir pista de audio', onClick: () => c.addTrack('audio') }

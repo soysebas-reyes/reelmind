@@ -91,7 +91,7 @@ type ClipPropsInput = {
   [K in keyof typeof clipPropFields]?: z.infer<(typeof clipPropFields)[K]>
 }
 
-const DEFAULT_TEXT_STYLE: TextStyle = { fontName: 'Segoe UI', fontSize: 48, color: '#ffffff', alignment: 'center' }
+const DEFAULT_TEXT_STYLE: TextStyle = { fontName: 'system-ui', fontSize: 48, color: '#ffffff', alignment: 'center' }
 
 const CLIP_PROPS_DESCRIPTION =
   'volume (linear, 1=unity), opacity 0..1, fade in/out (frames) + interpolation (linear|hold|smooth), ' +
@@ -637,7 +637,7 @@ export const editorTools: ToolDef[] = [
   ),
   tool(
     'add_text_clip',
-    'Place a text clip: resolves the target text track (given id → validated; else first text track; else creates one) and sets content + style in one undo step. Defaults: Segoe UI 48px white centered. NOTE: text shows in the live preview but is NOT yet burned into the FFmpeg export, and the preview currently renders a default style (custom fontName/size/color are stored, only partially honored). Returns { clipId, trackId }.',
+    'Place a text clip: resolves the target text track (given id → validated; else first text track; else creates one) and sets content + style in one undo step. Defaults: system-ui 48px white centered. NOTE: text shows in the live preview but is NOT yet burned into the FFmpeg export, and the preview currently renders a default style (custom fontName/size/color are stored, only partially honored). Returns { clipId, trackId }.',
     z.object({
       text: z.string().min(1),
       startFrame: z.number().int().nonnegative(),

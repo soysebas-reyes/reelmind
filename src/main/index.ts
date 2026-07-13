@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { APP_NAME, editorToolsByName } from '@core'
 import { registerIpc } from './ipc'
+import { installAppMenu } from './menu'
 import { initUpdates } from './updates'
 import { initTelemetry } from './telemetry'
 import { handleMediaProtocol, registerMediaScheme } from './media/mediaProtocol'
@@ -68,6 +69,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  installAppMenu()
   configureBundledFfmpeg()
   handleMediaProtocol()
   registerIpc()

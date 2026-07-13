@@ -340,7 +340,7 @@ export default function Preview(): React.JSX.Element {
 
       if (layer.mediaType === 'text') {
         ctx.fillStyle = '#ffffff'
-        ctx.font = `${Math.max(12, Math.round(fh * 0.07))}px Segoe UI, system-ui, sans-serif`
+        ctx.font = `${Math.max(12, Math.round(fh * 0.07))}px -apple-system, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif`
         ctx.textAlign = 'center'
         ctx.textBaseline = 'middle'
         ctx.fillText(layer.textContent || 'Text', fx + cx * sx, fy + cy * sy, dw)
