@@ -93,8 +93,14 @@ const README = (name: string, target: string, warnings: string[], capcutAutoPlac
       capcutAutoPlaced
         ? `Ya la dejamos dentro de la carpeta de borradores de CapCut: abrí CapCut y va a aparecer en`
         : `Para abrirla en CapCut, MOVÉ esta carpeta completa a tu carpeta de borradores de CapCut`,
-      capcutAutoPlaced ? `  "Borradores/Drafts". Si no aparece, reiniciá CapCut.` : `  (por defecto en Windows):`,
-      capcutAutoPlaced ? `` : `    %LOCALAPPDATA%\\CapCut\\User Data\\Projects\\com.lveditor.draft\\`,
+      capcutAutoPlaced
+        ? `  "Borradores/Drafts". Si no aparece, reiniciá CapCut.`
+        : `  (por defecto en ${process.platform === 'darwin' ? 'macOS' : 'Windows'}):`,
+      capcutAutoPlaced
+        ? ``
+        : process.platform === 'darwin'
+          ? `    ~/Movies/CapCut/User Data/Projects/com.lveditor.draft/`
+          : `    %LOCALAPPDATA%\\CapCut\\User Data\\Projects\\com.lveditor.draft\\`,
       capcutAutoPlaced ? `` : `  Luego reiniciá CapCut y el borrador aparecerá en "Borradores".`,
       ``,
       `Qué ya está hecho por Reelo (horneado en los archivos de media/):`,
