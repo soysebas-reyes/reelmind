@@ -1,4 +1,4 @@
-# ReelMind — instrucciones para agentes
+# Reelo — instrucciones para agentes
 
 Editor de video AI-native para Windows (Electron + TypeScript + React). Detalle del producto en
 [`README.md`](./README.md).

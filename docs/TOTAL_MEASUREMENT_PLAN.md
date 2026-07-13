@@ -124,7 +124,7 @@ Espejo del checklist de [`../CLAUDE.md`](../CLAUDE.md). Además:
   props primitivos y seguros.
 - **Versión de schema:** si cambia la forma del envelope, subí `TELEMETRY_SCHEMA_VERSION` y dejá una
   nota de migración. Un solo envelope es la fuente de verdad para JSONL y para Supabase.
-- **Opt-out:** local = habilitado por defecto, cero egress; `REELMIND_NO_TELEMETRY=1` lo apaga.
+- **Opt-out:** local = habilitado por defecto, cero egress; `REELO_NO_TELEMETRY=1` lo apaga.
 
 ## 8. Hoja de ruta
 - **P16.0 — Captura local + JSONL.** ✅ hecho: 3 capas + core + sink JSONL + identidad + guardrail +

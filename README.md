@@ -1,4 +1,4 @@
-# ReelMind
+# Reelo
 
 **An open-source, AI-native video editor for Windows — you and your agent
 edit video together on the timeline. It doesn't replace CapCut or Premiere; it
@@ -17,7 +17,7 @@ does the technical, repetitive work fast and hands the result off to them.**
 
 ## What it does today
 
-ReelMind focuses on the technical, repeatable parts of an editing job so a human
+Reelo focuses on the technical, repeatable parts of an editing job so a human
 (or an agent) can move fast, then hands a clean, still-editable project to a
 finishing editor:
 
@@ -40,7 +40,7 @@ finishing editor:
 
 ### Handoff to a finishing editor (Premiere / DaVinci Resolve / Final Cut / CapCut)
 
-Subtitles and effects aren't ReelMind's job — they're the editor's. So instead of
+Subtitles and effects aren't Reelo's job — they're the editor's. So instead of
 only rendering a flat MP4, the **"Enviar a editor"** button writes an **editable
 project** the editor opens in their **NLE** (*Non-Linear Editor* — Premiere Pro,
 DaVinci Resolve, Final Cut) **or in CapCut**:
@@ -59,14 +59,14 @@ no manual step), otherwise in the folder you pick with move instructions.
 
 ## Drive it from Claude Code (MCP)
 
-ReelMind embeds an **MCP** server, so an external agent (**Claude Code**, Cursor,
+Reelo embeds an **MCP** server, so an external agent (**Claude Code**, Cursor,
 Claude Desktop) can operate the editor with the *same* command surface a human
 uses — in natural language: *"load this folder, download these videos, sync the
 angles, colorize, segment by my scripts, export to Premiere."*
 
 ```sh
 # with the app open:
-claude mcp add --transport http reelmind http://127.0.0.1:4399/mcp
+claude mcp add --transport http reelo http://127.0.0.1:4399/mcp
 ```
 
 Full tool list, the workflow, and setup: [`MCP.md`](./MCP.md).
@@ -153,8 +153,8 @@ Next:
 
 ## Install (Windows)
 
-1. Download `ReelMind-<version>-setup.exe` from the latest
-   [GitHub Release](https://github.com/soysebas-reyes/reelmind/releases).
+1. Download `Reelo-<version>-setup.exe` from the latest
+   [GitHub Release](https://github.com/soysebas-reyes/reelo/releases).
 2. Windows SmartScreen will warn about an unknown publisher (the installer is not
    code-signed yet): click **More info → Run anyway**.
 3. Follow the installer (per-user install, no admin needed). FFmpeg ships inside —

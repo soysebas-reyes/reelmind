@@ -1,4 +1,4 @@
-# ReelMind — Color Grading & Colorization Plan (P9 + P10)
+# Reelo — Color Grading & Colorization Plan (P9 + P10)
 
 > Companion to [`PROJECT_PLAN.md`](./PROJECT_PLAN.md). Two phases:
 > **P9 — manual color grading** (per-clip adjustments, look presets, `.cube` LUTs, AI control,
@@ -10,7 +10,7 @@
 
 ---
 
-## 0. Why this fits ReelMind cleanly
+## 0. Why this fits Reelo cleanly
 
 The architecture already has the right seams, so color is mostly *additive*:
 
@@ -144,7 +144,7 @@ Static catalog, each preset = a partial `ColorAdjustments`: `warm`, `cool`, `tea
 
 ### 1.8 ★ Reusable saved color profiles (the "learn my settings" requirement)
 
-This is the part you specifically asked for: ReelMind should **remember named, reusable looks** (e.g.
+This is the part you specifically asked for: Reelo should **remember named, reusable looks** (e.g.
 *"Personal brand"*, *"Work"*) that persist **across projects** and can be reapplied — by you or by the AI.
 
 - **App-level store (not per-project):** `main` writes `colorProfiles.json` under

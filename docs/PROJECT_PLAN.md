@@ -1,4 +1,4 @@
-# ReelMind — Project Plan & State
+# Reelo — Project Plan & State
 
 > **For anyone (or any AI chat) picking this up fresh:** read [`../CLAUDE.md`](../CLAUDE.md) **first**
 > (it states the non-negotiable measurement contract), then this file top to bottom, then
@@ -10,11 +10,11 @@
 
 ## 1. What this project is
 
-**ReelMind** is an open-source, **AI-native video editor for Windows**, built as an independent,
+**Reelo** is an open-source, **AI-native video editor for Windows**, built as an independent,
 cross-platform derivative of **[palmier-io/palmier-pro](https://github.com/palmier-io/palmier-pro)**
-(a native macOS/Swift app, GPL-3.0). We keep ReelMind public, GPL-3.0, and credit Palmier.
+(a native macOS/Swift app, GPL-3.0). We keep Reelo public, GPL-3.0, and credit Palmier.
 
-- **Public repo:** https://github.com/soysebas-reyes/reelmind
+- **Public repo:** https://github.com/soysebas-reyes/reelo
 - **License:** GPL-3.0-or-later (preserves upstream `LICENSE` + `ATTRIBUTION.md`)
 
 `palmier-pro` is ~99% Swift on Apple-only frameworks (AppKit/SwiftUI, AVFoundation, CoreML, Speech,
@@ -145,7 +145,7 @@ src/
     interchange/handoff.test.ts # ffmpeg integration: bakes graded media + valid xmeml + valid CapCut draft (self-skips)
     media/importer.ts           # classify → probe → thumbnail → manifest entry
     media/importSources.ts      # import from paths / folders / URLs (+ yt-dlp for platform links)
-    media/mediaProtocol.ts      # reelmind-media:// — streams local files to the renderer (P3 video)
+    media/mediaProtocol.ts      # reelo-media:// — streams local files to the renderer (P3 video)
     media/mediaPipeline.test.ts # ffmpeg integration test (self-skips if no ffmpeg)
     ai/analyzeTakes.ts          # take detection: transcript → forced-tool claude-sonnet-5 (P14)
     project/projectStore.ts     # .vproj save/load (atomic writes; timeline/manifest/sessions)
@@ -177,7 +177,7 @@ docs/PROJECT_PLAN.md            # this file
 
 ```powershell
 npm install
-npm run dev        # launches the ReelMind window with hot reload
+npm run dev        # launches the Reelo window with hot reload
 npm test           # 436 tests (ffmpeg/MCP integration suites self-skip without their deps)
 npm run typecheck
 npm run build      # production build into out/
@@ -185,7 +185,7 @@ npm run dist       # build a Windows installer (fetch ffmpeg → build → elect
 # To export: add clips to the timeline, then Export in the top bar (renders via FFmpeg).
 ```
 Requirements: Node 20+ and **FFmpeg on PATH** (from P1 onward). Override binaries with env vars
-`REELMIND_FFMPEG` / `REELMIND_FFPROBE` if needed.
+`REELO_FFMPEG` / `REELO_FFPROBE` if needed.
 
 ## 7. Phase 2 — timeline editing ✅ done
 
@@ -242,11 +242,11 @@ timeline to a `user` run. Interactive canvas gestures are build- and type-verifi
 
 ## 9. Phase 6 ✅ done — embedded MCP server
 
-External agents drive ReelMind through the **same** P5 tool contract, over Streamable HTTP on localhost.
+External agents drive Reelo through the **same** P5 tool contract, over Streamable HTTP on localhost.
 
 - `main/mcp/server.ts` — `createMcpHttpServer({ port, execute })` registers every tool from `editorTools`
   (advertised via their Zod input schemas) on an MCP `McpServer`, served by `StreamableHTTPServerTransport` on
-  `127.0.0.1` (default port 4399; `REELMIND_MCP_PORT` overrides, `REELMIND_NO_MCP` disables). DNS-rebinding
+  `127.0.0.1` (default port 4399; `REELO_MCP_PORT` overrides, `REELO_NO_MCP` disables). DNS-rebinding
   protection on by default. `execute` is injected → node-testable.
 - `main/mcp/bridge.ts` — `executeToolInRenderer` forwards each `tools/call` to the focused window; the renderer
   (`src/ai/mcpBridge.ts`) runs `executeTool` against the live controller and replies (option **(a)**, per the owner).
@@ -256,10 +256,10 @@ External agents drive ReelMind through the **same** P5 tool contract, over Strea
 **Verified:** a real MCP client connects over HTTP and lists + calls tools against a controller
 (`server.test.ts`); the server boots in the real app (`listening at …:4399/mcp`).
 
-**Client config (example — while ReelMind is running):**
+**Client config (example — while Reelo is running):**
 
 ```json
-{ "mcpServers": { "reelmind": { "url": "http://127.0.0.1:4399/mcp" } } }
+{ "mcpServers": { "reelo": { "url": "http://127.0.0.1:4399/mcp" } } }
 ```
 
 ## 10. Phase 8 ✅ done — Windows installer
@@ -269,10 +269,10 @@ External agents drive ReelMind through the **same** P5 tool contract, over Strea
 
 - **Bundled FFmpeg:** `npm run fetch:ffmpeg` (`scripts/fetch-ffmpeg.mjs`) downloads a GPL win64 build into
   `resources/ffmpeg/` (gitignored); electron-builder ships it via `extraResources`; main points
-  `REELMIND_FFMPEG/FFPROBE` at it when packaged (env still overrides).
-- **Auto-update:** `electron-updater` checks GitHub Releases (`soysebas-reyes/reelmind`) on packaged startup.
+  `REELO_FFMPEG/FFPROBE` at it when packaged (env still overrides).
+- **Auto-update:** `electron-updater` checks GitHub Releases (`soysebas-reyes/reelo`) on packaged startup.
 - **Build:** `npm run dist` (= fetch ffmpeg → electron-vite build → electron-builder) produces
-  `release/ReelMind-<version>-setup.exe`. `npm run pack` makes an unpacked `--dir` build for quick testing.
+  `release/Reelo-<version>-setup.exe`. `npm run pack` makes an unpacked `--dir` build for quick testing.
 
 > Runs on a build machine (electron-builder fetches electron + NSIS binaries; the ffmpeg script needs network),
 > so the installer isn't produced in the headless verify env — the config, scripts, and runtime wiring are
@@ -290,22 +290,22 @@ so auto-update has a feed.
 Higgsfield ships an official OAuth MCP server (`https://mcp.higgsfield.ai/mcp`) that bills your existing
 **plan credits** (no API key) — so it works on a subscription without separate API funds.
 
-- **Model A (done):** add both MCP servers to your Claude client (Higgsfield + ReelMind at :4399). The agent
-  generates in Higgsfield and places the result in ReelMind; prompt approval is the client's built-in tool
+- **Model A (done):** add both MCP servers to your Claude client (Higgsfield + Reelo at :4399). The agent
+  generates in Higgsfield and places the result in Reelo; prompt approval is the client's built-in tool
   permission prompt. The connective piece — **`import_media`** — is built: a host-executed tool (declared in
   the @core contract, run by the renderer via `runEditorTool`) that imports local paths or http(s) URLs into
   the bin and returns assetId(s) for `add_clip`. Exposed on both the MCP server and the in-app agent.
-- **Model B (proposed):** ReelMind's own AI panel orchestrates — proposes a generation plan (prompt + model +
+- **Model B (proposed):** Reelo's own AI panel orchestrates — proposes a generation plan (prompt + model +
   duration + target track), shows it in an **approval queue** (edit / approve / reject) BEFORE sending, then
   calls Higgsfield (as an MCP client, OAuth in-app) and auto-imports + places approved results. This is where
-  the prompt-approval gate truly lives. Requires adding an MCP client + OAuth flow in ReelMind.
+  the prompt-approval gate truly lives. Requires adding an MCP client + OAuth flow in Reelo.
 
-> "Remove silences" / "arrange" are ReelMind edits (FFmpeg), not generation. "Upscale my own footage to HD"
+> "Remove silences" / "arrange" are Reelo edits (FFmpeg), not generation. "Upscale my own footage to HD"
 > is **not** a confirmed Higgsfield capability — verify before relying on it.
 
 ## 12. Phases 13–15 ✅ done — editor workflow (sync / audio / angles → take detection → NLE handoff)
 
-The product framing settled here: **ReelMind complements CapCut/Premiere, it doesn't replace them.** It does
+The product framing settled here: **Reelo complements CapCut/Premiere, it doesn't replace them.** It does
 the technical, repeatable work — colorize, sync, enhance audio, switch angles, segment by scripts — then hands
 a still-editable project to a finishing editor. All merged to `main`.
 
@@ -359,7 +359,7 @@ a still-editable project to a finishing editor. All merged to `main`.
     embedded audio, so no linked audio segment). Text/lottie/keyframes/fades **and non-identity crop** are
     dropped as warnings (parity note: xmeml keeps crop). `main/interchange/capcutLocate.ts` auto-detects
     CapCut's Windows draft root (`%LOCALAPPDATA%\CapCut\User Data\Projects\com.lveditor.draft`, +JianYing,
-    `REELMIND_CAPCUT_DRAFT_DIR` override) so "Enviar a editor ▸ CapCut" drops the draft straight where CapCut
+    `REELO_CAPCUT_DRAFT_DIR` override) so "Enviar a editor ▸ CapCut" drops the draft straight where CapCut
     lists it — no picker; if CapCut isn't found it falls back to a picked folder + README move instructions.
     `runHandoff` branches on target (draft folder is a DIRECT child of the root, no `handoff/` wrapper).
     Unit + ffmpeg-integration green; **pending on-device verification** that a real CapCut build opens the
@@ -402,7 +402,7 @@ instrumentar es parte de la *definition of done* (ver `CLAUDE.md`).
 
 **Privacidad y opt-out.** Redacción por *allowlist*/scrub (rutas/URLs/emails/`data:` → `[redacted]`)
 en el renderer y re-validación en main. Local hoy = habilitado por defecto, cero egress; kill switch
-`REELMIND_NO_TELEMETRY=1`. **El futuro upload a la nube será opt-IN** con consentimiento + política.
+`REELO_NO_TELEMETRY=1`. **El futuro upload a la nube será opt-IN** con consentimiento + política.
 
 **Roadmap.** P16.0 captura local + JSONL ✅ · P16.1 inspección/dashboard local + auditoría de
 redacción · P16.2 Supabase (tabla `events`/`identities`, RLS por `user_id`, Auth vía main +
