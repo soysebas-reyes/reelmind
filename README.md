@@ -18,6 +18,33 @@ to them.**
 
 ---
 
+## ⬇️ Download
+
+<p align="center">
+  <a href="https://github.com/soysebas-reyes/reelo/releases/latest">
+    <img alt="Download for Windows" src="https://img.shields.io/badge/Download-Windows%20(.exe)-0078D6?style=for-the-badge&logo=windows&logoColor=white">
+  </a>
+  &nbsp;&nbsp;
+  <a href="https://github.com/soysebas-reyes/reelo/releases/latest">
+    <img alt="Download for macOS" src="https://img.shields.io/badge/Download-macOS%20(.dmg)-111111?style=for-the-badge&logo=apple&logoColor=white">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/soysebas-reyes/reelo/releases/latest"><b>Latest release</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/soysebas-reyes/reelo/releases">All versions</a>
+</p>
+
+- **Windows 10/11** → `Reelo-<version>-setup.exe` — one-click NSIS installer, FFmpeg bundled, auto-updates. [Download ›](https://github.com/soysebas-reyes/reelo/releases/latest)
+- **macOS (Apple Silicon)** → `Reelo-<version>-arm64.dmg` — signed & notarized, opens straight through Gatekeeper (ships from **v0.2.0**). [Download ›](https://github.com/soysebas-reyes/reelo/releases/latest)
+
+Step-by-step (SmartScreen, first launch, API keys) is in [**Install**](#install) below. Every build auto-updates from GitHub Releases.
+
+> The download buttons open the **latest published release**. Until the first release is published they land on the Releases page.
+
+---
+
 ## What it does today
 
 Reelo focuses on the technical, repeatable parts of an editing job so a human
@@ -158,8 +185,8 @@ Next:
 
 ### Windows
 
-1. Download `Reelo-<version>-setup.exe` from the latest
-   [GitHub Release](https://github.com/soysebas-reyes/reelo/releases).
+1. Download `Reelo-<version>-setup.exe` from the
+   [latest release](https://github.com/soysebas-reyes/reelo/releases/latest).
 2. Windows SmartScreen will warn about an unknown publisher (the installer is not
    code-signed yet): click **More info → Run anyway**.
 3. Follow the installer (per-user install, no admin needed). FFmpeg ships inside —
@@ -167,8 +194,9 @@ Next:
 
 ### macOS (Apple Silicon)
 
-1. Download `Reelo-<version>-arm64.dmg` from the latest
-   [GitHub Release](https://github.com/soysebas-reyes/reelo/releases).
+1. Download `Reelo-<version>-arm64.dmg` from the
+   [latest release](https://github.com/soysebas-reyes/reelo/releases/latest)
+   (macOS builds ship from **v0.2.0**).
 2. Open the dmg and drag **Reelo** into **Applications**. The app is signed and
    notarized, so Gatekeeper opens it normally. FFmpeg ships inside.
 
