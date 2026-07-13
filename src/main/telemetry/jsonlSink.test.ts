@@ -35,7 +35,7 @@ function ev(name: string, category: TelemetryCategory, props?: Record<string, un
 describe('JsonlSink round-trip + redaction audit', () => {
   let dir: string
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'reelmind-tel-'))
+    dir = mkdtempSync(join(tmpdir(), 'reelo-tel-'))
   })
   afterAll(() => {
     rmSync(dir, { recursive: true, force: true })

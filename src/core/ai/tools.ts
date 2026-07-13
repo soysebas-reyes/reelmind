@@ -888,7 +888,7 @@ export const editorTools: ToolDef[] = [
   ),
   tool(
     'open_project',
-    'Open an existing ReelMind project package (a `.vproj` directory) by absolute path, restoring its timeline, media and take tabs. NOTE: executed by the host app (filesystem), not the timeline core.',
+    'Open an existing Reelo project package (a `.vproj` directory) by absolute path, restoring its timeline, media and take tabs. NOTE: executed by the host app (filesystem), not the timeline core.',
     z.object({ dir: z.string().min(1).describe('Absolute path to the .vproj project directory.') }),
     () => {
       throw new Error('open_project is executed by the host app, not the core executor')

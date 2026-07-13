@@ -49,7 +49,7 @@ function createWindow(): void {
   // Observability: renderer logs + process/GPU crashes don't otherwise reach this terminal. A React
   // render error blanks the window WITHOUT killing the process, so console-message is what surfaces it.
   win.webContents.on('render-process-gone', (_e, details) => {
-    console.error(`[reelmind] renderer gone: ${details.reason} (exit ${details.exitCode})`)
+    console.error(`[reelo] renderer gone: ${details.reason} (exit ${details.exitCode})`)
   })
   if (isDev) {
     win.webContents.on('console-message', (details) => {
@@ -75,7 +75,7 @@ app.whenReady().then(() => {
   createWindow()
 
   app.on('child-process-gone', (_e, details) => {
-    console.error(`[reelmind] child gone: ${details.type} — ${details.reason}`)
+    console.error(`[reelo] child gone: ${details.type} — ${details.reason}`)
   })
 
   // Embedded MCP server (localhost) so external agents drive the same editor commands.
@@ -86,8 +86,8 @@ app.whenReady().then(() => {
       version: app.getVersion(),
       execute: (name, input) => executeToolInRenderer(name, input, editorToolsByName.get(name)?.timeoutMs ?? 300_000)
     })
-      .then((h) => console.log(`[reelmind] MCP server listening at ${h.url}`))
-      .catch((e) => console.error('[reelmind] MCP server failed to start:', e))
+      .then((h) => console.log(`[reelo] MCP server listening at ${h.url}`))
+      .catch((e) => console.error('[reelo] MCP server failed to start:', e))
   }
 
   app.on('activate', () => {

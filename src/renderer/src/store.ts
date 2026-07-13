@@ -2334,7 +2334,7 @@ clearTranscript: () => set((s) => { s.transcript = null }),
         // anything non-uniform is only reported — and both cases are measured.
         const alignReport = verifyLinkedAlignment(tl, takeTimeline)
         if (alignReport.corrected > 0 || alignReport.uncorrectable > 0) {
-          console.warn('[reelmind] take tab alignment', { guion: take.index, ...alignReport })
+          console.warn('[reelo] take tab alignment', { guion: take.index, ...alignReport })
           emit('io', 'io.take_align_fix', {
             guion: take.index,
             groups: alignReport.groupsChecked,
@@ -2345,7 +2345,7 @@ clearTranscript: () => set((s) => { s.transcript = null }),
         // DIAGNOSTIC (temporary): compare where the preview says the take starts vs where the built tab
         // actually starts, to pinpoint any "inicio cortado" (trim clamp vs leading cut vs other).
         const firstClip = takeTimeline.tracks.flatMap((t) => t.clips).sort((a, b) => a.startFrame - b.startFrame)[0]
-        console.log('[reelmind] applyTakes', {
+        console.log('[reelo] applyTakes', {
           guion: take.index,
           startMs: Math.round(take.startMs),
           endMs: Math.round(take.endMs),

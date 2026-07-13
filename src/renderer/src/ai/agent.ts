@@ -47,7 +47,7 @@ export type AgentEvent =
   | { type: 'tool'; name: string; ok: boolean; error?: string }
 
 export const SYSTEM_PROMPT = [
-  'You are the AI editor built into ReelMind, a video editor. You edit the user’s timeline by calling tools.',
+  'You are the AI editor built into Reelo, a video editor. You edit the user’s timeline by calling tools.',
   'Time is integer frames at the project fps — convert seconds to frames using the fps from get_timeline.',
   'ALWAYS call get_timeline first to learn the current tracks, clip ids, fps, and resolution before editing.',
   'Use inspect_clip before fine-tuning a clip (it returns transform/crop/color/audioEnhance/text/keyframes in full detail), and list_assets to see what is in the media bin.',

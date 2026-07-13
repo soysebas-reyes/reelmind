@@ -20,7 +20,7 @@ import { loadProject, saveProject } from './projectStore'
 
 let dir = ''
 beforeEach(async () => {
-  dir = await fs.mkdtemp(join(tmpdir(), 'reelmind-vproj-'))
+  dir = await fs.mkdtemp(join(tmpdir(), 'reelo-vproj-'))
 })
 afterEach(async () => {
   if (dir) await fs.rm(dir, { recursive: true, force: true })
@@ -83,7 +83,7 @@ describe('projectStore save/load — proxy consolidation (portable + no re-optim
 
   it('copies the proxy into proxies/, writes a relative path, and resolves it back on load', async () => {
     // A proxy sitting in an external cache (as if generated before the project had a folder).
-    const cacheDir = await fs.mkdtemp(join(tmpdir(), 'reelmind-cache-'))
+    const cacheDir = await fs.mkdtemp(join(tmpdir(), 'reelo-cache-'))
     const cacheProxy = join(cacheDir, 'C0480-proxy-v3.mp4')
     await fs.writeFile(cacheProxy, 'proxy-bytes')
 
@@ -109,7 +109,7 @@ describe('projectStore save/load — proxy consolidation (portable + no re-optim
   })
 
   it('sweeps orphan / legacy-named proxy files that are not referenced', async () => {
-    const cacheDir = await fs.mkdtemp(join(tmpdir(), 'reelmind-cache-'))
+    const cacheDir = await fs.mkdtemp(join(tmpdir(), 'reelo-cache-'))
     const cacheProxy = join(cacheDir, 'C0480-proxy-v3.mp4')
     await fs.writeFile(cacheProxy, 'proxy-bytes')
 

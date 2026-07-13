@@ -174,10 +174,10 @@ export async function isolateVoiceSnippet(
   const start = Math.max(0, opts.startSec).toFixed(3)
   const dur = Math.max(1, opts.durationSec).toFixed(3)
   const dir = tmpdir()
-  const uploadPath = join(dir, `reelmind-aiprev-src-${randomUUID()}.flac`)
-  const rawPath = join(dir, `reelmind-aiprev-raw-${randomUUID()}.m4a`)
-  const rawOutPath = join(dir, `reelmind-aiprev-iso-${randomUUID()}.mp3`)
-  const isolatedPath = join(dir, `reelmind-aiprev-out-${randomUUID()}.m4a`)
+  const uploadPath = join(dir, `reelo-aiprev-src-${randomUUID()}.flac`)
+  const rawPath = join(dir, `reelo-aiprev-raw-${randomUUID()}.m4a`)
+  const rawOutPath = join(dir, `reelo-aiprev-iso-${randomUUID()}.mp3`)
+  const isolatedPath = join(dir, `reelo-aiprev-out-${randomUUID()}.m4a`)
   try {
     // Extract the window twice: a lossless FLAC for the model + dry blend, and an m4a for the A/B "Original".
     await runFfmpeg(['-y', '-ss', start, '-i', srcPath, '-t', dur, '-vn', '-ar', '48000', '-c:a', 'flac', uploadPath], opts.onLine)

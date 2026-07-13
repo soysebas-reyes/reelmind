@@ -38,6 +38,6 @@ export function initUpdates(): void {
 
   // Passive startup check (packaged only) — same singleton, its events flow through the broadcast too.
   if (app.isPackaged) {
-    autoUpdater.checkForUpdatesAndNotify().catch((e) => console.error('[reelmind] update check failed:', e))
+    autoUpdater.checkForUpdatesAndNotify().catch((e) => console.error('[reelo] update check failed:', e))
   }
 }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Reelo — ReelMind's mascot: an 8-bit clapperboard rendered as pixel-art on a <canvas>. It replaces the
+// Reelo — the app's mascot (and namesake): an 8-bit clapperboard rendered as pixel-art on a <canvas>. It replaces the
 // generic spinner and headlines the progress modal, giving every loading/interaction moment a character.
 // The sprite is drawn cell-by-cell on a 22×24 grid and animated by FRAMES (the clap is a hinge shear, not
 // a CSS rotation), so it stays crisp from 24px up. One shared requestAnimationFrame ticks every mounted
@@ -21,7 +21,7 @@ export const REELO_MESSAGES = [
   'Cortando lo que sobra…'
 ]
 
-// ── Pixel palette (mirrors App.css tokens so Reelo lives in ReelMind's world) ──────────────────────
+// ── Pixel palette (mirrors App.css tokens so Reelo lives in the app's world) ───────────────────────
 const C: Record<number, string> = {
   1: '#2f2f37', // slate body
   2: '#191920', // slate shadow / outline
@@ -271,7 +271,7 @@ interface ReeloProps {
   ariaLabel?: string
 }
 
-/** ReelMind's mascot. Drop-in for a spinner: `<Reelo state="loading" size={30} />`. */
+/** The app's mascot. Drop-in for a spinner: `<Reelo state="loading" size={30} />`. */
 export function Reelo({
   state = 'loading',
   size = 30,

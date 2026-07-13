@@ -37,7 +37,7 @@ export function TelemetryConsentDialog(): React.JSX.Element | null {
       <div className="modal export-modal consent-modal" onMouseDown={(e) => e.stopPropagation()}>
         <h2>Medición de uso (local)</h2>
         <p className="export-note" style={{ textAlign: 'left' }}>
-          Para mejorar ReelMind, la app registra <strong>qué funciones se usan</strong>: clics, comandos,
+          Para mejorar Reelo, la app registra <strong>qué funciones se usan</strong>: clics, comandos,
           herramientas de IA y tiempos de uso.
         </p>
         <p className="export-note" style={{ textAlign: 'left' }}>

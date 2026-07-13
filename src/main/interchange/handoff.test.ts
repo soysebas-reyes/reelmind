@@ -22,7 +22,7 @@ let videoPath = ''
 
 describe.skipIf(!haveFfmpeg)('NLE handoff (integration, requires ffmpeg)', () => {
   beforeAll(async () => {
-    dir = await fs.mkdtemp(join(tmpdir(), 'reelmind-handoff-'))
+    dir = await fs.mkdtemp(join(tmpdir(), 'reelo-handoff-'))
     videoPath = join(dir, 'cam.mp4')
     await execFileAsync(ffmpegBinary(), [
       '-y', '-f', 'lavfi', '-i', 'testsrc=duration=3:size=320x240:rate=30',

@@ -1,4 +1,4 @@
-// Smoke test del flujo completo por MCP (con la app ReelMind abierta):
+// Smoke test del flujo completo por MCP (con la app Reelo abierta):
 //   importar carpeta → sincronizar ángulos → colorizar → segmentar por guiones → exportar a NLE.
 // Uso: node mcp_flow.mjs "<carpeta-crudos>" "<carpeta-salida>"
 // Los guiones se pegan en la constante SCRIPTS de abajo (o dejalos vacíos para auto-detección).
@@ -23,9 +23,9 @@ const call = async (client, name, args = {}) => {
 
 async function main() {
   const transport = new StreamableHTTPClientTransport(new URL('http://127.0.0.1:4399/mcp'))
-  const client = new Client({ name: 'reelmind-flow', version: '1.0' }, { capabilities: {} })
+  const client = new Client({ name: 'reelo-flow', version: '1.0' }, { capabilities: {} })
   await client.connect(transport)
-  console.log('Conectado al MCP de ReelMind.')
+  console.log('Conectado al MCP de Reelo.')
 
   console.log(`1) Importando carpeta: ${FOLDER}`)
   const imported = await call(client, 'import_folder', { folderPath: FOLDER })

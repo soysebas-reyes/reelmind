@@ -23,7 +23,7 @@ describe('parseProxyVersion', () => {
 describe('reconcileProxies', () => {
   let dir = ''
   beforeEach(async () => {
-    dir = await fs.mkdtemp(join(tmpdir(), 'reelmind-proxy-'))
+    dir = await fs.mkdtemp(join(tmpdir(), 'reelo-proxy-'))
   })
   afterEach(async () => {
     if (dir) await fs.rm(dir, { recursive: true, force: true })

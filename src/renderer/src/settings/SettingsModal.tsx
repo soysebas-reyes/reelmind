@@ -219,7 +219,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }): React.JSX.E
           <section className="settings-section">
             <h3>Acerca de</h3>
             <p className="settings-about">
-              ReelMind v{version || '…'} · GPL-3.0 — editor de video AI-native para Windows.
+              Reelo v{version || '…'} · GPL-3.0 — editor de video AI-native.
             </p>
             <div className="settings-row-controls">
               <button data-tel="settings.check_updates" onClick={checkUpdates} disabled={update?.status === 'checking'}>

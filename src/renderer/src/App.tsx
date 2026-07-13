@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { type CSSProperties, type DragEvent, useEffect, useState } from 'react'
-import { ASSET_DRAG_MIME, type ClipType, LAYOUT_STORAGE_KEY, type MediaManifestEntry, type TrackRole } from '@core'
+import { APP_NAME, ASSET_DRAG_MIME, type ClipType, LAYOUT_STORAGE_KEY, type MediaManifestEntry, type TrackRole } from '@core'
 import type { ExportQuality } from '../../shared/ipc'
 import { getController, useEditorStore } from './store'
 import Timeline from './timeline/Timeline'
@@ -256,7 +256,7 @@ export default function App() {
         {/* Row 1: brand + project settings */}
         <div className="topbar">
           <div className="brand">
-            <span className="logo">ReelMind</span>
+            <span className="logo">{APP_NAME}</span>
             <span className="proj">
               {projectName}
               {dirty && <span className="dot" title="Cambios sin guardar" />}

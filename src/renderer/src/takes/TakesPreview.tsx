@@ -184,7 +184,7 @@ export function TakesPreview(): React.JSX.Element | null {
   // resolved source changes, not on every boundary edit.
   useEffect(() => {
     if (source && !source.url) {
-      console.warn('[reelmind] takes-preview: no se pudo resolver el medio del video', {
+      console.warn('[reelo] takes-preview: no se pudo resolver el medio del video', {
         rawClipId: plan?.rawClipId,
         rawMediaRef: plan?.rawMediaRef,
         isVideo: source.isVideo
@@ -360,7 +360,7 @@ export function TakesPreview(): React.JSX.Element | null {
             onSeeked={() => setCurrentMs((videoRef.current?.currentTime ?? 0) * 1000 - deltaSec * 1000)}
             onError={() => {
               setMediaError(true)
-              console.warn('[reelmind] takes-preview: el <video> no pudo cargar', mediaUrl)
+              console.warn('[reelo] takes-preview: el <video> no pudo cargar', mediaUrl)
             }}
           />
           {anglesMissingProxy > 0 && (
