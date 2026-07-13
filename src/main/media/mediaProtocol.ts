@@ -17,8 +17,7 @@ import { stat } from 'node:fs/promises'
 import { extname } from 'node:path'
 import { Readable } from 'node:stream'
 import { protocol } from 'electron'
-
-export const MEDIA_SCHEME = 'reelmind-media'
+import { MEDIA_SCHEME } from '@core'
 
 const MIME: Record<string, string> = {
   '.mp4': 'video/mp4',
@@ -129,9 +128,4 @@ export function handleMediaProtocol(): void {
       return new Response(e instanceof Error ? e.message : String(e), { status: 500 })
     }
   })
-}
-
-/** Build a renderer-usable URL for an absolute local file path. */
-export function mediaUrlForPath(absolutePath: string): string {
-  return `${MEDIA_SCHEME}://local/${encodeURIComponent(absolutePath)}`
 }

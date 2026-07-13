@@ -14,6 +14,7 @@ import {
   composeFrame,
   expectedPath,
   layerFullyOccludes,
+  mediaUrlForPath,
   visibleLayerSet,
   volumeAt
 } from '@core'
@@ -44,7 +45,7 @@ function assetMediaUrl(mediaRef: string): string | null {
   // Prefer a preview proxy for video (smooth decode + reliable seeking on 4K/10-bit/4:2:2 sources).
   // Export still uses the original (main-process exporter resolves the source, not this URL).
   const path = entry.type === 'video' && entry.proxyPath ? entry.proxyPath : expectedPath(manifest, mediaRef, projectDir)
-  return path ? `reelmind-media://local/${encodeURIComponent(path)}` : null
+  return path ? mediaUrlForPath(path) : null
 }
 
 function timecode(frame: number, fps: number): string {

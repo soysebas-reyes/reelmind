@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { type CSSProperties, type DragEvent, useEffect, useState } from 'react'
-import { type ClipType, type MediaManifestEntry, type TrackRole } from '@core'
+import { ASSET_DRAG_MIME, type ClipType, LAYOUT_STORAGE_KEY, type MediaManifestEntry, type TrackRole } from '@core'
 import type { ExportQuality } from '../../shared/ipc'
 import { getController, useEditorStore } from './store'
 import Timeline from './timeline/Timeline'
@@ -54,7 +54,7 @@ function AssetCard({ entry, thumbnail }: { entry: MediaManifestEntry; thumbnail:
       title={`${entry.name} — drag onto the timeline`}
       draggable
       onDragStart={(e) => {
-        e.dataTransfer.setData('application/x-reelmind-asset', entry.id)
+        e.dataTransfer.setData(ASSET_DRAG_MIME, entry.id)
         e.dataTransfer.effectAllowed = 'copy'
       }}
     >
@@ -115,7 +115,7 @@ interface Layout {
 
 function loadLayout(): Layout {
   try {
-    const s = JSON.parse(localStorage.getItem('reelmind.layout') || '{}') as Partial<Layout>
+    const s = JSON.parse(localStorage.getItem(LAYOUT_STORAGE_KEY) || '{}') as Partial<Layout>
     return { binW: s.binW ?? 296, chatW: s.chatW ?? 330, timelineH: s.timelineH ?? 320 }
   } catch {
     return { binW: 296, chatW: 330, timelineH: 320 }
@@ -192,7 +192,7 @@ export default function App() {
   // Multi-tab export picker ("¿cuál pestaña exportar, o todas?").
   const [exportPickerOpen, setExportPickerOpen] = useState(false)
   useEffect(() => {
-    localStorage.setItem('reelmind.layout', JSON.stringify(layout))
+    localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layout))
   }, [layout])
 
   useEffect(() => {

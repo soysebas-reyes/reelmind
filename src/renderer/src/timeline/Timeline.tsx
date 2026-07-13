@@ -11,6 +11,7 @@ import {
   type SnapState,
   type Track,
   type TrackRole,
+  ASSET_DRAG_MIME,
   clipEndFrame,
   isCompatible,
   makeSnapState,
@@ -1089,7 +1090,7 @@ export default function Timeline(): React.JSX.Element {
   // --- Drag from media bin ---
 
   function onDragOver(e: React.DragEvent<HTMLDivElement>): void {
-    if (e.dataTransfer.types.includes('application/x-reelmind-asset') || e.dataTransfer.types.includes('Files')) {
+    if (e.dataTransfer.types.includes(ASSET_DRAG_MIME) || e.dataTransfer.types.includes('Files')) {
       e.preventDefault()
       e.dataTransfer.dropEffect = 'copy'
     }
@@ -1126,7 +1127,7 @@ export default function Timeline(): React.JSX.Element {
   }
 
   function onDrop(e: React.DragEvent<HTMLDivElement>): void {
-    const assetId = e.dataTransfer.getData('application/x-reelmind-asset')
+    const assetId = e.dataTransfer.getData(ASSET_DRAG_MIME)
     if (!assetId) {
       if (e.dataTransfer.files.length > 0) {
         e.preventDefault()
