@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# CI en Windows + macOS (arm64): typecheck, tests (con FFmpeg real bajado por fetch-ffmpeg,
+# lo que valida ese script en ambas plataformas) y build de electron-vite.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-15] # macos-15 = Apple Silicon (arm64)
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      # Baja el FFmpeg de ESTA plataforma (los runners de GitHub no traen ffmpeg) y exponelo a los
+      # tests de integración, que sin él se saltean con describe.skipIf.
+      - run: npm run fetch:ffmpeg
+      - name: Exponer FFmpeg a los tests
+        shell: bash
+        run: |
+          EXT=""
+          if [ "$RUNNER_OS" = "Windows" ]; then EXT=".exe"; fi
+          echo "REELO_FFMPEG=$GITHUB_WORKSPACE/resources/ffmpeg/ffmpeg$EXT" >> "$GITHUB_ENV"
+          echo "REELO_FFPROBE=$GITHUB_WORKSPACE/resources/ffmpeg/ffprobe$EXT" >> "$GITHUB_ENV"
+      - run: npm test
+      - run: npm run build
