@@ -64,7 +64,7 @@ export async function exportTimeline(req: ExportTimelineRequest, hooks: ExportHo
     /* diagnostics only — never block the render */
   }
   console.log(
-    `[reelmind] export: videoMode=${graph.videoMode} visualClips=${graph.visualClipCount} audioClips=${graph.audioClipCount} inputs=${graph.inputCount} → ${debugPath}`
+    `[reelo] export: videoMode=${graph.videoMode} visualClips=${graph.visualClipCount} audioClips=${graph.audioClipCount} inputs=${graph.inputCount} → ${debugPath}`
   )
 
   return new Promise<ExportTimelineResult>((done) => {

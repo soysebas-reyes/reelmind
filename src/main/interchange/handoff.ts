@@ -41,7 +41,7 @@ function stamp(): string {
 }
 
 function safeName(s: string): string {
-  return (s || 'reelmind').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'reelmind'
+  return (s || 'reelo').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'reelo'
 }
 
 function shortHash(s: string): string {
@@ -86,18 +86,24 @@ const README = (name: string, target: string, warnings: string[], capcutAutoPlac
   const warn = warnings.length ? `\nAvisos de esta exportación:\n${warnings.map((w) => `  - ${w}`).join('\n')}` : ''
   if (target === 'capcut') {
     return [
-      `ReelMind → borrador (draft) de CapCut`,
+      `Reelo → borrador (draft) de CapCut`,
       `Proyecto: ${name}`,
       ``,
       `Esta carpeta ES un borrador de CapCut (draft_content.json + draft_meta_info.json + media/).`,
       capcutAutoPlaced
         ? `Ya la dejamos dentro de la carpeta de borradores de CapCut: abrí CapCut y va a aparecer en`
         : `Para abrirla en CapCut, MOVÉ esta carpeta completa a tu carpeta de borradores de CapCut`,
-      capcutAutoPlaced ? `  "Borradores/Drafts". Si no aparece, reiniciá CapCut.` : `  (por defecto en Windows):`,
-      capcutAutoPlaced ? `` : `    %LOCALAPPDATA%\\CapCut\\User Data\\Projects\\com.lveditor.draft\\`,
+      capcutAutoPlaced
+        ? `  "Borradores/Drafts". Si no aparece, reiniciá CapCut.`
+        : `  (por defecto en ${process.platform === 'darwin' ? 'macOS' : 'Windows'}):`,
+      capcutAutoPlaced
+        ? ``
+        : process.platform === 'darwin'
+          ? `    ~/Movies/CapCut/User Data/Projects/com.lveditor.draft/`
+          : `    %LOCALAPPDATA%\\CapCut\\User Data\\Projects\\com.lveditor.draft\\`,
       capcutAutoPlaced ? `` : `  Luego reiniciá CapCut y el borrador aparecerá en "Borradores".`,
       ``,
-      `Qué ya está hecho por ReelMind (horneado en los archivos de media/):`,
+      `Qué ya está hecho por Reelo (horneado en los archivos de media/):`,
       `  colorización · realce de audio · sincronización · cambios de ángulo · cortes.`,
       ``,
       `Qué hacés vos en CapCut: subtítulos, efectos, transiciones y el toque creativo.`,
@@ -109,7 +115,7 @@ const README = (name: string, target: string, warnings: string[], capcutAutoPlac
     ].join('\n')
   }
   return [
-    `ReelMind → handoff a editor (${target})`,
+    `Reelo → handoff a editor (${target})`,
     `Proyecto: ${name}`,
     ``,
     `Este paquete contiene un proyecto EDITABLE para tu editor de video:`,
@@ -120,7 +126,7 @@ const README = (name: string, target: string, warnings: string[], capcutAutoPlac
     `  • media/  — los clips ya con NUESTRO color + realce de audio aplicados.`,
     `  • luts/   — copias de los LUTs usados (solo referencia; el color YA está horneado).`,
     ``,
-    `Qué ya está hecho por ReelMind (horneado en los archivos de media/):`,
+    `Qué ya está hecho por Reelo (horneado en los archivos de media/):`,
     `  colorización · realce de audio · sincronización · cambios de ángulo · cortes.`,
     ``,
     `Qué hacés vos en el editor: subtítulos, efectos, transiciones y el toque creativo.`,
@@ -274,7 +280,7 @@ export async function runHandoff(req: HandoffRequest, hooks: HandoffHooks = {}):
       await fs.writeFile(join(folder, 'draft_meta_info.json'), JSON.stringify(meta), 'utf8')
       await fs.writeFile(
         join(folder, 'README.txt'),
-        README(projectName || 'ReelMind', target, warnings, !!req.capcutAutoPlaced),
+        README(projectName || 'Reelo', target, warnings, !!req.capcutAutoPlaced),
         'utf8'
       )
       return {
@@ -291,13 +297,13 @@ export async function runHandoff(req: HandoffRequest, hooks: HandoffHooks = {}):
 
     const { xml, warnings, clipItemCount } = buildFcp7Xml({
       timeline,
-      sequenceName: projectName || 'ReelMind',
+      sequenceName: projectName || 'Reelo',
       sources: sourceList,
       clipFile
     })
     const xmlPath = join(folder, `${safeName(projectName)}.xml`)
     await fs.writeFile(xmlPath, xml, 'utf8')
-    await fs.writeFile(join(folder, 'README.txt'), README(projectName || 'ReelMind', target, warnings, false), 'utf8')
+    await fs.writeFile(join(folder, 'README.txt'), README(projectName || 'Reelo', target, warnings, false), 'utf8')
 
     return { ok: true, xmlPath, folder, bakedCount: baked, referencedCount: referenced, clipItemCount, warnings }
   } catch (e) {

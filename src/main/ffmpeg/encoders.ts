@@ -8,6 +8,11 @@
 // Why this matters here: camera originals are often 4K 4:2:2 10-bit H.264 — a format consumer GPUs
 // CANNOT hardware-decode, so decoding always burns CPU. Moving the ENCODE to the GPU frees those cores
 // for the decoder, which is the pipeline's real bottleneck.
+//
+// macOS: the only candidate is h264_videotoolbox (Apple Silicon media engine). Its rate control differs
+// from the PC encoders — it takes `-q:v` on a 1-100 scale (higher = better) and rejects -qp/-cq/
+// -global_quality; constant-quality mode is only implemented on Apple Silicon, which is the app's
+// supported mac target (arm64-only).
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -15,10 +20,19 @@ import { ffmpegBinary } from './binary'
 
 const execFileAsync = promisify(execFile)
 
-export type H264Encoder = 'h264_nvenc' | 'h264_qsv' | 'h264_amf' | 'libx264'
+export type H264Encoder = 'h264_nvenc' | 'h264_qsv' | 'h264_amf' | 'h264_videotoolbox' | 'libx264'
 
-/** Candidates in typical-performance order; libx264 is the always-works floor. */
-const HW_CANDIDATES: H264Encoder[] = ['h264_nvenc', 'h264_qsv', 'h264_amf']
+/** Candidates in typical-performance order; libx264 is the always-works floor. Per-platform so we
+ *  don't burn ~600 ms probing encoders that cannot exist (no VideoToolbox on PC, no NVENC on mac).
+ *  VideoToolbox is gated to arm64: on Intel Macs it initializes (so the probe would PASS) but only
+ *  supports bitrate rate-control, not the constant-quality `-q:v` we emit — so the real encode would
+ *  fail. arm64 is the only supported mac target anyway; Intel Macs fall straight to libx264. */
+const HW_CANDIDATES: H264Encoder[] =
+  process.platform === 'darwin'
+    ? process.arch === 'arm64'
+      ? ['h264_videotoolbox']
+      : []
+    : ['h264_nvenc', 'h264_qsv', 'h264_amf']
 
 async function encoderWorks(encoder: H264Encoder): Promise<boolean> {
   try {
@@ -80,6 +94,11 @@ export function proxyEncodeArgs(encoder: H264Encoder): string[] {
       return ['-c:v', 'h264_qsv', '-preset', 'veryfast', '-global_quality', '26', '-g', g]
     case 'h264_amf':
       return ['-c:v', 'h264_amf', '-quality', 'speed', '-rc', 'cqp', '-qp_i', '22', '-qp_p', '24', '-g', g]
+    case 'h264_videotoolbox':
+      // -q:v 50 ≈ the QP≈24 proxy grade of the PC paths (initial calibration — validated on-device
+      // against libx264 CRF 23; adjust ±5 if proxies come out too heavy/soft). -realtime favors the
+      // media engine's low-latency path: encode speed over marginal quality, proxy priorities exactly.
+      return ['-c:v', 'h264_videotoolbox', '-realtime', '1', '-q:v', '50', '-g', g]
     case 'libx264':
       // superfast ≈ 1.4× faster than veryfast at proxy-grade quality; ultrafast bloats files for little gain.
       return ['-c:v', 'libx264', '-preset', 'superfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-g', g, '-keyint_min', g]
@@ -111,6 +130,12 @@ export function exportEncodeArgs(encoder: H264Encoder, tier: ExportTier): string
     case 'h264_amf': {
       const [qi, qp] = tier === 'high' ? ['21', '23'] : ['17', '19']
       return ['-c:v', 'h264_amf', '-pix_fmt', 'nv12', '-quality', 'quality', '-rc', 'cqp', '-qp_i', qi, '-qp_p', qp]
+    }
+    case 'h264_videotoolbox': {
+      // 1-100 scale, higher = better: 60 ≈ x264 CRF 20 (high), 72 ≈ CRF 16 (veryHigh). Initial
+      // calibration — compare size/quality against libx264 on-device and adjust ±5.
+      const q = tier === 'high' ? '60' : '72'
+      return ['-c:v', 'h264_videotoolbox', '-pix_fmt', 'nv12', '-q:v', q]
     }
   }
 }

@@ -8,11 +8,11 @@ import { promisify } from 'node:util'
 const execFileAsync = promisify(execFile)
 
 export function ffmpegBinary(): string {
-  return process.env.REELMIND_FFMPEG || 'ffmpeg'
+  return process.env.REELO_FFMPEG || 'ffmpeg'
 }
 
 export function ffprobeBinary(): string {
-  return process.env.REELMIND_FFPROBE || 'ffprobe'
+  return process.env.REELO_FFPROBE || 'ffprobe'
 }
 
 export interface FfmpegStatus {

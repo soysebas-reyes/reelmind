@@ -1,38 +1,38 @@
-# ReelMind + Claude Code (MCP)
+# Reelo + Claude Code (MCP)
 
-ReelMind expone su editor por **MCP** (Model Context Protocol) para que puedas manejarlo en
+Reelo expone su editor por **MCP** (Model Context Protocol) para que puedas manejarlo en
 lenguaje natural desde **Claude Code** u otro cliente MCP: cargar una carpeta, descargar videos,
 sincronizar ángulos, colorizar, segmentar por guiones y exportar a tu editor (Premiere / DaVinci /
 Final Cut / CapCut).
 
 ## Conectar Claude Code
 
-1. Abrí ReelMind (el servidor MCP arranca solo con la app y queda escuchando en
+1. Abrí Reelo (el servidor MCP arranca solo con la app y queda escuchando en
    `http://127.0.0.1:4399/mcp`). Al iniciar, la consola imprime:
-   `[reelmind] MCP server listening at http://127.0.0.1:4399/mcp`.
+   `[reelo] MCP server listening at http://127.0.0.1:4399/mcp`.
 2. Registrá el servidor en Claude Code (transporte HTTP):
 
    ```sh
-   claude mcp add --transport http reelmind http://127.0.0.1:4399/mcp
+   claude mcp add --transport http reelo http://127.0.0.1:4399/mcp
    ```
 
-3. Listo. En Claude Code, verificá con `/mcp` que aparezca `reelmind` conectado.
+3. Listo. En Claude Code, verificá con `/mcp` que aparezca `reelo` conectado.
 
 **Config manual** (equivalente, en `.mcp.json` / config del cliente):
 
 ```json
 {
   "mcpServers": {
-    "reelmind": { "type": "http", "url": "http://127.0.0.1:4399/mcp" }
+    "reelo": { "type": "http", "url": "http://127.0.0.1:4399/mcp" }
   }
 }
 ```
 
 ### Variables de entorno
 
-- `REELMIND_MCP_PORT` — cambia el puerto (default `4399`).
-- `REELMIND_NO_MCP` — deshabilita el servidor MCP.
-- `REELMIND_YTDLP` — ruta a `yt-dlp` (default: `yt-dlp` en el PATH).
+- `REELO_MCP_PORT` — cambia el puerto (default `4399`).
+- `REELO_NO_MCP` — deshabilita el servidor MCP.
+- `REELO_YTDLP` — ruta a `yt-dlp` (default: `yt-dlp` en el PATH).
 
 > La ventana de la app debe estar abierta: los tools se ejecutan contra el editor en vivo. Si no hay
 > ventana, los tools devuelven `"No editor window is open"`.
@@ -46,7 +46,7 @@ Final Cut / CapCut).
   Google Drive) → se descargan con **yt-dlp** (remux a `.mp4`). Requiere `yt-dlp` instalado
   (https://github.com/yt-dlp/yt-dlp); si falta, el tool lo avisa con un mensaje claro.
 
-## Flujo típico (el que hace ReelMind bien)
+## Flujo típico (el que hace Reelo bien)
 
 Nosotros hacemos lo técnico; tu editor hace subtítulos y efectos.
 

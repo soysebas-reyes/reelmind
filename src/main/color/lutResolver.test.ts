@@ -22,7 +22,7 @@ describe('lutCandidatePaths', () => {
 
 describe('resolveLut', () => {
   it('finds a preset LUT in the library dir, and is null when missing', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'reelmind-lut-'))
+    const dir = mkdtempSync(join(tmpdir(), 'reelo-lut-'))
     writeFileSync(join(dir, 'look.cube'), 'TITLE "x"\nLUT_3D_SIZE 2\n')
     expect(resolveLut('preset:look.cube', { libraryDir: dir })).toBe(join(dir, 'look.cube'))
     expect(resolveLut('preset:missing.cube', { libraryDir: dir })).toBeNull()

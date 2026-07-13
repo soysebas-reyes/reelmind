@@ -234,7 +234,7 @@ export interface AudioPreviewClips {
 
 /** Render a short snippet to a temp `.m4a` (deleted after reading) and return it as a data URL. */
 async function renderSnippetDataUrl(args: (outPath: string) => string[]): Promise<string> {
-  const outPath = join(tmpdir(), `reelmind-aprev-${randomUUID()}.m4a`)
+  const outPath = join(tmpdir(), `reelo-aprev-${randomUUID()}.m4a`)
   try {
     await new Promise<void>((resolve, reject) => {
       const proc = spawn(ffmpegBinary(), args(outPath), { windowsHide: true })

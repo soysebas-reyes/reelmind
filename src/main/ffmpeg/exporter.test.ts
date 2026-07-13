@@ -23,7 +23,7 @@ let audioPath = ''
 
 describe.skipIf(!haveFfmpeg)('timeline export (integration, requires ffmpeg)', () => {
   beforeAll(async () => {
-    dir = await fs.mkdtemp(join(tmpdir(), 'reelmind-export-'))
+    dir = await fs.mkdtemp(join(tmpdir(), 'reelo-export-'))
     videoPath = join(dir, 'clip.mp4')
     imagePath = join(dir, 'still.png')
     audioPath = join(dir, 'tone.mp3')

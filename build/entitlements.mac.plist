@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Mínimo que Electron necesita bajo hardened runtime (requisito de notarización): JIT de V8 y
+     memoria ejecutable sin firma. Sin módulos nativos .node no hace falta disable-library-validation.
+     Si una build notarizada crashea al arrancar, el primer sospechoso a agregar es
+     com.apple.security.cs.allow-dyld-environment-variables. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+  </dict>
+</plist>

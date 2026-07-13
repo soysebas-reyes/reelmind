@@ -358,7 +358,7 @@ export function buildFcp7Xml(input: BuildInterchangeInput): BuildInterchangeResu
     `<?xml version="1.0" encoding="UTF-8"?>`,
     `<!DOCTYPE xmeml>`,
     `<xmeml version="5">`,
-    `<sequence id="reelmind-sequence">`,
+    `<sequence id="reelo-sequence">`,
     `<name>${xmlEscape(sequenceName)}</name>`,
     `<duration>${dur}</duration>`,
     rate,

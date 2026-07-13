@@ -13,7 +13,7 @@
 //    `buildTakeTimeline` can produce — so a boundary set here maps to the opened tab with no "inicio cortado".
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { expectedPath } from '@core'
+import { expectedPath, mediaUrlForPath } from '@core'
 import type { PlannedTake } from '@core'
 import type { Clip } from '@core'
 import { useEditorStore } from '../store'
@@ -114,7 +114,7 @@ export function TakesPreview(): React.JSX.Element | null {
           ? (entry.proxyPath ?? null)
           : expectedPath(manifest, displayClip.mediaRef, projectDir)
         : null
-    const url = path ? `reelmind-media://local/${encodeURIComponent(path)}` : null
+    const url = path ? mediaUrlForPath(path) : null
     // How many DISTINCT video angles used by the timeline still lack a proxy. Each opened guión tab inherits
     // the (whole-video) proxies via the cloned manifest and just plays its trimmed span — so a proxy is
     // reused across ALL tabs, never regenerated per guión. But an angle with NO proxy makes every tab prompt
@@ -184,7 +184,7 @@ export function TakesPreview(): React.JSX.Element | null {
   // resolved source changes, not on every boundary edit.
   useEffect(() => {
     if (source && !source.url) {
-      console.warn('[reelmind] takes-preview: no se pudo resolver el medio del video', {
+      console.warn('[reelo] takes-preview: no se pudo resolver el medio del video', {
         rawClipId: plan?.rawClipId,
         rawMediaRef: plan?.rawMediaRef,
         isVideo: source.isVideo
@@ -360,7 +360,7 @@ export function TakesPreview(): React.JSX.Element | null {
             onSeeked={() => setCurrentMs((videoRef.current?.currentTime ?? 0) * 1000 - deltaSec * 1000)}
             onError={() => {
               setMediaError(true)
-              console.warn('[reelmind] takes-preview: el <video> no pudo cargar', mediaUrl)
+              console.warn('[reelo] takes-preview: el <video> no pudo cargar', mediaUrl)
             }}
           />
           {anglesMissingProxy > 0 && (

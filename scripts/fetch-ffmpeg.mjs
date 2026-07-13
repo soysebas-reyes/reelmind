@@ -1,55 +1,125 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Downloads a GPL Windows FFmpeg build (ffmpeg.exe + ffprobe.exe) into resources/ffmpeg/ so the
-// installer can bundle them. Run on the build machine: `npm run fetch:ffmpeg`. The binaries are
+// Downloads a GPL FFmpeg build (ffmpeg + ffprobe) for THIS platform into resources/ffmpeg/ so the
+// installer can bundle it. Run on the build machine: `npm run fetch:ffmpeg`. The binaries are
 // gitignored (large; redistributed under GPL, matching this project's license). Idempotent.
+//
+// Sources per platform/arch:
+//  - win32-x64:    BtbN — one zip with both .exe binaries + license.txt.
+//  - darwin-arm64: ffmpeg.martin-riedl.de — separate ffmpeg/ffprobe zips ("release" channel, static
+//                  GPLv3 build with libx264/x265 and h264_videotoolbox). The server rejects HEAD;
+//                  always GET. Each resolved download URL has a `.sha256` sidecar (verified below).
+//
+// Escape hatch if a source goes down: REELO_FFMPEG_SOURCES="url1,url2" replaces the archive list
+// for the current platform (same order: an archive containing ffmpeg first, then ffprobe if split).
 
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { chmodSync, copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const SOURCE = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
+const TARGETS = {
+  'win32-x64': {
+    label: 'win64 gpl (BtbN)',
+    archives: ['https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'],
+    binaries: ['ffmpeg.exe', 'ffprobe.exe']
+  },
+  'darwin-arm64': {
+    label: 'macOS arm64 gpl (ffmpeg.martin-riedl.de, release)',
+    archives: [
+      'https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip',
+      'https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip'
+    ],
+    binaries: ['ffmpeg', 'ffprobe']
+  }
+}
+
+const key = `${process.platform}-${process.arch}`
+const target = TARGETS[key]
+if (!target) {
+  console.error(`No FFmpeg source mapped for ${key}. Supported: ${Object.keys(TARGETS).join(', ')}.`)
+  console.error('Add an entry to TARGETS in scripts/fetch-ffmpeg.mjs (or set REELO_FFMPEG_SOURCES).')
+  process.exit(1)
+}
+const archives = process.env.REELO_FFMPEG_SOURCES ? process.env.REELO_FFMPEG_SOURCES.split(',') : target.archives
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const outDir = join(root, 'resources', 'ffmpeg')
-const tmpZip = join(root, 'resources', '.ffmpeg-tmp.zip')
 const tmpDir = join(root, 'resources', '.ffmpeg-tmp')
 
-if (existsSync(join(outDir, 'ffmpeg.exe')) && existsSync(join(outDir, 'ffprobe.exe'))) {
+if (target.binaries.every((b) => existsSync(join(outDir, b)))) {
   console.log('FFmpeg already present in resources/ffmpeg — skipping. (delete it to re-fetch)')
   process.exit(0)
 }
 
 mkdirSync(outDir, { recursive: true })
-
-console.log(`Downloading FFmpeg (win64 gpl)…\n  ${SOURCE}`)
-const res = await fetch(SOURCE, { redirect: 'follow' })
-if (!res.ok) {
-  console.error(`Download failed: ${res.status} ${res.statusText}`)
-  process.exit(1)
-}
-const buf = Buffer.from(await res.arrayBuffer())
-await new Promise((resolve, reject) => {
-  const ws = createWriteStream(tmpZip)
-  ws.on('error', reject)
-  ws.on('close', resolve)
-  ws.end(buf)
-})
-
-console.log('Extracting…')
 rmSync(tmpDir, { recursive: true, force: true })
 mkdirSync(tmpDir, { recursive: true })
-// Windows 10+ ships bsdtar (extracts .zip and understands C:\ paths). Use its absolute path:
-// a Git-Bash/MSYS tar earlier in PATH treats "C:\…" as a remote host and fails.
-const tar =
-  process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar'
-execFileSync(tar, ['-xf', tmpZip, '-C', tmpDir], { stdio: 'inherit' })
 
-function findExe(dir, name) {
+// Resolved (post-redirect) download URLs — the version lives here, not in the `redirect/latest/…`
+// input URL, so the generated LICENSE notice reads it from these.
+const resolvedUrls = []
+
+/** Download one archive, verify its .sha256 sidecar when the mirror provides one, extract into its own subdir. */
+async function fetchAndExtract(url, index) {
+  console.log(`Downloading FFmpeg (${target.label})…\n  ${url}`)
+  const res = await fetch(url, { redirect: 'follow' })
+  resolvedUrls.push(res.url)
+  if (!res.ok) {
+    console.error(`Download failed: ${res.status} ${res.statusText}`)
+    process.exit(1)
+  }
+  const buf = Buffer.from(await res.arrayBuffer())
+
+  // Integrity, best-effort. Where the `.sha256` sidecar lives differs per mirror: BtbN publishes it
+  // as a release asset next to the ORIGINAL url (the resolved CDN url + '.sha256' serves the zip
+  // itself again — its query string swallows the suffix), while martin-riedl's redirect endpoint
+  // 404s the sidecar and only the RESOLVED url has it. Try both and only trust a response that
+  // actually looks like a sha256 hex digest.
+  const actual = createHash('sha256').update(buf).digest('hex')
+  for (const sidecarUrl of [`${url}.sha256`, `${res.url}.sha256`]) {
+    let expected = null
+    try {
+      const side = await fetch(sidecarUrl, { redirect: 'follow' })
+      if (!side.ok) continue
+      const first = (await side.text()).trim().split(/\s+/)[0].toLowerCase()
+      if (!/^[0-9a-f]{64}$/.test(first)) continue // not a checksum (HTML, binary, …)
+      expected = first
+    } catch {
+      continue // sidecar unreachable — try the next candidate
+    }
+    if (expected !== actual) {
+      console.error(`Checksum mismatch for ${url}\n  expected ${expected}\n  actual   ${actual}`)
+      process.exit(1)
+    }
+    console.log('  sha256 OK')
+    break
+  }
+
+  const zipPath = join(tmpDir, `archive-${index}.zip`)
+  await new Promise((resolve, reject) => {
+    const ws = createWriteStream(zipPath)
+    ws.on('error', reject)
+    ws.on('close', resolve)
+    ws.end(buf)
+  })
+
+  const extractDir = join(tmpDir, `extract-${index}`)
+  mkdirSync(extractDir, { recursive: true })
+  // Windows 10+ ships bsdtar (extracts .zip and understands C:\ paths). Use its absolute path:
+  // a Git-Bash/MSYS tar earlier in PATH treats "C:\…" as a remote host and fails. macOS bsdtar
+  // extracts zip natively.
+  const tar =
+    process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar'
+  execFileSync(tar, ['-xf', zipPath, '-C', extractDir], { stdio: 'inherit' })
+  rmSync(zipPath, { force: true })
+}
+
+function findFile(dir, name) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, entry.name)
     if (entry.isDirectory()) {
-      const hit = findExe(p, name)
+      const hit = findFile(p, name)
       if (hit) return hit
     } else if (entry.name.toLowerCase() === name) {
       return p
@@ -58,24 +128,49 @@ function findExe(dir, name) {
   return null
 }
 
-for (const exe of ['ffmpeg.exe', 'ffprobe.exe']) {
-  const found = findExe(tmpDir, exe)
+for (let i = 0; i < archives.length; i++) await fetchAndExtract(archives[i], i)
+
+for (const bin of target.binaries) {
+  const found = findFile(tmpDir, bin)
   if (!found) {
-    console.error(`Could not find ${exe} in the archive.`)
+    console.error(`Could not find ${bin} in the downloaded archive(s).`)
     process.exit(1)
   }
-  copyFileSync(found, join(outDir, exe))
-  console.log(`  → resources/ffmpeg/${exe}`)
+  const dest = join(outDir, bin)
+  copyFileSync(found, dest)
+  // The exec bit does not survive copyFileSync from a tar extract on every setup; the packaged app
+  // spawns these directly, so make sure they are executable.
+  if (process.platform !== 'win32') chmodSync(dest, 0o755)
+  console.log(`  → resources/ffmpeg/${bin}`)
 }
 
-// GPL compliance when redistributing the binaries: ship the build's license text alongside them
-// (the BtbN zip includes it; sources are linked from https://github.com/BtbN/FFmpeg-Builds).
-const license = findExe(tmpDir, 'license.txt')
+// GPL compliance when redistributing the binaries: ship the build's license text alongside them.
+// BtbN's zip includes one; martin-riedl's zips contain only the binary, so we write an equivalent
+// notice pointing at the sources and the build script (both public), as GPLv3 §6 asks.
+const license = findFile(tmpDir, 'license.txt')
 if (license) {
   copyFileSync(license, join(outDir, 'LICENSE.txt'))
   console.log('  → resources/ffmpeg/LICENSE.txt')
+} else {
+  // Read the version from the RESOLVED url (…/download/<os>/<arch>/<ts>_<ver>/ffmpeg.zip); the input
+  // url is the version-less `redirect/latest/…` alias.
+  const resolvedVersion = /\/(\d+_[^/]+)\//.exec(resolvedUrls[0] ?? archives[0])?.[1] ?? 'latest'
+  writeFileSync(
+    join(outDir, 'LICENSE.txt'),
+    [
+      'FFmpeg (ffmpeg, ffprobe) — static GPL build for macOS',
+      `Build: ${target.label} (${resolvedVersion})`,
+      '',
+      'These binaries are redistributed under the GNU General Public License v3.',
+      'FFmpeg sources:      https://ffmpeg.org/releases/',
+      'Build script (open): https://git.martin-riedl.de/ffmpeg/build-script',
+      'GPLv3 text:          https://www.gnu.org/licenses/gpl-3.0.txt',
+      ''
+    ].join('\n'),
+    'utf8'
+  )
+  console.log('  → resources/ffmpeg/LICENSE.txt (generated GPL notice)')
 }
 
-rmSync(tmpZip, { force: true })
 rmSync(tmpDir, { recursive: true, force: true })
 console.log('Done. FFmpeg bundled for packaging.')

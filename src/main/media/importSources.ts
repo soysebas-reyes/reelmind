@@ -28,12 +28,12 @@ function needsYtDlp(url: string): boolean {
 }
 
 /** Download a platform URL (YouTube/IG/TikTok/…) with yt-dlp, remuxed to mp4 so the importer accepts it.
- *  Requires `yt-dlp` on PATH (or REELMIND_YTDLP); fails with a clear message if it's missing. */
+ *  Requires `yt-dlp` on PATH (or REELO_YTDLP); fails with a clear message if it's missing. */
 async function downloadWithYtDlp(url: string): Promise<string> {
   const dir = join(app.getPath('userData'), 'imported')
   await fs.mkdir(dir, { recursive: true })
   const id = randomUUID()
-  const bin = process.env.REELMIND_YTDLP || 'yt-dlp'
+  const bin = process.env.REELO_YTDLP || 'yt-dlp'
   try {
     await execFileAsync(
       bin,

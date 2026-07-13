@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Public surface of the framework-free editor core (model + pure engines).
 
+export * from './branding'
 export * from './constants'
 export * from './model/clipType'
 export * from './model/keyframe'

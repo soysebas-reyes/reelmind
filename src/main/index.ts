@@ -3,8 +3,9 @@ import 'dotenv/config'
 import { app, BrowserWindow } from 'electron'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { editorToolsByName } from '@core'
+import { APP_NAME, editorToolsByName } from '@core'
 import { registerIpc } from './ipc'
+import { installAppMenu } from './menu'
 import { initUpdates } from './updates'
 import { initTelemetry } from './telemetry'
 import { handleMediaProtocol, registerMediaScheme } from './media/mediaProtocol'
@@ -12,7 +13,7 @@ import { executeToolInRenderer } from './mcp/bridge'
 import { createMcpHttpServer } from './mcp/server'
 
 const isDev = !app.isPackaged
-const MCP_PORT = Number(process.env.REELMIND_MCP_PORT) || 4399
+const MCP_PORT = Number(process.env.REELO_MCP_PORT) || 4399
 
 // Must run before app 'ready'.
 registerMediaScheme()
@@ -21,10 +22,11 @@ registerMediaScheme()
 function configureBundledFfmpeg(): void {
   if (!app.isPackaged) return
   const dir = join(process.resourcesPath, 'ffmpeg')
-  const ffmpeg = join(dir, 'ffmpeg.exe')
-  const ffprobe = join(dir, 'ffprobe.exe')
-  if (!process.env.REELMIND_FFMPEG && existsSync(ffmpeg)) process.env.REELMIND_FFMPEG = ffmpeg
-  if (!process.env.REELMIND_FFPROBE && existsSync(ffprobe)) process.env.REELMIND_FFPROBE = ffprobe
+  const ext = process.platform === 'win32' ? '.exe' : ''
+  const ffmpeg = join(dir, `ffmpeg${ext}`)
+  const ffprobe = join(dir, `ffprobe${ext}`)
+  if (!process.env.REELO_FFMPEG && existsSync(ffmpeg)) process.env.REELO_FFMPEG = ffmpeg
+  if (!process.env.REELO_FFPROBE && existsSync(ffprobe)) process.env.REELO_FFPROBE = ffprobe
 }
 
 function createWindow(): void {
@@ -35,7 +37,7 @@ function createWindow(): void {
     minHeight: 600,
     show: false,
     backgroundColor: '#15151a',
-    title: 'ReelMind',
+    title: APP_NAME,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: true,
@@ -49,7 +51,7 @@ function createWindow(): void {
   // Observability: renderer logs + process/GPU crashes don't otherwise reach this terminal. A React
   // render error blanks the window WITHOUT killing the process, so console-message is what surfaces it.
   win.webContents.on('render-process-gone', (_e, details) => {
-    console.error(`[reelmind] renderer gone: ${details.reason} (exit ${details.exitCode})`)
+    console.error(`[reelo] renderer gone: ${details.reason} (exit ${details.exitCode})`)
   })
   if (isDev) {
     win.webContents.on('console-message', (details) => {
@@ -67,6 +69,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  installAppMenu()
   configureBundledFfmpeg()
   handleMediaProtocol()
   registerIpc()
@@ -75,19 +78,19 @@ app.whenReady().then(() => {
   createWindow()
 
   app.on('child-process-gone', (_e, details) => {
-    console.error(`[reelmind] child gone: ${details.type} — ${details.reason}`)
+    console.error(`[reelo] child gone: ${details.type} — ${details.reason}`)
   })
 
   // Embedded MCP server (localhost) so external agents drive the same editor commands.
   // Per-tool timeout overrides (export/transcribe/…) come from the tool contract itself.
-  if (!process.env.REELMIND_NO_MCP) {
+  if (!process.env.REELO_NO_MCP) {
     createMcpHttpServer({
       port: MCP_PORT,
       version: app.getVersion(),
       execute: (name, input) => executeToolInRenderer(name, input, editorToolsByName.get(name)?.timeoutMs ?? 300_000)
     })
-      .then((h) => console.log(`[reelmind] MCP server listening at ${h.url}`))
-      .catch((e) => console.error('[reelmind] MCP server failed to start:', e))
+      .then((h) => console.log(`[reelo] MCP server listening at ${h.url}`))
+      .catch((e) => console.error('[reelo] MCP server failed to start:', e))
   }
 
   app.on('activate', () => {

@@ -495,7 +495,7 @@ describe('add_text_clip', () => {
     const clip = c.getClip(r.clipId as string)!
     expect(clip.mediaType).toBe('text')
     expect(clip.textContent).toBe('Hola mundo')
-    expect(clip.textStyle).toMatchObject({ fontName: 'Segoe UI', fontSize: 72, color: '#ffffff', alignment: 'center' })
+    expect(clip.textStyle).toMatchObject({ fontName: 'system-ui', fontSize: 72, color: '#ffffff', alignment: 'center' })
     expect(clip.mediaRef.startsWith('text-')).toBe(true)
     const track = c.getTrackOfClip(clip.id)!
     expect(track.type).toBe('text')

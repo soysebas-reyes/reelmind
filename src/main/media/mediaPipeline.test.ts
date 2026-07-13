@@ -22,7 +22,7 @@ let audioPath = ''
 
 describe.skipIf(!haveFfmpeg)('media pipeline (integration, requires ffmpeg)', () => {
   beforeAll(async () => {
-    dir = await fs.mkdtemp(join(tmpdir(), 'reelmind-test-'))
+    dir = await fs.mkdtemp(join(tmpdir(), 'reelo-test-'))
     videoPath = join(dir, 'clip.mp4')
     imagePath = join(dir, 'still.png')
     audioPath = join(dir, 'tone.mp3')

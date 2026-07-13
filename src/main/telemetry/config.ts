@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Telemetry config in userData (same sync-JSON style as colorSettings.ts). Local default =
-// ENABLED (local-only, zero network egress in v1). Kill switch: REELMIND_NO_TELEMETRY=1.
+// ENABLED (local-only, zero network egress in v1). Kill switch: REELO_NO_TELEMETRY=1.
 // NOTE (future/cloud): the local phase is opt-OUT; the first Supabase upload must be opt-IN
 // behind explicit consent + a published privacy policy (see docs/TOTAL_MEASUREMENT_PLAN.md).
 
@@ -17,7 +17,7 @@ function cfgPath(): string {
 
 export function readConfig(): TelemetryConfig {
   // Read the stored file even under the kill switch — otherwise a writeConfig() while
-  // REELMIND_NO_TELEMETRY is set would clobber persisted fields (noticeAckAt, sampleRates).
+  // REELO_NO_TELEMETRY is set would clobber persisted fields (noticeAckAt, sampleRates).
   let cfg: TelemetryConfig
   try {
     const raw = JSON.parse(readFileSync(cfgPath(), 'utf8')) as Partial<TelemetryConfig>
@@ -25,13 +25,13 @@ export function readConfig(): TelemetryConfig {
   } catch {
     cfg = { ...DEFAULT }
   }
-  if (process.env.REELMIND_NO_TELEMETRY) cfg.enabled = false
+  if (process.env.REELO_NO_TELEMETRY) cfg.enabled = false
   return cfg
 }
 
 export function writeConfig(patch: Partial<TelemetryConfig>): TelemetryConfig {
   const next: TelemetryConfig = { ...readConfig(), ...patch }
-  if (process.env.REELMIND_NO_TELEMETRY) next.enabled = false // env kill switch always wins
+  if (process.env.REELO_NO_TELEMETRY) next.enabled = false // env kill switch always wins
   try {
     writeFileSync(cfgPath(), JSON.stringify(next, null, 2), 'utf8')
   } catch {

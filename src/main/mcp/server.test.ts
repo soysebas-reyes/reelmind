@@ -22,7 +22,7 @@ describe('embedded MCP HTTP server', () => {
       Promise.resolve(executeTool(controller, name, input))
 
     const handle = await createMcpHttpServer({ port: 0, enableDnsProtection: false, execute })
-    const client = new Client({ name: 'reelmind-test', version: '1.0.0' })
+    const client = new Client({ name: 'reelo-test', version: '1.0.0' })
     const transport = new StreamableHTTPClientTransport(new URL(handle.url))
 
     try {
@@ -71,7 +71,7 @@ describe('embedded MCP HTTP server — image content', () => {
     }
 
     const handle = await createMcpHttpServer({ port: 0, enableDnsProtection: false, execute })
-    const client = new Client({ name: 'reelmind-test', version: '1.0.0' })
+    const client = new Client({ name: 'reelo-test', version: '1.0.0' })
     const transport = new StreamableHTTPClientTransport(new URL(handle.url))
     try {
       await client.connect(transport)

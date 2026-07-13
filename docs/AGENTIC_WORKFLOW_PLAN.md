@@ -1,6 +1,6 @@
-# ReelMind — Agentic Workflow Plan (P11: copilot mode)
+# Reelo — Agentic Workflow Plan (P11: copilot mode)
 
-> Companion to [`PROJECT_PLAN.md`](./PROJECT_PLAN.md). Goal: let you **drive ReelMind by talking to
+> Companion to [`PROJECT_PLAN.md`](./PROJECT_PLAN.md). Goal: let you **drive Reelo by talking to
 > Claude** (the in-app chat or Claude Code over MCP) so the repetitive manual steps — loading a
 > folder of raw clips, removing silences, basic edits, exporting — happen for you. You keep the app
 > open to review in the preview; Claude does the grunt work.
@@ -22,7 +22,7 @@ Decided with the owner: **copilot mode** (app stays open) and all four capabilit
   bridge ([`index.ts`](../src/preload/index.ts)). They're just **not exposed as agent tools**, and the
   GUI reaches them through **native file dialogs** (the clicks you're tired of).
 - **Copilot constraint:** the MCP server lives inside the Electron main process, so Claude Code can
-  drive ReelMind **only while the app is open**. That's fine for copilot mode; a true headless/no-GUI
+  drive Reelo **only while the app is open**. That's fine for copilot mode; a true headless/no-GUI
   batch mode is a separate, larger effort (extract the engine to a CLI) — deferred.
 
 **Friction-killer principle:** every new tool takes **paths as parameters** (no native dialogs), and

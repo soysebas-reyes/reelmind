@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The embedded MCP server: exposes ReelMind's editing tools to external agents (Claude Code /
+// The embedded MCP server: exposes Reelo's editing tools to external agents (Claude Code /
 // Cursor / Claude Desktop) over Streamable HTTP on localhost. It advertises the SAME tool set as
 // the in-app agent (from @core) and forwards every tools/call to `execute` — which, in the app,
 // proxies to the renderer's EditorController (the single source of truth). `execute` is injected so
@@ -29,7 +29,7 @@ export interface CreateMcpServerOptions {
 }
 
 function buildMcpServer(execute: CreateMcpServerOptions['execute'], version?: string): McpServer {
-  const mcp = new McpServer({ name: 'reelmind', version: version ?? '0.0.0' })
+  const mcp = new McpServer({ name: 'reelo', version: version ?? '0.0.0' })
   for (const t of editorTools) {
     const shape = (t.input as ZodObject<ZodRawShape>).shape ?? {}
     mcp.registerTool(t.name, { description: t.description, inputSchema: shape }, async (args: unknown) => {

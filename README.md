@@ -1,23 +1,53 @@
-# ReelMind
+# Reelo
 
-**An open-source, AI-native video editor for Windows — you and your agent
-edit video together on the timeline. It doesn't replace CapCut or Premiere; it
-does the technical, repetitive work fast and hands the result off to them.**
+**An open-source, AI-native video editor for Windows and macOS (Apple Silicon) —
+you and your agent edit video together on the timeline. It doesn't replace CapCut
+or Premiere; it does the technical, repetitive work fast and hands the result off
+to them.**
 
-> ⚠️ **Status: active development, not yet packaged.** The desktop app runs and
+> ⚠️ **Status: active development, early beta.** The desktop app runs and
 > the core editor + AI + MCP are working: import, timeline editing, real-time
-> preview, FFmpeg export, colorization, multicam sync, audio enhancement, angle
-> switching, script-based take segmentation, and an "export to Premiere / DaVinci
-> / Final Cut / CapCut" handoff. Some end-to-end flows (take detection, the NLE +
+> preview, FFmpeg export (GPU-accelerated), colorization, multicam sync, audio
+> enhancement, angle switching, script-based take segmentation, and an "export to
+> Premiere / DaVinci / Final Cut / CapCut" handoff. Windows ships as an NSIS
+> installer with auto-update; the macOS build (arm64, signed + notarized) comes
+> out of the CI release pipeline. Some end-to-end flows (take detection, the NLE +
 > CapCut handoff) are implemented and unit/integration-tested but still pending
-> verification on real footage / in a real NLE / in real CapCut. AI media **generation** and a Windows **installer**
-> are next. **Full plan & state:** [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md).
+> verification on real footage / in a real NLE / in real CapCut. AI media
+> **generation** is next. **Full plan & state:** [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md).
+
+---
+
+## ⬇️ Download
+
+<p align="center">
+  <a href="https://github.com/soysebas-reyes/reelo/releases/latest">
+    <img alt="Download for Windows" src="https://img.shields.io/badge/Download-Windows%20(.exe)-0078D6?style=for-the-badge&logo=windows&logoColor=white">
+  </a>
+  &nbsp;&nbsp;
+  <a href="https://github.com/soysebas-reyes/reelo/releases/latest">
+    <img alt="Download for macOS" src="https://img.shields.io/badge/Download-macOS%20(.dmg)-111111?style=for-the-badge&logo=apple&logoColor=white">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/soysebas-reyes/reelo/releases/latest"><b>Latest release</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/soysebas-reyes/reelo/releases">All versions</a>
+</p>
+
+- **Windows 10/11** → `Reelo-<version>-setup.exe` — one-click NSIS installer, FFmpeg bundled, auto-updates. [Download ›](https://github.com/soysebas-reyes/reelo/releases/latest)
+- **macOS (Apple Silicon)** → `Reelo-<version>-arm64.dmg` — signed & notarized, opens straight through Gatekeeper (ships from **v0.2.0**). [Download ›](https://github.com/soysebas-reyes/reelo/releases/latest)
+
+Step-by-step (SmartScreen, first launch, API keys) is in [**Install**](#install) below. Every build auto-updates from GitHub Releases.
+
+> The download buttons open the **latest published release**. Until the first release is published they land on the Releases page.
 
 ---
 
 ## What it does today
 
-ReelMind focuses on the technical, repeatable parts of an editing job so a human
+Reelo focuses on the technical, repeatable parts of an editing job so a human
 (or an agent) can move fast, then hands a clean, still-editable project to a
 finishing editor:
 
@@ -40,7 +70,7 @@ finishing editor:
 
 ### Handoff to a finishing editor (Premiere / DaVinci Resolve / Final Cut / CapCut)
 
-Subtitles and effects aren't ReelMind's job — they're the editor's. So instead of
+Subtitles and effects aren't Reelo's job — they're the editor's. So instead of
 only rendering a flat MP4, the **"Enviar a editor"** button writes an **editable
 project** the editor opens in their **NLE** (*Non-Linear Editor* — Premiere Pro,
 DaVinci Resolve, Final Cut) **or in CapCut**:
@@ -59,14 +89,14 @@ no manual step), otherwise in the folder you pick with move instructions.
 
 ## Drive it from Claude Code (MCP)
 
-ReelMind embeds an **MCP** server, so an external agent (**Claude Code**, Cursor,
+Reelo embeds an **MCP** server, so an external agent (**Claude Code**, Cursor,
 Claude Desktop) can operate the editor with the *same* command surface a human
 uses — in natural language: *"load this folder, download these videos, sync the
 angles, colorize, segment by my scripts, export to Premiere."*
 
 ```sh
 # with the app open:
-claude mcp add --transport http reelmind http://127.0.0.1:4399/mcp
+claude mcp add --transport http reelo http://127.0.0.1:4399/mcp
 ```
 
 Full tool list, the workflow, and setup: [`MCP.md`](./MCP.md).
@@ -101,21 +131,21 @@ an independent repository — with full attribution — rather than a fork. The
 high-value, portable parts (data model, editing algorithms, the AI tool
 contract, the MCP design) are re-implemented in TypeScript.
 
-| Concern | Palmier Pro (macOS) | This project (Windows) |
+| Concern | Palmier Pro (macOS) | This project (Windows + macOS) |
 | --- | --- | --- |
 | UI | AppKit + SwiftUI | Electron + React + TypeScript |
 | Video compose / preview / export | AVFoundation | FFmpeg + HTML5/Canvas preview |
 | Visual search | CoreML (SigLIP2) | ONNX Runtime (planned) |
 | Transcription | Speech framework | ElevenLabs Scribe (cloud, BYOK) |
-| Auto-update | Sparkle | Squirrel / WinSparkle (planned) |
+| Auto-update | Sparkle | electron-updater (GitHub Releases) |
 | AI generation | Palmier cloud backend (credits) | Multi-provider, bring-your-own-key (planned) |
 
 ## Architecture
 
 - **Electron 3-context model.** *Main* (Node): project IO, FFmpeg/ffprobe,
-  secrets via Windows `safeStorage`/DPAPI, the embedded MCP server, the agent
-  runner. *Preload*: a narrow, context-isolated, sandboxed bridge. *Renderer*
-  (React): UI, live editing state, and the pure engines.
+  secrets via `safeStorage` (DPAPI on Windows, Keychain on macOS), the embedded
+  MCP server, the agent runner. *Preload*: a narrow, context-isolated, sandboxed
+  bridge. *Renderer* (React): UI, live editing state, and the pure engines.
 - **`EditorController` command API** — every edit is one named, undoable command.
   The UI, the in-app agent, and the MCP server all call the *same* commands.
 - **Frame-based time** throughout (integers), matching upstream — which also
@@ -151,30 +181,47 @@ Next:
 
 - **Generation** — Higgs Field, then fal.ai / Replicate (multi-provider, BYOK)
 
-## Install (Windows)
+## Install
 
-1. Download `ReelMind-<version>-setup.exe` from the latest
-   [GitHub Release](https://github.com/soysebas-reyes/reelmind/releases).
+### Windows
+
+1. Download `Reelo-<version>-setup.exe` from the
+   [latest release](https://github.com/soysebas-reyes/reelo/releases/latest).
 2. Windows SmartScreen will warn about an unknown publisher (the installer is not
    code-signed yet): click **More info → Run anyway**.
 3. Follow the installer (per-user install, no admin needed). FFmpeg ships inside —
    no separate install required.
-4. On first launch, set your API keys in **Ajustes → Claves API** (both optional,
-   bring-your-own-key, stored encrypted on your machine):
-   - **Anthropic (Claude)** — the AI editing chat and script segmentation.
-   - **ElevenLabs** — transcription, transcript-aware silence cutting, voice isolation.
-5. Optional: install [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) and put it on your
-   `PATH` to import from YouTube/Instagram/TikTok links.
+
+### macOS (Apple Silicon)
+
+1. Download `Reelo-<version>-arm64.dmg` from the
+   [latest release](https://github.com/soysebas-reyes/reelo/releases/latest)
+   (macOS builds ship from **v0.2.0**).
+2. Open the dmg and drag **Reelo** into **Applications**. The app is signed and
+   notarized, so Gatekeeper opens it normally. FFmpeg ships inside.
+
+### First launch (both platforms)
+
+- Set your API keys in **Ajustes → Claves API** (both optional, bring-your-own-key,
+  stored encrypted on your machine — DPAPI on Windows, Keychain on macOS):
+  - **Anthropic (Claude)** — the AI editing chat and script segmentation.
+  - **ElevenLabs** — transcription, transcript-aware silence cutting, voice isolation.
+- Optional: install [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) (`brew install yt-dlp`
+  on macOS) and have it on your `PATH` to import from YouTube/Instagram/TikTok links.
 
 The app updates itself from GitHub Releases. Local usage measurement (never content)
 can be turned off in **Ajustes → Privacidad**. To release a new version, see
 [`docs/RELEASE.md`](./docs/RELEASE.md).
 
+**Known limitation:** projects reference *external* media (files not consolidated
+into the `.vproj` package) by absolute path, so a project moved to another machine
+or OS needs its external media relinked; consolidated media and proxies travel fine.
+
 ## Getting started (development)
 
 **Prerequisites**
 
-- Windows 10/11
+- Windows 10/11 or macOS on Apple Silicon
 - [Node.js](https://nodejs.org/) 20+ (developed on v24)
 - [FFmpeg](https://ffmpeg.org/) 6+ on your `PATH` (developed on 8.0.1) — the
   bundled binary ships with packaging (`npm run fetch:ffmpeg`)
