@@ -15,12 +15,17 @@ export interface LutDirs {
   profileDir?: string | null
 }
 
+/** Windows drive-letter absolute (C:\… or C:/…). `path.isAbsolute` only accepts these on win32, but a
+ *  .vproj saved on Windows can carry such refs into a mac session — keep them as candidates there too,
+ *  so they degrade like any missing file (LUT skipped + warning) instead of being silently dropped. */
+const DRIVE_ABSOLUTE = /^[A-Za-z]:[\\/]/
+
 /** Ordered absolute candidate paths for a lutRef given the available directories (pure). */
 export function lutCandidatePaths(lutRef: string, dirs: LutDirs): string[] {
   const { scheme, name } = parseLutRef(lutRef)
   switch (scheme) {
     case 'absolute':
-      return isAbsolute(name) ? [name] : []
+      return isAbsolute(name) || DRIVE_ABSOLUTE.test(name) ? [name] : []
     case 'preset':
       return dirs.libraryDir ? [join(dirs.libraryDir, name)] : []
     case 'profile':
