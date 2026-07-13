@@ -29,7 +29,7 @@ export interface CreateMcpServerOptions {
 }
 
 function buildMcpServer(execute: CreateMcpServerOptions['execute'], version?: string): McpServer {
-  const mcp = new McpServer({ name: 'reelmind', version: version ?? '0.0.0' })
+  const mcp = new McpServer({ name: 'reelo', version: version ?? '0.0.0' })
   for (const t of editorTools) {
     const shape = (t.input as ZodObject<ZodRawShape>).shape ?? {}
     mcp.registerTool(t.name, { description: t.description, inputSchema: shape }, async (args: unknown) => {

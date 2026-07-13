@@ -3,7 +3,7 @@ import 'dotenv/config'
 import { app, BrowserWindow } from 'electron'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { editorToolsByName } from '@core'
+import { APP_NAME, editorToolsByName } from '@core'
 import { registerIpc } from './ipc'
 import { initUpdates } from './updates'
 import { initTelemetry } from './telemetry'
@@ -12,7 +12,7 @@ import { executeToolInRenderer } from './mcp/bridge'
 import { createMcpHttpServer } from './mcp/server'
 
 const isDev = !app.isPackaged
-const MCP_PORT = Number(process.env.REELMIND_MCP_PORT) || 4399
+const MCP_PORT = Number(process.env.REELO_MCP_PORT) || 4399
 
 // Must run before app 'ready'.
 registerMediaScheme()
@@ -23,8 +23,8 @@ function configureBundledFfmpeg(): void {
   const dir = join(process.resourcesPath, 'ffmpeg')
   const ffmpeg = join(dir, 'ffmpeg.exe')
   const ffprobe = join(dir, 'ffprobe.exe')
-  if (!process.env.REELMIND_FFMPEG && existsSync(ffmpeg)) process.env.REELMIND_FFMPEG = ffmpeg
-  if (!process.env.REELMIND_FFPROBE && existsSync(ffprobe)) process.env.REELMIND_FFPROBE = ffprobe
+  if (!process.env.REELO_FFMPEG && existsSync(ffmpeg)) process.env.REELO_FFMPEG = ffmpeg
+  if (!process.env.REELO_FFPROBE && existsSync(ffprobe)) process.env.REELO_FFPROBE = ffprobe
 }
 
 function createWindow(): void {
@@ -35,7 +35,7 @@ function createWindow(): void {
     minHeight: 600,
     show: false,
     backgroundColor: '#15151a',
-    title: 'ReelMind',
+    title: APP_NAME,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: true,
@@ -80,7 +80,7 @@ app.whenReady().then(() => {
 
   // Embedded MCP server (localhost) so external agents drive the same editor commands.
   // Per-tool timeout overrides (export/transcribe/…) come from the tool contract itself.
-  if (!process.env.REELMIND_NO_MCP) {
+  if (!process.env.REELO_NO_MCP) {
     createMcpHttpServer({
       port: MCP_PORT,
       version: app.getVersion(),

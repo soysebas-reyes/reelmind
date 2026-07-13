@@ -10,7 +10,7 @@ import { join } from 'node:path'
 /** Candidate draft roots, most-specific first. Covers CapCut Global + the 剪映/JianYing CN builds. */
 function candidates(): string[] {
   const out: string[] = []
-  const override = process.env.REELMIND_CAPCUT_DRAFT_DIR
+  const override = process.env.REELO_CAPCUT_DRAFT_DIR
   if (override) out.push(override)
   const localAppData = process.env.LOCALAPPDATA
   const appData = process.env.APPDATA
