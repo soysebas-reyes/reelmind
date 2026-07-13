@@ -21,8 +21,9 @@ registerMediaScheme()
 function configureBundledFfmpeg(): void {
   if (!app.isPackaged) return
   const dir = join(process.resourcesPath, 'ffmpeg')
-  const ffmpeg = join(dir, 'ffmpeg.exe')
-  const ffprobe = join(dir, 'ffprobe.exe')
+  const ext = process.platform === 'win32' ? '.exe' : ''
+  const ffmpeg = join(dir, `ffmpeg${ext}`)
+  const ffprobe = join(dir, `ffprobe${ext}`)
   if (!process.env.REELO_FFMPEG && existsSync(ffmpeg)) process.env.REELO_FFMPEG = ffmpeg
   if (!process.env.REELO_FFPROBE && existsSync(ffprobe)) process.env.REELO_FFPROBE = ffprobe
 }
