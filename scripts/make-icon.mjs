@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Generates build/icon.ico (+ build/icon.png reference) from Reelo, the 8-bit clapperboard mascot
-// (src/renderer/src/ui/Reelo.tsx), with zero dependencies: the pixel grid is rendered per size
-// (nearest-neighbor for >=32px, a simplified glyph for 16/24px), PNG-encoded by hand (node:zlib
-// deflate + CRC32) and packed into a PNG-in-ICO container (valid on Windows Vista+).
-// Run once (node scripts/make-icon.mjs) and commit the output; electron-builder picks it up via
-// win.icon in electron-builder.yml.
+// Generates build/icon.ico + build/icon.icns (+ build/icon.png reference) from Reelo, the 8-bit
+// clapperboard mascot (src/renderer/src/ui/Reelo.tsx), with zero dependencies: the pixel grid is
+// rendered per size (nearest-neighbor for >=32px, a simplified glyph for 16/24px), PNG-encoded by
+// hand (node:zlib deflate + CRC32) and packed into a PNG-in-ICO container (Windows Vista+) and a
+// PNG-in-ICNS container (macOS). The mac variant floats a rounded tile on a transparent margin
+// (Big Sur convention); Windows keeps the full-bleed tile.
+// Run once (node scripts/make-icon.mjs) and commit the output; electron-builder picks these up via
+// win.icon / mac.icon in electron-builder.yml.
 
 import { deflateSync } from 'node:zlib'
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -92,8 +94,8 @@ const OFF_Y = 1
 
 // ── Rasterizers ────────────────────────────────────────────────────────────────────────────────
 /** Rounded-tile alpha with cheap edge smoothing. */
-function tileAlpha(i, j, S) {
-  const r = Math.max(2, Math.round(S * 0.19))
+function tileAlpha(i, j, S, radius) {
+  const r = radius ?? Math.max(2, Math.round(S * 0.19))
   const cx = i + 0.5
   const cy = j + 0.5
   let dx = 0
@@ -119,6 +121,32 @@ function drawFull(S) {
       const c = gx >= 0 && gx < GW && gy >= 0 && gy < GH ? MASCOT[gy][gx] : 0
       const [r, g, b] = c ? rgb(C[c]) : bg
       const o = (j * S + i) * 4
+      buf[o] = r
+      buf[o + 1] = g
+      buf[o + 2] = b
+      buf[o + 3] = Math.round(a)
+    }
+  }
+  return buf
+}
+
+/** macOS variant: the tile floats on a transparent ~10% margin with Big Sur-ish corner rounding
+ *  (~22% of the tile), so the icon sits at the same visual size as its Dock neighbors. */
+function drawMacTile(S) {
+  const buf = Buffer.alloc(S * S * 4) // transparent canvas
+  const bg = rgb(BG)
+  const margin = Math.round(S * 0.1)
+  const T = S - margin * 2
+  const radius = Math.max(2, Math.round(T * 0.22))
+  for (let j = 0; j < T; j++) {
+    for (let i = 0; i < T; i++) {
+      const a = tileAlpha(i, j, T, radius)
+      if (a <= 0) continue
+      const gx = Math.floor((i * L) / T) - OFF_X
+      const gy = Math.floor((j * L) / T) - OFF_Y
+      const c = gx >= 0 && gx < GW && gy >= 0 && gy < GH ? MASCOT[gy][gx] : 0
+      const [r, g, b] = c ? rgb(C[c]) : bg
+      const o = ((j + margin) * S + (i + margin)) * 4
       buf[o] = r
       buf[o + 1] = g
       buf[o + 2] = b
@@ -253,6 +281,33 @@ function packIco(entries) {
   return Buffer.concat([header, ...dirs, ...blobs])
 }
 
+// ── ICNS container (PNG entries) ───────────────────────────────────────────────────────────────
+// Layout: magic "icns" + total length (u32BE), then chunks of [OSType (4 ascii)][length incl. this
+// 8-byte header (u32BE)][raw PNG]. PNG payloads are valid for the ic* types since 10.7.
+const ICNS_TYPES = [
+  ['ic11', 32], // 16pt@2x
+  ['ic12', 64], // 32pt@2x
+  ['ic07', 128],
+  ['ic13', 256], // 128pt@2x
+  ['ic08', 256],
+  ['ic14', 512], // 256pt@2x
+  ['ic09', 512],
+  ['ic10', 1024] // 512pt@2x
+]
+
+function packIcns(chunks) {
+  const bodies = chunks.map(({ type, png }) => {
+    const h = Buffer.alloc(8)
+    h.write(type, 0, 'ascii')
+    h.writeUInt32BE(8 + png.length, 4)
+    return Buffer.concat([h, png])
+  })
+  const header = Buffer.alloc(8)
+  header.write('icns', 0, 'ascii')
+  header.writeUInt32BE(8 + bodies.reduce((n, b) => n + b.length, 0), 4)
+  return Buffer.concat([header, ...bodies])
+}
+
 // ── Main ───────────────────────────────────────────────────────────────────────────────────────
 const SIZES = [16, 24, 32, 48, 64, 128, 256]
 const entries = SIZES.map((size) => ({
@@ -260,7 +315,17 @@ const entries = SIZES.map((size) => ({
   png: encodePng(size < 32 ? drawSimple(size) : drawFull(size), size)
 }))
 
+const macPngBySize = new Map()
+for (const [, size] of ICNS_TYPES) {
+  if (!macPngBySize.has(size)) macPngBySize.set(size, encodePng(drawMacTile(size), size))
+}
+const icnsChunks = ICNS_TYPES.map(([type, size]) => ({ type, png: macPngBySize.get(size) }))
+
 mkdirSync(outDir, { recursive: true })
 writeFileSync(join(outDir, 'icon.ico'), packIco(entries))
-writeFileSync(join(outDir, 'icon.png'), entries[entries.length - 1].png)
-console.log(`[make-icon] build/icon.ico (${SIZES.join(', ')} px) + build/icon.png listos`)
+writeFileSync(join(outDir, 'icon.icns'), packIcns(icnsChunks))
+// 1024px reference/fallback (electron-builder can derive platform icons from a >=512px png).
+writeFileSync(join(outDir, 'icon.png'), encodePng(drawFull(1024), 1024))
+console.log(
+  `[make-icon] build/icon.ico (${SIZES.join(', ')} px) + build/icon.icns (${[...macPngBySize.keys()].join(', ')} px) + build/icon.png (1024) listos`
+)
