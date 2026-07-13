@@ -23,9 +23,16 @@ const execFileAsync = promisify(execFile)
 export type H264Encoder = 'h264_nvenc' | 'h264_qsv' | 'h264_amf' | 'h264_videotoolbox' | 'libx264'
 
 /** Candidates in typical-performance order; libx264 is the always-works floor. Per-platform so we
- *  don't burn ~600 ms probing encoders that cannot exist (no VideoToolbox on PC, no NVENC on mac). */
+ *  don't burn ~600 ms probing encoders that cannot exist (no VideoToolbox on PC, no NVENC on mac).
+ *  VideoToolbox is gated to arm64: on Intel Macs it initializes (so the probe would PASS) but only
+ *  supports bitrate rate-control, not the constant-quality `-q:v` we emit — so the real encode would
+ *  fail. arm64 is the only supported mac target anyway; Intel Macs fall straight to libx264. */
 const HW_CANDIDATES: H264Encoder[] =
-  process.platform === 'darwin' ? ['h264_videotoolbox'] : ['h264_nvenc', 'h264_qsv', 'h264_amf']
+  process.platform === 'darwin'
+    ? process.arch === 'arm64'
+      ? ['h264_videotoolbox']
+      : []
+    : ['h264_nvenc', 'h264_qsv', 'h264_amf']
 
 async function encoderWorks(encoder: H264Encoder): Promise<boolean> {
   try {

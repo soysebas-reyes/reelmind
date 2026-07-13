@@ -56,10 +56,15 @@ mkdirSync(outDir, { recursive: true })
 rmSync(tmpDir, { recursive: true, force: true })
 mkdirSync(tmpDir, { recursive: true })
 
+// Resolved (post-redirect) download URLs — the version lives here, not in the `redirect/latest/…`
+// input URL, so the generated LICENSE notice reads it from these.
+const resolvedUrls = []
+
 /** Download one archive, verify its .sha256 sidecar when the mirror provides one, extract into its own subdir. */
 async function fetchAndExtract(url, index) {
   console.log(`Downloading FFmpeg (${target.label})…\n  ${url}`)
   const res = await fetch(url, { redirect: 'follow' })
+  resolvedUrls.push(res.url)
   if (!res.ok) {
     console.error(`Download failed: ${res.status} ${res.statusText}`)
     process.exit(1)
@@ -147,7 +152,9 @@ if (license) {
   copyFileSync(license, join(outDir, 'LICENSE.txt'))
   console.log('  → resources/ffmpeg/LICENSE.txt')
 } else {
-  const resolvedVersion = /\/(\d+_[^/]+)\//.exec(archives[0])?.[1] ?? 'latest'
+  // Read the version from the RESOLVED url (…/download/<os>/<arch>/<ts>_<ver>/ffmpeg.zip); the input
+  // url is the version-less `redirect/latest/…` alias.
+  const resolvedVersion = /\/(\d+_[^/]+)\//.exec(resolvedUrls[0] ?? archives[0])?.[1] ?? 'latest'
   writeFileSync(
     join(outDir, 'LICENSE.txt'),
     [
