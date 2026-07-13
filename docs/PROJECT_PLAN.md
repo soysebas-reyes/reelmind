@@ -10,8 +10,8 @@
 
 ## 1. What this project is
 
-**Reelo** is an open-source, **AI-native video editor for Windows**, built as an independent,
-cross-platform derivative of **[palmier-io/palmier-pro](https://github.com/palmier-io/palmier-pro)**
+**Reelo** is an open-source, **AI-native video editor for Windows and macOS (Apple Silicon)**, built
+as an independent, cross-platform derivative of **[palmier-io/palmier-pro](https://github.com/palmier-io/palmier-pro)**
 (a native macOS/Swift app, GPL-3.0). We keep Reelo public, GPL-3.0, and credit Palmier.
 
 - **Public repo:** https://github.com/soysebas-reyes/reelo

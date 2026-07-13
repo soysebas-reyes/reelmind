@@ -40,9 +40,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      # Firma + notarización mac (vacíos ⇒ electron-builder omite la firma; Windows los ignora).
-      CSC_LINK: ${{ secrets.CSC_LINK }}
-      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      # Firma + notarización SOLO en macOS. CSC_LINK/CSC_KEY_PASSWORD deben quedar VACÍOS en el
+      # runner de Windows: electron-builder usa CSC_LINK como fallback de la firma Authenticode
+      # (WIN_CSC_LINK ?? CSC_LINK), así que exponer el .p12 de Apple ahí firmaría el NSIS con el
+      # cert equivocado (build rota o instalador con cadena no confiable). Se scopean por SO.
+      CSC_LINK: ${{ matrix.os == 'macos-15' && secrets.CSC_LINK || '' }}
+      CSC_KEY_PASSWORD: ${{ matrix.os == 'macos-15' && secrets.CSC_KEY_PASSWORD || '' }}
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}

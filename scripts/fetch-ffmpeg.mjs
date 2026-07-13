@@ -66,21 +66,29 @@ async function fetchAndExtract(url, index) {
   }
   const buf = Buffer.from(await res.arrayBuffer())
 
-  // Integrity: the sidecar lives next to the RESOLVED url (redirect endpoints 404 it). Best-effort —
-  // BtbN's `latest` alias has no per-file sidecar, martin-riedl does.
-  try {
-    const side = await fetch(`${res.url}.sha256`, { redirect: 'follow' })
-    if (side.ok) {
-      const expected = (await side.text()).trim().split(/\s+/)[0].toLowerCase()
-      const actual = createHash('sha256').update(buf).digest('hex')
-      if (expected !== actual) {
-        console.error(`Checksum mismatch for ${url}\n  expected ${expected}\n  actual   ${actual}`)
-        process.exit(1)
-      }
-      console.log('  sha256 OK')
+  // Integrity, best-effort. Where the `.sha256` sidecar lives differs per mirror: BtbN publishes it
+  // as a release asset next to the ORIGINAL url (the resolved CDN url + '.sha256' serves the zip
+  // itself again — its query string swallows the suffix), while martin-riedl's redirect endpoint
+  // 404s the sidecar and only the RESOLVED url has it. Try both and only trust a response that
+  // actually looks like a sha256 hex digest.
+  const actual = createHash('sha256').update(buf).digest('hex')
+  for (const sidecarUrl of [`${url}.sha256`, `${res.url}.sha256`]) {
+    let expected = null
+    try {
+      const side = await fetch(sidecarUrl, { redirect: 'follow' })
+      if (!side.ok) continue
+      const first = (await side.text()).trim().split(/\s+/)[0].toLowerCase()
+      if (!/^[0-9a-f]{64}$/.test(first)) continue // not a checksum (HTML, binary, …)
+      expected = first
+    } catch {
+      continue // sidecar unreachable — try the next candidate
     }
-  } catch {
-    // no sidecar reachable — proceed without verification
+    if (expected !== actual) {
+      console.error(`Checksum mismatch for ${url}\n  expected ${expected}\n  actual   ${actual}`)
+      process.exit(1)
+    }
+    console.log('  sha256 OK')
+    break
   }
 
   const zipPath = join(tmpDir, `archive-${index}.zip`)

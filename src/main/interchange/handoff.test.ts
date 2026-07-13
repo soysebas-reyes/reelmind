@@ -73,7 +73,11 @@ describe.skipIf(!haveFfmpeg)('NLE handoff (integration, requires ffmpeg)', () =>
     expect(xml).toContain('<xmeml version="5">')
     const m = /<pathurl>([^<]+)<\/pathurl>/.exec(xml)
     expect(m).toBeTruthy()
-    const filePath = decodeURIComponent(m![1].replace(/^file:\/\/\/?/, '').replace(/\//g, '\\'))
+    // file URL → filesystem path, per-platform: win drops the leading slash and uses backslashes
+    // (file:///C:/x → C:\x); POSIX keeps the leading slash (file:///var/x → /var/x).
+    const decoded = decodeURIComponent(m![1].replace(/^file:\/\//, ''))
+    const filePath =
+      process.platform === 'win32' ? decoded.replace(/^\/+/, '').replace(/\//g, '\\') : decoded
     // The referenced media lives in the handoff's media/ dir.
     expect(m![1]).toContain('/media/')
     await expect(fs.stat(filePath)).resolves.toBeTruthy()
